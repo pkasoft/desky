@@ -1,0 +1,17 @@
+[package]
+name = "desky-server"
+version = "0.1.0"
+edition = "2024"
+authors = ["PraxiumX <pkasoft.studio@gmail.com>"]
+description = "High-performance, zero-relay P2P rendezvous and STUN matchmaking server for Desky"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+rusqlite = { version = "0.31", features = ["bundled"] }
+rand = "0.8"
