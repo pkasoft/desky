@@ -253,29 +253,6 @@ async fn main() -> Result<()> {
             }
         };
 
-        // Fast-path binary relay forwarding (b"DSKR" + 9-byte target_id + 9-byte from_id + payload)
-        if len > 22 && &buf[0..4] == b"DSKR" {
-            let target_id = String::from_utf8_lossy(&buf[4..13]).to_string();
-            let from_id = String::from_utf8_lossy(&buf[13..22]).to_string();
-            if from_id != "000000000" {
-                let mut table = hosts.write().await;
-                table.insert(
-                    from_id,
-                    HostEntry {
-                        addr: src_addr,
-                        last_seen: Instant::now(),
-                    },
-                );
-            }
-            let target_addr = {
-                let table = hosts.read().await;
-                table.get(&target_id).map(|e| e.addr)
-            };
-            if let Some(dest) = target_addr {
-                let _ = socket.send_to(&buf[..len], dest).await;
-            }
-            continue;
-        }
 
         let msg: SignalMsg = match serde_json::from_slice(&buf[..len]) {
             Ok(m) => m,

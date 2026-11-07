@@ -9,7 +9,6 @@ use tokio::sync::Notify;
 use tracing::{error, info, warn};
 
 const MAGIC_DSKY: &[u8; 4] = b"DSKY";
-const MAGIC_DSKR: &[u8; 4] = b"DSKR";
 
 const PKT_CLIENT_HELLO: u8 = 0x01;
 const PKT_FRAME_CHUNK: u8 = 0x02;
@@ -76,8 +75,8 @@ static CLIENT_CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 // 4 = Low Data / Fast (70% Scale, Q60, 4:2:0 Chroma)
 static QUALITY_MODE: AtomicU8 = AtomicU8::new(0);
 
-static ACTIVE_JPEG_QUALITY: AtomicU8 = AtomicU8::new(80);
-static ACTIVE_SCALE_PCT: AtomicU8 = AtomicU8::new(100);
+static ACTIVE_JPEG_QUALITY: AtomicU8 = AtomicU8::new(76);
+static ACTIVE_SCALE_PCT: AtomicU8 = AtomicU8::new(90);
 static ACTIVE_CHROMA_444: AtomicBool = AtomicBool::new(true);
 static SESSION_RTT_MS: AtomicU32 = AtomicU32::new(0);
 static SESSION_BITRATE_KBPS: AtomicU32 = AtomicU32::new(0);
@@ -212,19 +211,19 @@ fn apply_preset_for_mode(mode: u8) {
     match mode {
         1 => {
             // Ultra Text
-            ACTIVE_JPEG_QUALITY.store(90, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(88, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         2 => {
             // High Clarity
-            ACTIVE_JPEG_QUALITY.store(80, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(78, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         3 => {
             // Balanced
-            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(72, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(85, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
@@ -235,9 +234,9 @@ fn apply_preset_for_mode(mode: u8) {
             ACTIVE_CHROMA_444.store(false, Ordering::Relaxed);
         }
         _ => {
-            // Auto Adaptive initial baseline: fast Q80 + 100% native + 4:4:4 crisp text
-            ACTIVE_JPEG_QUALITY.store(80, Ordering::Relaxed);
-            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
+            // Auto Adaptive initial baseline: fast guaranteed first-frame delivery, then scales up to 100% 4:4:4
+            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(90, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
     }
@@ -313,24 +312,10 @@ fn fix_loopback_peer(mut peer: SocketAddr, server: SocketAddr) -> SocketAddr {
     peer
 }
 
-fn wrap_relay_packet(target_id_norm: &str, from_id_norm: &str, inner: &[u8]) -> Option<Vec<u8>> {
-    if target_id_norm.len() != 9 || from_id_norm.len() != 9 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(22 + inner.len());
-    out.extend_from_slice(MAGIC_DSKR);
-    out.extend_from_slice(target_id_norm.as_bytes());
-    out.extend_from_slice(from_id_norm.as_bytes());
-    out.extend_from_slice(inner);
-    Some(out)
-}
-
 #[derive(Clone)]
 struct ClientSubscriber {
     client_id: String,
-    direct_addr: Option<SocketAddr>,
-    last_direct_seen: Option<Instant>,
-    via_relay_id: Option<String>,
+    addr: SocketAddr,
     auth_state: AuthState,
     last_seen: Instant,
     target_fps: u32,
@@ -355,7 +340,8 @@ fn trigger_linux_approval_dialog(client_id: String) {
     crate::linux::ui::spawn_linux_approval_popup(client_id);
 }
 
-/// Starts a remote desktop client session connecting to `target_id`
+/// Starts a remote desktop client session connecting directly to `target_id`
+/// (VDS is used ONLY for address lookup & UDP hole-punching; all screen/input traffic is direct P2P)
 pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: bool) {
     let norm_target = normalize_id(target_id);
     let display_target = if norm_target.len() == 9 {
@@ -423,9 +409,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
             let server_addr = resolve_server_addr();
 
-            // 1. Fire LAN discovery broadcast on port 21117
+            // 1. Fire LAN discovery broadcast on port 21117 (for same-router / LAN peers)
+            let mut lan_pkt = Vec::with_capacity(14);
             if norm_target.len() == 9 {
-                let mut lan_pkt = Vec::with_capacity(14);
                 lan_pkt.extend_from_slice(MAGIC_DSKY);
                 lan_pkt.push(PKT_LAN_DISCOVERY);
                 lan_pkt.extend_from_slice(norm_target.as_bytes());
@@ -437,7 +423,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     .await;
             }
 
-            // 2. Send ConnectRequest to VDS Matchmaker
+            // 2. Send ConnectRequest to VDS Matchmaker (Strictly for IP:Port lookup & hole-punching)
             let req = SignalMsg::ConnectRequest {
                 target_id: display_target.clone(),
             };
@@ -446,7 +432,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             }
 
             let mut peer_addr: Option<SocketAddr> = None;
-            let mut direct_verified = false;
             let mut host_contacted = false;
             let mut buf = vec![0u8; 65536];
             let mut partial_frame: Option<PartialFrame> = None;
@@ -462,31 +447,35 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut abr_bytes_received: u64 = 0;
             let mut abr_frames_completed: u32 = 0;
             let mut abr_frames_dropped: u32 = 0;
-            let mut abr_tier: i32 = 2; // 0 = Low, 1 = Med, 2 = High-Fast (Q78 4:4:4), 3 = Ultra (Q85 4:4:4)
+            let mut abr_tier: i32 = 1; // Starts at Tier 1 for instant first-frame delivery, then scales up to Tier 3!
 
             while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                 && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
             {
-                // Update ABR & live bitrate telemetry every 700ms
+                // Update ABR & live bitrate telemetry every 650ms (even before first frame so it can step down if needed!)
                 let abr_elapsed = abr_window_start.elapsed();
-                if abr_elapsed >= Duration::from_millis(700) {
+                if abr_elapsed >= Duration::from_millis(650) {
                     let secs = abr_elapsed.as_secs_f64().max(0.1);
                     let kbps = ((abr_bytes_received as f64 * 8.0) / 1000.0 / secs) as u32;
                     SESSION_BITRATE_KBPS.store(kbps, Ordering::Relaxed);
 
-                    if QUALITY_MODE.load(Ordering::Relaxed) == 0 && received_any_frame {
+                    if QUALITY_MODE.load(Ordering::Relaxed) == 0 {
                         let rtt = SESSION_RTT_MS.load(Ordering::Relaxed);
-                        if abr_frames_dropped >= 2 || rtt > 200 {
+                        if abr_frames_dropped >= 1 || rtt > 220 {
                             abr_tier = (abr_tier - 1).max(0);
-                        } else if abr_frames_dropped == 0 && abr_frames_completed >= 5 && rtt < 90 {
+                        } else if received_any_frame
+                            && abr_frames_dropped == 0
+                            && abr_frames_completed >= 4
+                            && rtt < 110
+                        {
                             abr_tier = (abr_tier + 1).min(3);
                         }
 
                         // Prioritizes low latency + 4:4:4 sharp text
                         let (q, sc, c444) = match abr_tier {
-                            3 => (85u8, 100u8, true),
-                            2 => (78u8, 100u8, true),
-                            1 => (72u8, 85u8, true),
+                            3 => (82u8, 100u8, true),
+                            2 => (76u8, 100u8, true),
+                            1 => (72u8, 90u8, true),
                             _ => (62u8, 75u8, false),
                         };
                         ACTIVE_JPEG_QUALITY.store(q, Ordering::Relaxed);
@@ -500,11 +489,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     abr_frames_dropped = 0;
                 }
 
-                // Retry ConnectRequest every 1.2s while host has not been contacted yet
-                if !host_contacted
-                    && peer_addr.is_none()
-                    && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200)
-                {
+                // Retry ConnectRequest + LAN discovery every 1.2s until host responds
+                if !host_contacted && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200) {
                     if session_start.elapsed() > Duration::from_secs(15) {
                         let msg = format!(
                             "Timed out connecting to Desky ID '{}'",
@@ -515,51 +501,51 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         crate::windows::ui::append_status_log(&format!("❌ {}", msg));
                         break;
                     }
+                    if !lan_pkt.is_empty() {
+                        let _ = socket
+                            .send_to(&lan_pkt, "255.255.255.255:21117".parse::<SocketAddr>().unwrap())
+                            .await;
+                        let _ = socket
+                            .send_to(&lan_pkt, "127.0.0.1:21117".parse::<SocketAddr>().unwrap())
+                            .await;
+                    }
                     if let Ok(req_bytes) = serde_json::to_vec(&req) {
                         let _ = socket.send_to(&req_bytes, server_addr).await;
                     }
                     last_matchmaker_retry = Instant::now();
                 }
 
-                // Periodically send ClientHello / KeepAlive with ABR quality parameters & client ID
+                // Periodically send ClientHello / KeepAlive with ABR quality parameters & client ID directly to peer
                 let hello_interval = if received_any_frame {
-                    Duration::from_millis(380)
+                    Duration::from_millis(350)
                 } else {
-                    Duration::from_millis(180)
+                    Duration::from_millis(160)
                 };
 
                 if last_hello.elapsed() >= hello_interval {
-                    let fps = CLIENT_TARGET_FPS.load(Ordering::Relaxed).clamp(10, 60) as u8;
-                    let cur = if CLIENT_CAPTURE_CURSOR.load(Ordering::Relaxed) { 1u8 } else { 0u8 };
-                    let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
-                    let (q_val, sc_val, c444) = get_active_quality_params();
-
-                    let mut hello = Vec::with_capacity(23);
-                    hello.extend_from_slice(MAGIC_DSKY);
-                    hello.push(PKT_CLIENT_HELLO);
-                    hello.push(fps);
-                    hello.push(cur);
-                    hello.extend_from_slice(&ts_ms.to_le_bytes());
-                    hello.push(q_val);
-                    hello.push(sc_val);
-                    hello.push(if c444 { 1u8 } else { 0u8 });
-                    hello.extend_from_slice(my_id_padded.as_bytes());
-
                     if let Some(p_addr) = peer_addr {
+                        let fps = CLIENT_TARGET_FPS.load(Ordering::Relaxed).clamp(10, 60) as u8;
+                        let cur = if CLIENT_CAPTURE_CURSOR.load(Ordering::Relaxed) { 1u8 } else { 0u8 };
+                        let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
+                        let (q_val, sc_val, c444) = get_active_quality_params();
+
+                        let mut hello = Vec::with_capacity(23);
+                        hello.extend_from_slice(MAGIC_DSKY);
+                        hello.push(PKT_CLIENT_HELLO);
+                        hello.push(fps);
+                        hello.push(cur);
+                        hello.extend_from_slice(&ts_ms.to_le_bytes());
+                        hello.push(q_val);
+                        hello.push(sc_val);
+                        hello.push(if c444 { 1u8 } else { 0u8 });
+                        hello.extend_from_slice(my_id_padded.as_bytes());
+
                         let _ = socket.send_to(&hello, p_addr).await;
                     }
-
-                    // Keep sending via VDS relay whenever direct P2P has not been verified!
-                    if !direct_verified && session_start.elapsed() >= Duration::from_millis(500) {
-                        if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &hello) {
-                            let _ = socket.send_to(&relayed, server_addr).await;
-                        }
-                    }
-
                     last_hello = Instant::now();
                 }
 
-                // Flush queued remote input events immediately (zero polling delay!)
+                // Flush queued remote input events immediately over direct P2P UDP
                 let queued_inputs: Vec<InputEvent> = {
                     if let Ok(mut q) = input_store().lock() {
                         std::mem::take(&mut *q)
@@ -568,24 +554,14 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 };
                 if !queued_inputs.is_empty() && received_any_frame {
-                    for ev in queued_inputs {
-                        if let Ok(ev_bytes) = serde_json::to_vec(&ev) {
-                            let mut pkt = Vec::with_capacity(5 + ev_bytes.len());
-                            pkt.extend_from_slice(MAGIC_DSKY);
-                            pkt.push(PKT_INPUT_EVENT);
-                            pkt.extend_from_slice(&ev_bytes);
-
-                            if direct_verified {
-                                if let Some(p_addr) = peer_addr {
-                                    let _ = socket.send_to(&pkt, p_addr).await;
-                                }
-                            } else {
-                                if let Some(p_addr) = peer_addr {
-                                    let _ = socket.send_to(&pkt, p_addr).await;
-                                }
-                                if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &pkt) {
-                                    let _ = socket.send_to(&relayed, server_addr).await;
-                                }
+                    if let Some(p_addr) = peer_addr {
+                        for ev in queued_inputs {
+                            if let Ok(ev_bytes) = serde_json::to_vec(&ev) {
+                                let mut pkt = Vec::with_capacity(5 + ev_bytes.len());
+                                pkt.extend_from_slice(MAGIC_DSKY);
+                                pkt.push(PKT_INPUT_EVENT);
+                                pkt.extend_from_slice(&ev_bytes);
+                                let _ = socket.send_to(&pkt, p_addr).await;
                             }
                         }
                     }
@@ -597,21 +573,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     recv_res = socket.recv_from(&mut buf) => {
                         if let Ok((len, from_addr)) = recv_res {
                             abr_bytes_received += len as u64;
-                            let mut slice = &buf[..len];
-
-                            let mut is_relayed = false;
-                            if slice.len() > 22 && &slice[0..4] == MAGIC_DSKR {
-                                slice = &slice[22..];
-                                is_relayed = true;
-                            }
+                            let slice = &buf[..len];
 
                             if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
                                 let pkt_type = slice[4];
                                 host_contacted = true;
-                                if !is_relayed {
-                                    peer_addr = Some(from_addr);
-                                    direct_verified = true;
-                                }
+                                peer_addr = Some(from_addr);
 
                                 match pkt_type {
                                     PKT_PONG => {
@@ -765,7 +732,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         if let Ok(parsed) = peer_public_addr.parse::<SocketAddr>() {
                                             let resolved = fix_loopback_peer(parsed, server_addr);
                                             info!(
-                                                "⚡ Peer '{}' resolved at {}. Punching UDP tunnel...",
+                                                "⚡ Peer '{}' resolved at {}. Punching Direct UDP tunnel...",
                                                 display_target, resolved
                                             );
                                             if peer_addr.is_none() {
@@ -775,10 +742,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 from_id: my_id_padded.clone(),
                                             };
                                             if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                                for _ in 0..5 {
+                                                for _ in 0..4 {
                                                     let _ = socket.send_to(&pbytes, resolved).await;
                                                 }
                                             }
+                                            // Also immediately fire a ClientHello so the host sees the request right away
+                                            last_hello = Instant::now() - Duration::from_secs(10);
                                         }
                                     }
                                     SignalMsg::PeerNotFound { target_id } => {
@@ -793,14 +762,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         break;
                                     }
                                     SignalMsg::Punch { .. } | SignalMsg::PunchAck => {
-                                        if !is_relayed {
-                                            peer_addr = Some(from_addr);
-                                            direct_verified = true;
-                                            let ack = SignalMsg::PunchAck;
-                                            if let Ok(abytes) = serde_json::to_vec(&ack) {
-                                                let _ = socket.send_to(&abytes, from_addr).await;
-                                            }
+                                        peer_addr = Some(from_addr);
+                                        let ack = SignalMsg::PunchAck;
+                                        if let Ok(abytes) = serde_json::to_vec(&ack) {
+                                            let _ = socket.send_to(&abytes, from_addr).await;
                                         }
+                                        last_hello = Instant::now() - Duration::from_secs(10);
                                     }
                                     _ => {}
                                 }
@@ -826,9 +793,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 disc.extend_from_slice(MAGIC_DSKY);
                 disc.push(PKT_DISCONNECT);
                 let _ = socket.send_to(&disc, p_addr).await;
-            }
-            if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &[b'D', b'S', b'K', b'Y', PKT_DISCONNECT]) {
-                let _ = socket.send_to(&relayed, server_addr).await;
             }
         });
     });
@@ -886,7 +850,7 @@ impl P2PManager {
         }
     }
 
-    /// Spawns the background UDP rendezvous registration, keep-alive, and Host screen streamer
+    /// Spawns the background UDP rendezvous registration, keep-alive, and Direct P2P Host screen streamer
     pub fn start_host_registration(&self) {
         let machine_id = self.machine_id.clone();
         let cached_id = self.cached_id.clone();
@@ -969,11 +933,10 @@ impl P2PManager {
                     });
                 }
 
-                // Dedicated Host Screen Capture & Streamer Thread (with its own async socket sender)
+                // Dedicated Host Screen Capture & Direct P2P Streamer Thread
                 {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
-                    let id_stream = Arc::clone(&current_id);
                     let socket_stream = Arc::clone(&socket);
 
                     std::thread::spawn(move || {
@@ -990,7 +953,7 @@ impl P2PManager {
 
                         stream_rt.block_on(async move {
                             let mut frame_id: u32 = 1;
-                            let mut jpeg_buf: Vec<u8> = Vec::with_capacity(131072);
+                            let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
 
                             while running_stream.load(Ordering::Relaxed) {
                                 let loop_start = Instant::now();
@@ -1024,8 +987,8 @@ impl P2PManager {
                                     .iter()
                                     .map(|s| s.jpeg_quality)
                                     .max()
-                                    .unwrap_or(80)
-                                    .clamp(40, 95);
+                                    .unwrap_or(76)
+                                    .clamp(40, 92);
                                 let scale_pct = subscribers
                                     .iter()
                                     .map(|s| s.scale_pct)
@@ -1048,21 +1011,37 @@ impl P2PManager {
                                         jpeg_encoder::SamplingFactor::R_4_2_0
                                     });
 
-                                    if encoder
+                                    let mut encoded_ok = encoder
                                         .encode(
                                             &bgra,
                                             cap_w as u16,
                                             cap_h as u16,
                                             jpeg_encoder::ColorType::Bgra,
                                         )
-                                        .is_ok()
-                                    {
+                                        .is_ok();
+
+                                    // Frame size guard: if a complex frame exceeds 64 KB (~52 UDP packets),
+                                    // re-encode compactly so the UDP burst never overflows home router upload queues!
+                                    if encoded_ok && jpeg_buf.len() > 64_000 {
+                                        jpeg_buf.clear();
+                                        let fallback_q = (jpeg_quality.saturating_sub(14)).max(52);
+                                        let mut enc2 = jpeg_encoder::Encoder::new(&mut jpeg_buf, fallback_q);
+                                        enc2.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
+                                        encoded_ok = enc2
+                                            .encode(
+                                                &bgra,
+                                                cap_w as u16,
+                                                cap_h as u16,
+                                                jpeg_encoder::ColorType::Bgra,
+                                            )
+                                            .is_ok();
+                                    }
+
+                                    if encoded_ok {
                                         let chunk_size = 1240usize;
                                         let total_chunks = ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
 
                                         if total_chunks <= 2048 {
-                                            let my_norm_id = normalize_id(&id_stream.read().await);
-
                                             for (idx, chunk) in jpeg_buf.chunks(chunk_size).enumerate() {
                                                 let mut pkt = Vec::with_capacity(17 + chunk.len());
                                                 pkt.extend_from_slice(MAGIC_DSKY);
@@ -1075,34 +1054,14 @@ impl P2PManager {
                                                 pkt.extend_from_slice(chunk);
 
                                                 for sub in &subscribers {
-                                                    let use_direct = sub.direct_addr.is_some()
-                                                        && sub
-                                                            .last_direct_seen
-                                                            .map(|t| t.elapsed() < Duration::from_secs(5))
-                                                            .unwrap_or(false);
-
-                                                    if use_direct {
-                                                        if let Some(d_addr) = sub.direct_addr {
-                                                            let _ = socket_stream.send_to(&pkt, d_addr).await;
-                                                        }
-                                                    } else if let Some(ref relay_client_id) = sub.via_relay_id {
-                                                        if let Some(relayed) = wrap_relay_packet(
-                                                            relay_client_id,
-                                                            &my_norm_id,
-                                                            &pkt,
-                                                        ) {
-                                                            let _ = socket_stream.send_to(&relayed, target_server).await;
-                                                        }
-                                                    } else if let Some(d_addr) = sub.direct_addr {
-                                                        let _ = socket_stream.send_to(&pkt, d_addr).await;
-                                                    }
+                                                    let _ = socket_stream.send_to(&pkt, sub.addr).await;
                                                 }
 
-                                                // Precision micro-pacing (100µs every 12 chunks = <0.8ms per frame)
-                                                // Avoids OS/router UDP burst overflow without 15.6ms timer sleep!
-                                                if (idx + 1) % 12 == 0 {
+                                                // Smooth ~45 Mbps micro-pacing (220µs every 4 chunks = ~2.5ms per 50KB frame)
+                                                // Prevents router upload buffer drops while keeping latency <3ms!
+                                                if (idx + 1) % 4 == 0 {
                                                     let t_pace = Instant::now();
-                                                    while t_pace.elapsed() < Duration::from_micros(100) {
+                                                    while t_pace.elapsed() < Duration::from_micros(220) {
                                                         std::hint::spin_loop();
                                                     }
                                                 }
@@ -1126,7 +1085,7 @@ impl P2PManager {
                 let current_id_clone = Arc::clone(&current_id);
                 let clients_recv = Arc::clone(&active_clients);
 
-                // Receiver task: listens for VDS acks, peer introductions, punch packets, and client inputs
+                // Receiver task: listens for VDS matchmaking acks, peer hole-punching, and direct client packets
                 tokio::spawn(async move {
                     #[cfg(target_os = "windows")]
                     let injector = crate::windows::input::InputInjector::new();
@@ -1135,13 +1094,7 @@ impl P2PManager {
 
                     let mut buf = vec![0u8; 8192];
                     while let Ok((len, from_addr)) = socket_recv.recv_from(&mut buf).await {
-                        let mut slice = &buf[..len];
-                        let mut relay_from_id: Option<String> = None;
-
-                        if slice.len() > 22 && &slice[0..4] == MAGIC_DSKR {
-                            relay_from_id = Some(String::from_utf8_lossy(&slice[13..22]).to_string());
-                            slice = &slice[22..];
-                        }
+                        let slice = &buf[..len];
 
                         if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
                             let pkt_type = slice[4];
@@ -1149,13 +1102,13 @@ impl P2PManager {
                                 PKT_CLIENT_HELLO => {
                                     let fps = if slice.len() > 5 { slice[5].clamp(10, 60) as u32 } else { 60 };
                                     let cur = if slice.len() > 6 { slice[6] != 0 } else { true };
-                                    let q_val = if slice.len() > 11 { slice[11].clamp(40, 95) } else { 80 };
-                                    let sc_val = if slice.len() > 12 { slice[12].clamp(50, 100) } else { 100 };
+                                    let q_val = if slice.len() > 11 { slice[11].clamp(40, 92) } else { 76 };
+                                    let sc_val = if slice.len() > 12 { slice[12].clamp(50, 100) } else { 90 };
                                     let c444 = if slice.len() > 13 { slice[13] != 0 } else { true };
                                     let raw_cid = if slice.len() >= 23 {
                                         String::from_utf8_lossy(&slice[14..23]).to_string()
                                     } else {
-                                        relay_from_id.clone().unwrap_or_default()
+                                        String::new()
                                     };
                                     let norm_cid = normalize_id(&raw_cid);
                                     let client_key = if !norm_cid.is_empty() && norm_cid != "000000000" {
@@ -1185,17 +1138,7 @@ impl P2PManager {
                                                 need_ui_prompt = true;
                                                 ClientSubscriber {
                                                     client_id: client_id_disp.clone(),
-                                                    direct_addr: if relay_from_id.is_none() {
-                                                        Some(from_addr)
-                                                    } else {
-                                                        None
-                                                    },
-                                                    last_direct_seen: if relay_from_id.is_none() {
-                                                        Some(Instant::now())
-                                                    } else {
-                                                        None
-                                                    },
-                                                    via_relay_id: relay_from_id.clone(),
+                                                    addr: from_addr,
                                                     auth_state: AuthState::Pending,
                                                     last_seen: Instant::now(),
                                                     target_fps: fps,
@@ -1205,18 +1148,13 @@ impl P2PManager {
                                                     chroma_444: c444,
                                                 }
                                             });
+                                            entry.addr = from_addr;
                                             entry.last_seen = Instant::now();
                                             entry.target_fps = fps;
                                             entry.capture_cursor = cur;
                                             entry.jpeg_quality = q_val;
                                             entry.scale_pct = sc_val;
                                             entry.chroma_444 = c444;
-                                            if let Some(ref rid) = relay_from_id {
-                                                entry.via_relay_id = Some(rid.clone());
-                                            } else {
-                                                entry.direct_addr = Some(from_addr);
-                                                entry.last_direct_seen = Some(Instant::now());
-                                            }
 
                                             match entry.auth_state {
                                                 AuthState::Pending => AUTH_PENDING,
@@ -1249,19 +1187,12 @@ impl P2PManager {
                                         }
                                     }
 
-                                    // Send Auth Status packet back to Client
+                                    // Send Auth Status packet directly back to Client
                                     let mut auth_pkt = Vec::with_capacity(6);
                                     auth_pkt.extend_from_slice(MAGIC_DSKY);
                                     auth_pkt.push(PKT_AUTH_STATUS);
                                     auth_pkt.push(auth_status_byte);
-                                    if let Some(ref cid) = relay_from_id {
-                                        let my_norm = normalize_id(&current_id_clone.read().await);
-                                        if let Some(relayed) = wrap_relay_packet(cid, &my_norm, &auth_pkt) {
-                                            let _ = socket_recv.send_to(&relayed, target_server).await;
-                                        }
-                                    } else {
-                                        let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
-                                    }
+                                    let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
 
                                     // Reply with Pong if timestamp included
                                     if slice.len() >= 11 {
@@ -1269,37 +1200,17 @@ impl P2PManager {
                                         pong.extend_from_slice(MAGIC_DSKY);
                                         pong.push(PKT_PONG);
                                         pong.extend_from_slice(&slice[7..11]);
-                                        if let Some(ref cid) = relay_from_id {
-                                            let my_norm = normalize_id(&current_id_clone.read().await);
-                                            if let Some(relayed) = wrap_relay_packet(cid, &my_norm, &pong) {
-                                                let _ = socket_recv.send_to(&relayed, target_server).await;
-                                            }
-                                        } else {
-                                            let _ = socket_recv.send_to(&pong, from_addr).await;
-                                        }
+                                        let _ = socket_recv.send_to(&pong, from_addr).await;
                                     }
                                 }
                                 PKT_INPUT_EVENT => {
-                                    // Inject input if any approved subscriber matches this peer or relay
                                     let is_approved = {
                                         if let Ok(mut map) = clients_recv.lock() {
                                             let mut approved = false;
-                                            for (k, sub) in map.iter_mut() {
-                                                let match_direct = sub.direct_addr == Some(from_addr);
-                                                let match_relay = relay_from_id
-                                                    .as_ref()
-                                                    .map(|rid| {
-                                                        normalize_id(rid) == *k
-                                                            || sub.via_relay_id.as_ref() == Some(rid)
-                                                    })
-                                                    .unwrap_or(false);
-                                                if match_direct || match_relay || sub.auth_state == AuthState::Approved {
-                                                    if match_direct || match_relay {
-                                                        sub.last_seen = Instant::now();
-                                                    }
-                                                    if sub.auth_state == AuthState::Approved {
-                                                        approved = true;
-                                                    }
+                                            for sub in map.values_mut() {
+                                                if sub.addr == from_addr && sub.auth_state == AuthState::Approved {
+                                                    sub.last_seen = Instant::now();
+                                                    approved = true;
                                                 }
                                             }
                                             approved
@@ -1315,12 +1226,7 @@ impl P2PManager {
                                 }
                                 PKT_DISCONNECT => {
                                     if let Ok(mut map) = clients_recv.lock() {
-                                        if let Some(ref rid) = relay_from_id {
-                                            let k = normalize_id(rid);
-                                            map.remove(&k);
-                                        } else {
-                                            map.retain(|_, sub| sub.direct_addr != Some(from_addr));
-                                        }
+                                        map.retain(|_, sub| sub.addr != from_addr);
                                     }
                                     if let Ok(mut pg) = pending_approval_store().lock() {
                                         *pg = None;
@@ -1355,7 +1261,7 @@ impl P2PManager {
                                 }
                                 SignalMsg::IncomingPeer { client_public_addr } => {
                                     info!(
-                                        "⚡ [P2P INCOMING] Peer connecting from {}! Firing UDP hole-punch packets...",
+                                        "⚡ [P2P INCOMING] Peer connecting from {}! Firing Direct UDP hole-punch packets...",
                                         client_public_addr
                                     );
                                     if let Ok(parsed_addr) = client_public_addr.parse::<SocketAddr>() {
@@ -1363,9 +1269,13 @@ impl P2PManager {
                                         let my_id = current_id_clone.read().await.clone();
                                         let punch = SignalMsg::Punch { from_id: my_id };
                                         if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                            for _ in 0..6 {
-                                                let _ = socket_recv.send_to(&pbytes, client_addr).await;
-                                            }
+                                            let sock_punch = Arc::clone(&socket_recv);
+                                            tokio::spawn(async move {
+                                                for _ in 0..8 {
+                                                    let _ = sock_punch.send_to(&pbytes, client_addr).await;
+                                                    tokio::time::sleep(Duration::from_millis(25)).await;
+                                                }
+                                            });
                                         }
                                     }
                                 }
