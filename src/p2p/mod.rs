@@ -44,7 +44,7 @@ pub enum SessionStatus {
 
 #[derive(Clone, Debug)]
 pub struct PendingApprovalRequest {
-    pub client_addr: SocketAddr,
+    pub client_key: String,
     pub client_id: String,
 }
 
@@ -61,7 +61,7 @@ static INPUT_QUEUE: OnceLock<Mutex<Vec<InputEvent>>> = OnceLock::new();
 static INPUT_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
 
 static PENDING_APPROVAL: OnceLock<Mutex<Option<PendingApprovalRequest>>> = OnceLock::new();
-static HOST_SUBSCRIBERS: OnceLock<Arc<Mutex<HashMap<SocketAddr, ClientSubscriber>>>> = OnceLock::new();
+static HOST_SUBSCRIBERS: OnceLock<Arc<Mutex<HashMap<String, ClientSubscriber>>>> = OnceLock::new();
 
 static CLIENT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLIENT_SESSION_GEN: AtomicU32 = AtomicU32::new(0);
@@ -102,7 +102,7 @@ fn pending_approval_store() -> &'static Mutex<Option<PendingApprovalRequest>> {
     PENDING_APPROVAL.get_or_init(|| Mutex::new(None))
 }
 
-fn host_subscribers_store() -> &'static Arc<Mutex<HashMap<SocketAddr, ClientSubscriber>>> {
+fn host_subscribers_store() -> &'static Arc<Mutex<HashMap<String, ClientSubscriber>>> {
     HOST_SUBSCRIBERS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
@@ -120,38 +120,49 @@ pub fn respond_to_pending_approval(approved: bool) {
         }
     };
 
-    if let Some(pending) = req {
-        if let Ok(mut map) = host_subscribers_store().lock() {
-            if let Some(sub) = map.get_mut(&pending.client_addr) {
+    if let Ok(mut map) = host_subscribers_store().lock() {
+        let now = Instant::now();
+        for (key, sub) in map.iter_mut() {
+            let matches_req = req
+                .as_ref()
+                .map(|r| &r.client_key == key || r.client_id == sub.client_id)
+                .unwrap_or(false);
+            if matches_req || sub.auth_state == AuthState::Pending {
                 if approved {
                     sub.auth_state = AuthState::Approved;
-                    sub.last_seen = Instant::now();
-                    info!(
-                        "✅ Host user APPROVED incoming session from {} ({})",
-                        pending.client_id, pending.client_addr
-                    );
-                    #[cfg(target_os = "windows")]
-                    crate::windows::ui::append_status_log(&format!(
-                        "✅ Approved remote session for ID: {}",
-                        pending.client_id
-                    ));
+                    sub.last_seen = now;
                 } else {
-                    sub.auth_state = AuthState::Declined(Instant::now());
-                    info!(
-                        "❌ Host user DECLINED incoming session from {} ({})",
-                        pending.client_id, pending.client_addr
-                    );
-                    #[cfg(target_os = "windows")]
-                    crate::windows::ui::append_status_log(&format!(
-                        "🚫 Declined connection request from ID: {}",
-                        pending.client_id
-                    ));
+                    sub.auth_state = AuthState::Declined(now);
                 }
             }
         }
-        #[cfg(target_os = "windows")]
-        crate::windows::ui::request_main_redraw();
     }
+
+    if let Some(pending) = req {
+        if approved {
+            info!(
+                "✅ Host user APPROVED incoming session from {}",
+                pending.client_id
+            );
+            #[cfg(target_os = "windows")]
+            crate::windows::ui::append_status_log(&format!(
+                "✅ Approved remote session for ID: {}",
+                pending.client_id
+            ));
+        } else {
+            info!(
+                "❌ Host user DECLINED incoming session from {}",
+                pending.client_id
+            );
+            #[cfg(target_os = "windows")]
+            crate::windows::ui::append_status_log(&format!(
+                "🚫 Declined connection request from ID: {}",
+                pending.client_id
+            ));
+        }
+    }
+    #[cfg(target_os = "windows")]
+    crate::windows::ui::request_main_redraw();
 }
 
 pub fn get_latest_remote_frame() -> Option<Arc<RemoteFrame>> {
@@ -316,8 +327,10 @@ fn wrap_relay_packet(target_id_norm: &str, from_id_norm: &str, inner: &[u8]) -> 
 
 #[derive(Clone)]
 struct ClientSubscriber {
-    addr: SocketAddr,
     client_id: String,
+    direct_addr: Option<SocketAddr>,
+    last_direct_seen: Option<Instant>,
+    via_relay_id: Option<String>,
     auth_state: AuthState,
     last_seen: Instant,
     target_fps: u32,
@@ -325,7 +338,6 @@ struct ClientSubscriber {
     jpeg_quality: u8,
     scale_pct: u8,
     chroma_444: bool,
-    via_relay_id: Option<String>,
 }
 
 struct PartialFrame {
@@ -434,6 +446,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             }
 
             let mut peer_addr: Option<SocketAddr> = None;
+            let mut direct_verified = false;
+            let mut host_contacted = false;
             let mut buf = vec![0u8; 65536];
             let mut partial_frame: Option<PartialFrame> = None;
             let mut highest_decoded_frame: u32 = 0;
@@ -442,7 +456,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut last_hello = Instant::now() - Duration::from_secs(10);
             let mut last_matchmaker_retry = Instant::now();
             let mut received_any_frame = false;
-            let mut host_contacted = false;
 
             // Dynamic Adaptive Bitrate (ABR) telemetry state
             let mut abr_window_start = Instant::now();
@@ -487,9 +500,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     abr_frames_dropped = 0;
                 }
 
-                // Retry ConnectRequest every 1.2s while peer_addr is not yet resolved
-                if peer_addr.is_none() && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200) {
-                    if session_start.elapsed() > Duration::from_secs(12) {
+                // Retry ConnectRequest every 1.2s while host has not been contacted yet
+                if !host_contacted
+                    && peer_addr.is_none()
+                    && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200)
+                {
+                    if session_start.elapsed() > Duration::from_secs(15) {
                         let msg = format!(
                             "Timed out connecting to Desky ID '{}'",
                             display_target
@@ -507,7 +523,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                 // Periodically send ClientHello / KeepAlive with ABR quality parameters & client ID
                 let hello_interval = if received_any_frame {
-                    Duration::from_millis(450)
+                    Duration::from_millis(380)
                 } else {
                     Duration::from_millis(180)
                 };
@@ -533,7 +549,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         let _ = socket.send_to(&hello, p_addr).await;
                     }
 
-                    if !host_contacted && session_start.elapsed() >= Duration::from_millis(800) {
+                    // Keep sending via VDS relay whenever direct P2P has not been verified!
+                    if !direct_verified && session_start.elapsed() >= Duration::from_millis(500) {
                         if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &hello) {
                             let _ = socket.send_to(&relayed, server_addr).await;
                         }
@@ -558,10 +575,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             pkt.push(PKT_INPUT_EVENT);
                             pkt.extend_from_slice(&ev_bytes);
 
-                            if let Some(p_addr) = peer_addr {
-                                let _ = socket.send_to(&pkt, p_addr).await;
-                            } else if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &pkt) {
-                                let _ = socket.send_to(&relayed, server_addr).await;
+                            if direct_verified {
+                                if let Some(p_addr) = peer_addr {
+                                    let _ = socket.send_to(&pkt, p_addr).await;
+                                }
+                            } else {
+                                if let Some(p_addr) = peer_addr {
+                                    let _ = socket.send_to(&pkt, p_addr).await;
+                                }
+                                if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &pkt) {
+                                    let _ = socket.send_to(&relayed, server_addr).await;
+                                }
                             }
                         }
                     }
@@ -586,6 +610,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 host_contacted = true;
                                 if !is_relayed {
                                     peer_addr = Some(from_addr);
+                                    direct_verified = true;
                                 }
 
                                 match pkt_type {
@@ -692,7 +717,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                                             if pf.received_count == pf.total_chunks {
                                                 let mut jpeg_data = Vec::with_capacity(
-                                                    (pf.total_chunks as usize) * 1300,
+                                                    (pf.total_chunks as usize) * 1240,
                                                 );
                                                 for c in pf.chunks.iter().flatten() {
                                                     jpeg_data.extend_from_slice(c);
@@ -770,6 +795,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     SignalMsg::Punch { .. } | SignalMsg::PunchAck => {
                                         if !is_relayed {
                                             peer_addr = Some(from_addr);
+                                            direct_verified = true;
                                             let ack = SignalMsg::PunchAck;
                                             if let Ok(abytes) = serde_json::to_vec(&ack) {
                                                 let _ = socket.send_to(&abytes, from_addr).await;
@@ -800,6 +826,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 disc.extend_from_slice(MAGIC_DSKY);
                 disc.push(PKT_DISCONNECT);
                 let _ = socket.send_to(&disc, p_addr).await;
+            }
+            if let Some(relayed) = wrap_relay_packet(&norm_target, &my_id_padded, &[b'D', b'S', b'K', b'Y', PKT_DISCONNECT]) {
+                let _ = socket.send_to(&relayed, server_addr).await;
             }
         });
     });
@@ -840,22 +869,6 @@ fn decode_jpeg_to_bgra(
     })
 }
 
-/// Fast 256-point stride hash to skip re-encoding identical static frames
-fn compute_quick_frame_hash(bgra: &[u8]) -> u64 {
-    if bgra.is_empty() {
-        return 0;
-    }
-    let step = (bgra.len() / 256).max(4);
-    let mut hash: u64 = 0xcbf29ce484222325;
-    let mut idx = 0;
-    while idx < bgra.len() {
-        hash ^= bgra[idx] as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-        idx += step;
-    }
-    hash
-}
-
 pub struct P2PManager {
     machine_id: String,
     cached_id: Option<String>,
@@ -894,25 +907,10 @@ impl P2PManager {
             };
 
             rt.block_on(async move {
-                let std_sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to bind local UDP socket for P2P: {:?}", e);
-                        return;
-                    }
-                };
-                let std_sock_streamer = match std_sock.try_clone() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to clone UDP socket for streamer: {:?}", e);
-                        return;
-                    }
-                };
-                let _ = std_sock.set_nonblocking(true);
-                let socket = match UdpSocket::from_std(std_sock) {
+                let socket = match UdpSocket::bind("0.0.0.0:0").await {
                     Ok(s) => Arc::new(s),
                     Err(e) => {
-                        error!("Failed to wrap UDP socket in Tokio: {:?}", e);
+                        error!("Failed to bind local UDP socket for P2P: {:?}", e);
                         return;
                     }
                 };
@@ -971,135 +969,156 @@ impl P2PManager {
                     });
                 }
 
-                // Dedicated Zero-Queue Host Screen Capture & Direct UDP Streamer Thread
+                // Dedicated Host Screen Capture & Streamer Thread (with its own async socket sender)
                 {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
                     let id_stream = Arc::clone(&current_id);
+                    let socket_stream = Arc::clone(&socket);
 
                     std::thread::spawn(move || {
-                        let mut frame_id: u32 = 1;
-                        let mut jpeg_buf: Vec<u8> = Vec::with_capacity(131072);
-                        let mut last_frame_hash: u64 = 0;
-                        let mut last_sent_instant = Instant::now() - Duration::from_secs(10);
-
-                        while running_stream.load(Ordering::Relaxed) {
-                            let loop_start = Instant::now();
-
-                            // Only stream to APPROVED subscribers!
-                            let subscribers: Vec<ClientSubscriber> = {
-                                if let Ok(mut map) = clients_stream.lock() {
-                                    map.retain(|_, sub| sub.last_seen.elapsed() < Duration::from_secs(15));
-                                    map.values()
-                                        .filter(|s| s.auth_state == AuthState::Approved)
-                                        .cloned()
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                }
-                            };
-
-                            if subscribers.is_empty() {
-                                std::thread::sleep(Duration::from_millis(25));
-                                continue;
+                        let stream_rt = match tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                        {
+                            Ok(r) => r,
+                            Err(e) => {
+                                error!("Failed to build streamer Tokio runtime: {:?}", e);
+                                return;
                             }
+                        };
 
-                            let max_fps = subscribers
-                                .iter()
-                                .map(|s| s.target_fps)
-                                .max()
-                                .unwrap_or(60)
-                                .clamp(15, 60);
-                            let cap_cursor = subscribers.iter().any(|s| s.capture_cursor);
-                            let jpeg_quality = subscribers
-                                .iter()
-                                .map(|s| s.jpeg_quality)
-                                .max()
-                                .unwrap_or(80)
-                                .clamp(40, 95);
-                            let scale_pct = subscribers
-                                .iter()
-                                .map(|s| s.scale_pct)
-                                .max()
-                                .unwrap_or(100)
-                                .clamp(50, 100);
-                            let use_chroma_444 = subscribers.iter().any(|s| s.chroma_444);
+                        stream_rt.block_on(async move {
+                            let mut frame_id: u32 = 1;
+                            let mut jpeg_buf: Vec<u8> = Vec::with_capacity(131072);
 
-                            #[cfg(target_os = "windows")]
-                            let cap_res = crate::windows::capture::capture_screen_frame(cap_cursor, scale_pct);
-                            #[cfg(target_os = "linux")]
-                            let cap_res = crate::linux::capture::capture_screen_frame(cap_cursor, scale_pct);
+                            while running_stream.load(Ordering::Relaxed) {
+                                let loop_start = Instant::now();
 
-                            if let Ok((orig_w, orig_h, cap_w, cap_h, bgra)) = cap_res {
-                                let cur_hash = compute_quick_frame_hash(&bgra);
-                                if cur_hash == last_frame_hash
-                                    && last_sent_instant.elapsed() < Duration::from_millis(250)
-                                {
-                                    std::thread::sleep(Duration::from_millis(6));
+                                // Only stream to APPROVED subscribers!
+                                let subscribers: Vec<ClientSubscriber> = {
+                                    if let Ok(mut map) = clients_stream.lock() {
+                                        map.retain(|_, sub| sub.last_seen.elapsed() < Duration::from_secs(20));
+                                        map.values()
+                                            .filter(|s| s.auth_state == AuthState::Approved)
+                                            .cloned()
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    }
+                                };
+
+                                if subscribers.is_empty() {
+                                    std::thread::sleep(Duration::from_millis(15));
                                     continue;
                                 }
-                                last_frame_hash = cur_hash;
-                                last_sent_instant = Instant::now();
 
-                                jpeg_buf.clear();
-                                let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality);
-                                encoder.set_sampling_factor(if use_chroma_444 {
-                                    jpeg_encoder::SamplingFactor::R_4_4_4
-                                } else {
-                                    jpeg_encoder::SamplingFactor::R_4_2_0
-                                });
+                                let max_fps = subscribers
+                                    .iter()
+                                    .map(|s| s.target_fps)
+                                    .max()
+                                    .unwrap_or(60)
+                                    .clamp(15, 60);
+                                let cap_cursor = subscribers.iter().any(|s| s.capture_cursor);
+                                let jpeg_quality = subscribers
+                                    .iter()
+                                    .map(|s| s.jpeg_quality)
+                                    .max()
+                                    .unwrap_or(80)
+                                    .clamp(40, 95);
+                                let scale_pct = subscribers
+                                    .iter()
+                                    .map(|s| s.scale_pct)
+                                    .max()
+                                    .unwrap_or(100)
+                                    .clamp(50, 100);
+                                let use_chroma_444 = subscribers.iter().any(|s| s.chroma_444);
 
-                                if encoder
-                                    .encode(
-                                        &bgra,
-                                        cap_w as u16,
-                                        cap_h as u16,
-                                        jpeg_encoder::ColorType::Bgra,
-                                    )
-                                    .is_ok()
-                                {
-                                    let chunk_size = 1340usize;
-                                    let total_chunks = ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
+                                #[cfg(target_os = "windows")]
+                                let cap_res = crate::windows::capture::capture_screen_frame(cap_cursor, scale_pct);
+                                #[cfg(target_os = "linux")]
+                                let cap_res = crate::linux::capture::capture_screen_frame(cap_cursor, scale_pct);
 
-                                    if total_chunks <= 2048 {
-                                        let my_norm_id = normalize_id(&id_stream.blocking_read());
+                                if let Ok((orig_w, orig_h, cap_w, cap_h, bgra)) = cap_res {
+                                    jpeg_buf.clear();
+                                    let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality);
+                                    encoder.set_sampling_factor(if use_chroma_444 {
+                                        jpeg_encoder::SamplingFactor::R_4_4_4
+                                    } else {
+                                        jpeg_encoder::SamplingFactor::R_4_2_0
+                                    });
 
-                                        for (idx, chunk) in jpeg_buf.chunks(chunk_size).enumerate() {
-                                            let mut pkt = Vec::with_capacity(17 + chunk.len());
-                                            pkt.extend_from_slice(MAGIC_DSKY);
-                                            pkt.push(PKT_FRAME_CHUNK);
-                                            pkt.extend_from_slice(&frame_id.to_le_bytes());
-                                            pkt.extend_from_slice(&(idx as u16).to_le_bytes());
-                                            pkt.extend_from_slice(&(total_chunks as u16).to_le_bytes());
-                                            pkt.extend_from_slice(&(orig_w as u16).to_le_bytes());
-                                            pkt.extend_from_slice(&(orig_h as u16).to_le_bytes());
-                                            pkt.extend_from_slice(chunk);
+                                    if encoder
+                                        .encode(
+                                            &bgra,
+                                            cap_w as u16,
+                                            cap_h as u16,
+                                            jpeg_encoder::ColorType::Bgra,
+                                        )
+                                        .is_ok()
+                                    {
+                                        let chunk_size = 1240usize;
+                                        let total_chunks = ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
 
-                                            for sub in &subscribers {
-                                                if let Some(relay_client_id) = &sub.via_relay_id {
-                                                    if let Some(relayed) = wrap_relay_packet(
-                                                        relay_client_id,
-                                                        &my_norm_id,
-                                                        &pkt,
-                                                    ) {
-                                                        let _ = std_sock_streamer.send_to(&relayed, target_server);
+                                        if total_chunks <= 2048 {
+                                            let my_norm_id = normalize_id(&id_stream.read().await);
+
+                                            for (idx, chunk) in jpeg_buf.chunks(chunk_size).enumerate() {
+                                                let mut pkt = Vec::with_capacity(17 + chunk.len());
+                                                pkt.extend_from_slice(MAGIC_DSKY);
+                                                pkt.push(PKT_FRAME_CHUNK);
+                                                pkt.extend_from_slice(&frame_id.to_le_bytes());
+                                                pkt.extend_from_slice(&(idx as u16).to_le_bytes());
+                                                pkt.extend_from_slice(&(total_chunks as u16).to_le_bytes());
+                                                pkt.extend_from_slice(&(orig_w as u16).to_le_bytes());
+                                                pkt.extend_from_slice(&(orig_h as u16).to_le_bytes());
+                                                pkt.extend_from_slice(chunk);
+
+                                                for sub in &subscribers {
+                                                    let use_direct = sub.direct_addr.is_some()
+                                                        && sub
+                                                            .last_direct_seen
+                                                            .map(|t| t.elapsed() < Duration::from_secs(5))
+                                                            .unwrap_or(false);
+
+                                                    if use_direct {
+                                                        if let Some(d_addr) = sub.direct_addr {
+                                                            let _ = socket_stream.send_to(&pkt, d_addr).await;
+                                                        }
+                                                    } else if let Some(ref relay_client_id) = sub.via_relay_id {
+                                                        if let Some(relayed) = wrap_relay_packet(
+                                                            relay_client_id,
+                                                            &my_norm_id,
+                                                            &pkt,
+                                                        ) {
+                                                            let _ = socket_stream.send_to(&relayed, target_server).await;
+                                                        }
+                                                    } else if let Some(d_addr) = sub.direct_addr {
+                                                        let _ = socket_stream.send_to(&pkt, d_addr).await;
                                                     }
-                                                } else {
-                                                    let _ = std_sock_streamer.send_to(&pkt, sub.addr);
+                                                }
+
+                                                // Precision micro-pacing (100µs every 12 chunks = <0.8ms per frame)
+                                                // Avoids OS/router UDP burst overflow without 15.6ms timer sleep!
+                                                if (idx + 1) % 12 == 0 {
+                                                    let t_pace = Instant::now();
+                                                    while t_pace.elapsed() < Duration::from_micros(100) {
+                                                        std::hint::spin_loop();
+                                                    }
                                                 }
                                             }
+                                            frame_id = frame_id.wrapping_add(1).max(1);
                                         }
-                                        frame_id = frame_id.wrapping_add(1).max(1);
                                     }
                                 }
-                            }
 
-                            let target_frame_time = Duration::from_micros(1_000_000 / max_fps as u64);
-                            let elapsed = loop_start.elapsed();
-                            if elapsed < target_frame_time {
-                                std::thread::sleep(target_frame_time - elapsed);
+                                let target_frame_time = Duration::from_micros(1_000_000 / max_fps as u64);
+                                let elapsed = loop_start.elapsed();
+                                if elapsed < target_frame_time {
+                                    std::thread::sleep(target_frame_time - elapsed);
+                                }
                             }
-                        }
+                        });
                     });
                 }
 
@@ -1138,29 +1157,45 @@ impl P2PManager {
                                     } else {
                                         relay_from_id.clone().unwrap_or_default()
                                     };
+                                    let norm_cid = normalize_id(&raw_cid);
+                                    let client_key = if !norm_cid.is_empty() && norm_cid != "000000000" {
+                                        norm_cid
+                                    } else {
+                                        from_addr.to_string()
+                                    };
                                     let client_id_disp = format_id_display(&raw_cid);
 
                                     let mut need_ui_prompt = false;
                                     let auth_status_byte = {
                                         if let Ok(mut map) = clients_recv.lock() {
-                                            // Reset expired declines after 8 seconds so user can retry connecting
-                                            if let Some(existing) = map.get_mut(&from_addr) {
+                                            // Reset expired declines after 4 seconds so user can retry connecting
+                                            if let Some(existing) = map.get_mut(&client_key) {
                                                 if let AuthState::Declined(when) = existing.auth_state {
                                                     if when.elapsed() > Duration::from_secs(4) {
-                                                        map.remove(&from_addr);
+                                                        map.remove(&client_key);
                                                     }
                                                 }
                                             }
 
-                                            let entry = map.entry(from_addr).or_insert_with(|| {
+                                            let entry = map.entry(client_key.clone()).or_insert_with(|| {
                                                 info!(
                                                     "🔔 [HOST APPROVAL] Incoming connection request from {} ({})",
                                                     client_id_disp, from_addr
                                                 );
                                                 need_ui_prompt = true;
                                                 ClientSubscriber {
-                                                    addr: from_addr,
                                                     client_id: client_id_disp.clone(),
+                                                    direct_addr: if relay_from_id.is_none() {
+                                                        Some(from_addr)
+                                                    } else {
+                                                        None
+                                                    },
+                                                    last_direct_seen: if relay_from_id.is_none() {
+                                                        Some(Instant::now())
+                                                    } else {
+                                                        None
+                                                    },
+                                                    via_relay_id: relay_from_id.clone(),
                                                     auth_state: AuthState::Pending,
                                                     last_seen: Instant::now(),
                                                     target_fps: fps,
@@ -1168,7 +1203,6 @@ impl P2PManager {
                                                     jpeg_quality: q_val,
                                                     scale_pct: sc_val,
                                                     chroma_444: c444,
-                                                    via_relay_id: relay_from_id.clone(),
                                                 }
                                             });
                                             entry.last_seen = Instant::now();
@@ -1177,8 +1211,11 @@ impl P2PManager {
                                             entry.jpeg_quality = q_val;
                                             entry.scale_pct = sc_val;
                                             entry.chroma_444 = c444;
-                                            if relay_from_id.is_some() {
-                                                entry.via_relay_id = relay_from_id.clone();
+                                            if let Some(ref rid) = relay_from_id {
+                                                entry.via_relay_id = Some(rid.clone());
+                                            } else {
+                                                entry.direct_addr = Some(from_addr);
+                                                entry.last_direct_seen = Some(Instant::now());
                                             }
 
                                             match entry.auth_state {
@@ -1194,7 +1231,7 @@ impl P2PManager {
                                     if need_ui_prompt {
                                         if let Ok(mut pg) = pending_approval_store().lock() {
                                             *pg = Some(PendingApprovalRequest {
-                                                client_addr: from_addr,
+                                                client_key: client_key.clone(),
                                                 client_id: client_id_disp.clone(),
                                             });
                                         }
@@ -1243,15 +1280,29 @@ impl P2PManager {
                                     }
                                 }
                                 PKT_INPUT_EVENT => {
-                                    // Only inject input if the client has been APPROVED by the host user!
+                                    // Inject input if any approved subscriber matches this peer or relay
                                     let is_approved = {
                                         if let Ok(mut map) = clients_recv.lock() {
-                                            if let Some(sub) = map.get_mut(&from_addr) {
-                                                sub.last_seen = Instant::now();
-                                                sub.auth_state == AuthState::Approved
-                                            } else {
-                                                false
+                                            let mut approved = false;
+                                            for (k, sub) in map.iter_mut() {
+                                                let match_direct = sub.direct_addr == Some(from_addr);
+                                                let match_relay = relay_from_id
+                                                    .as_ref()
+                                                    .map(|rid| {
+                                                        normalize_id(rid) == *k
+                                                            || sub.via_relay_id.as_ref() == Some(rid)
+                                                    })
+                                                    .unwrap_or(false);
+                                                if match_direct || match_relay || sub.auth_state == AuthState::Approved {
+                                                    if match_direct || match_relay {
+                                                        sub.last_seen = Instant::now();
+                                                    }
+                                                    if sub.auth_state == AuthState::Approved {
+                                                        approved = true;
+                                                    }
+                                                }
                                             }
+                                            approved
                                         } else {
                                             false
                                         }
@@ -1264,12 +1315,15 @@ impl P2PManager {
                                 }
                                 PKT_DISCONNECT => {
                                     if let Ok(mut map) = clients_recv.lock() {
-                                        map.remove(&from_addr);
+                                        if let Some(ref rid) = relay_from_id {
+                                            let k = normalize_id(rid);
+                                            map.remove(&k);
+                                        } else {
+                                            map.retain(|_, sub| sub.direct_addr != Some(from_addr));
+                                        }
                                     }
                                     if let Ok(mut pg) = pending_approval_store().lock() {
-                                        if pg.as_ref().map(|p| p.client_addr) == Some(from_addr) {
-                                            *pg = None;
-                                        }
+                                        *pg = None;
                                     }
                                     #[cfg(target_os = "windows")]
                                     crate::windows::ui::request_main_redraw();
