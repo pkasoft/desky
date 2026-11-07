@@ -10,12 +10,11 @@ use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POI
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
-    CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetStockObject,
-    InvalidateRect, ReleaseDC, RoundRect, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
-    SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER,
-    BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD,
-    FW_NORMAL, FW_SEMIBOLD, HALFTONE, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID,
-    SRCCOPY, TRANSPARENT,
+    CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, InvalidateRect,
+    ReleaseDC, RoundRect, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetBrushOrgEx,
+    SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD,
+    HALFTONE, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -28,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow,
     SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
     CURSORINFO, CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE, SWP_NOZORDER,
-    SW_HIDE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CREATE,
+    SW_HIDE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE,
     WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW,
@@ -41,7 +40,6 @@ const PK_CARD: COLORREF = COLORREF(0x00FFFFFF);        // #ffffff (pure crisp wh
 const PK_CARD_BORDER: COLORREF = COLORREF(0x00E3E7E2); // #e2e7e3 (--line border)
 const PK_GREEN: COLORREF = COLORREF(0x004F6A2D);       // #2d6a4f (--green signature emerald)
 const PK_GREEN_DARK: COLORREF = COLORREF(0x0032431B);  // #1b4332 (--green-dark pine hover)
-const _PK_GREEN_LIGHT: COLORREF = COLORREF(0x0088B752); // #52b788 (mint accent)
 const PK_GREEN_TINT: COLORREF = COLORREF(0x00EEF5F0);  // #f0f5ee (subtle green pill fill)
 const PK_TEXT: COLORREF = COLORREF(0x0020241D);        // #1d2420 (--ink deep crisp charcoal)
 const PK_MUTED: COLORREF = COLORREF(0x00636A5D);       // #5d6a63 (--muted slate sage)
@@ -50,10 +48,6 @@ const PK_BTN_HOVER: COLORREF = COLORREF(0x00E5EDE7);   // #e7ede5 (hover outline
 const PK_RED: COLORREF = COLORREF(0x003030C5);         // #c53030 (crimson decline button)
 
 // Control IDs
-#[allow(dead_code)]
-const ID_BTN_COPY_CODE: usize = 1001;
-#[allow(dead_code)]
-const ID_BTN_CONNECT: usize = 1002;
 const ID_EDIT_TARGET_CODE: usize = 1003;
 
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -267,9 +261,7 @@ fn get_responsive_layout(w: i32, h: i32) -> ResponsiveLayout {
     }
 }
 
-pub struct NativeWin32App {
-    pub hwnd: HWND,
-}
+pub struct NativeWin32App;
 
 impl NativeWin32App {
     pub fn new() -> Result<Self> {
@@ -345,7 +337,7 @@ impl NativeWin32App {
 
             info!("Native Win32 Launcher Window spawned successfully (HWND: {:?})", hwnd);
 
-            Ok(Self { hwnd })
+            Ok(Self)
         }
     }
 

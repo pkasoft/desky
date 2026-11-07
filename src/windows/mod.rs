@@ -2,7 +2,7 @@ pub mod capture;
 pub mod input;
 pub mod ui;
 
-pub use ui::{set_assigned_desky_id, NativeWin32App};
+pub use ui::set_assigned_desky_id;
 
 pub fn run() -> anyhow::Result<()> {
     let ident = crate::identity::load_or_create_identity();
