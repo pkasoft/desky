@@ -15,8 +15,8 @@ use windows::Win32::Graphics::Dxgi::{
 };
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    COLORONCOLOR, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+    ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt, BITMAPINFO,
+    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING,
@@ -88,18 +88,23 @@ pub fn diagnose_dxgi() -> Result<()> {
 }
 
 /// Captures the local Windows desktop screen into a top-down BGRA pixel buffer.
+/// `scale_pct` (50..=100) controls capture resolution relative to native desktop size.
 /// Returns `(orig_width, orig_height, capture_width, capture_height, bgra_bytes)`.
-pub fn capture_screen_frame(capture_cursor: bool) -> Result<(u32, u32, u32, u32, Vec<u8>)> {
+pub fn capture_screen_frame(
+    capture_cursor: bool,
+    scale_pct: u8,
+) -> Result<(u32, u32, u32, u32, Vec<u8>)> {
     unsafe {
         let orig_w = GetSystemMetrics(SM_CXSCREEN).max(1);
         let orig_h = GetSystemMetrics(SM_CYSCREEN).max(1);
 
-        let (cap_w, cap_h) = if orig_w > 1280 {
-            let cw = 1280;
-            let ch = ((orig_h * 1280) / orig_w).max(2) & !1;
-            (cw, ch)
-        } else {
+        let clamped_scale = (scale_pct as i32).clamp(50, 100);
+        let (cap_w, cap_h) = if clamped_scale >= 100 {
             (orig_w, orig_h)
+        } else {
+            let cw = ((orig_w * clamped_scale) / 100).max(2) & !1;
+            let ch = ((orig_h * clamped_scale) / 100).max(2) & !1;
+            (cw, ch)
         };
 
         let hdc_screen = GetDC(None);
@@ -114,7 +119,9 @@ pub fn capture_screen_frame(capture_cursor: bool) -> Result<(u32, u32, u32, u32,
         if cap_w == orig_w && cap_h == orig_h {
             let _ = BitBlt(mem_dc, 0, 0, cap_w, cap_h, Some(hdc_screen), 0, 0, SRCCOPY);
         } else {
-            let _ = SetStretchBltMode(mem_dc, COLORONCOLOR);
+            // HALFTONE interpolation preserves crisp text anti-aliasing when downscaling
+            let _ = SetStretchBltMode(mem_dc, HALFTONE);
+            let _ = SetBrushOrgEx(mem_dc, 0, 0, None);
             let _ = StretchBlt(
                 mem_dc,
                 0,

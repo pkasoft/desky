@@ -1,7 +1,7 @@
 use crate::protocol::{InputEvent, SignalMsg};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
@@ -41,9 +41,23 @@ static INPUT_QUEUE: OnceLock<Mutex<Vec<InputEvent>>> = OnceLock::new();
 
 static CLIENT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLIENT_SESSION_GEN: AtomicU32 = AtomicU32::new(0);
-static CLIENT_TARGET_FPS: AtomicU32 = AtomicU32::new(30);
+static CLIENT_TARGET_FPS: AtomicU32 = AtomicU32::new(60);
 static CLIENT_CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
+
+// Quality / Bitrate Mode:
+// 0 = Auto Adaptive (ABR based on network speed & loss)
+// 1 = Ultra Text (100% Native, Q92, 4:4:4 Chroma)
+// 2 = High Clarity (100% Native, Q84, 4:4:4 Chroma)
+// 3 = Balanced (85% Scale, Q76, 4:4:4 Chroma)
+// 4 = Low Data / Fast (70% Scale, Q62, 4:2:0 Chroma)
+static QUALITY_MODE: AtomicU8 = AtomicU8::new(0);
+
+// Live active encoding parameters & network telemetry
+static ACTIVE_JPEG_QUALITY: AtomicU8 = AtomicU8::new(86);
+static ACTIVE_SCALE_PCT: AtomicU8 = AtomicU8::new(100);
+static ACTIVE_CHROMA_444: AtomicBool = AtomicBool::new(true);
 static SESSION_RTT_MS: AtomicU32 = AtomicU32::new(0);
+static SESSION_BITRATE_KBPS: AtomicU32 = AtomicU32::new(0);
 
 fn frame_store() -> &'static Mutex<Option<Arc<RemoteFrame>>> {
     LATEST_REMOTE_FRAME.get_or_init(|| Mutex::new(None))
@@ -78,6 +92,63 @@ pub fn get_session_rtt_ms() -> u32 {
     SESSION_RTT_MS.load(Ordering::Relaxed)
 }
 
+pub fn get_session_bitrate_kbps() -> u32 {
+    SESSION_BITRATE_KBPS.load(Ordering::Relaxed)
+}
+
+pub fn get_quality_mode() -> u8 {
+    QUALITY_MODE.load(Ordering::Relaxed)
+}
+
+pub fn set_quality_mode(mode: u8) {
+    let clamped = mode.min(4);
+    QUALITY_MODE.store(clamped, Ordering::Relaxed);
+    apply_preset_for_mode(clamped);
+}
+
+pub fn get_active_quality_params() -> (u8, u8, bool) {
+    (
+        ACTIVE_JPEG_QUALITY.load(Ordering::Relaxed),
+        ACTIVE_SCALE_PCT.load(Ordering::Relaxed),
+        ACTIVE_CHROMA_444.load(Ordering::Relaxed),
+    )
+}
+
+fn apply_preset_for_mode(mode: u8) {
+    match mode {
+        1 => {
+            // Ultra Text
+            ACTIVE_JPEG_QUALITY.store(92, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
+            ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
+        }
+        2 => {
+            // High Clarity
+            ACTIVE_JPEG_QUALITY.store(84, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
+            ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
+        }
+        3 => {
+            // Balanced
+            ACTIVE_JPEG_QUALITY.store(76, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(85, Ordering::Relaxed);
+            ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
+        }
+        4 => {
+            // Low Data / Speed
+            ACTIVE_JPEG_QUALITY.store(62, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(70, Ordering::Relaxed);
+            ACTIVE_CHROMA_444.store(false, Ordering::Relaxed);
+        }
+        _ => {
+            // Auto Adaptive initial baseline: sharp 100% native 4:4:4
+            ACTIVE_JPEG_QUALITY.store(86, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
+            ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 pub fn update_client_preferences(target_fps: u32, capture_cursor: bool) {
     CLIENT_TARGET_FPS.store(target_fps.clamp(10, 60), Ordering::Relaxed);
     CLIENT_CAPTURE_CURSOR.store(capture_cursor, Ordering::Relaxed);
@@ -88,7 +159,6 @@ pub fn send_remote_input(event: InputEvent) {
         return;
     }
     if let Ok(mut q) = input_store().lock() {
-        // Coalesce excessive MouseMove events so queue stays ultra-responsive
         if matches!(event, InputEvent::MouseMove { .. }) {
             if let Some(last) = q.last_mut() {
                 if matches!(last, InputEvent::MouseMove { .. }) {
@@ -112,6 +182,7 @@ pub fn stop_client_session() {
     if let Ok(mut q) = input_store().lock() {
         q.clear();
     }
+    SESSION_BITRATE_KBPS.store(0, Ordering::Relaxed);
     set_session_status(SessionStatus::Idle);
 }
 
@@ -152,6 +223,9 @@ struct ClientSubscriber {
     last_seen: Instant,
     target_fps: u32,
     capture_cursor: bool,
+    jpeg_quality: u8,
+    scale_pct: u8,
+    chroma_444: bool,
     via_relay_id: Option<String>,
 }
 
@@ -187,7 +261,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
     }
 
     update_client_preferences(initial_fps, capture_cursor);
+    apply_preset_for_mode(QUALITY_MODE.load(Ordering::Relaxed));
     SESSION_RTT_MS.store(0, Ordering::Relaxed);
+    SESSION_BITRATE_KBPS.store(0, Ordering::Relaxed);
     set_session_status(SessionStatus::Connecting(display_target.clone()));
 
     let my_gen = CLIENT_SESSION_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
@@ -261,9 +337,51 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut last_matchmaker_retry = Instant::now();
             let mut received_any_frame = false;
 
+            // Dynamic Adaptive Bitrate (ABR) telemetry state
+            let mut abr_window_start = Instant::now();
+            let mut abr_bytes_received: u64 = 0;
+            let mut abr_frames_completed: u32 = 0;
+            let mut abr_frames_dropped: u32 = 0;
+            let mut abr_tier: i32 = 3; // 0 = Low, 1 = Med, 2 = High, 3 = Ultra-Sharp, 4 = Lossless-Text
+
             while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                 && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
             {
+                // Update ABR & live bitrate telemetry every 750ms
+                let abr_elapsed = abr_window_start.elapsed();
+                if abr_elapsed >= Duration::from_millis(750) {
+                    let secs = abr_elapsed.as_secs_f64().max(0.1);
+                    let kbps = ((abr_bytes_received as f64 * 8.0) / 1000.0 / secs) as u32;
+                    SESSION_BITRATE_KBPS.store(kbps, Ordering::Relaxed);
+
+                    if QUALITY_MODE.load(Ordering::Relaxed) == 0 && received_any_frame {
+                        let rtt = SESSION_RTT_MS.load(Ordering::Relaxed);
+                        if abr_frames_dropped >= 2 || rtt > 220 {
+                            abr_tier = (abr_tier - 1).max(0);
+                        } else if abr_frames_dropped == 0 && abr_frames_completed >= 4 && rtt < 120 {
+                            abr_tier = (abr_tier + 1).min(4);
+                        }
+
+                        // Map ABR tier to (quality, scale_pct, chroma_444)
+                        // Prioritizes 100% resolution & 4:4:4 chroma so text stays legible!
+                        let (q, sc, c444) = match abr_tier {
+                            4 => (90u8, 100u8, true),
+                            3 => (84u8, 100u8, true),
+                            2 => (78u8, 100u8, true),
+                            1 => (72u8, 85u8, true),
+                            _ => (62u8, 75u8, false),
+                        };
+                        ACTIVE_JPEG_QUALITY.store(q, Ordering::Relaxed);
+                        ACTIVE_SCALE_PCT.store(sc, Ordering::Relaxed);
+                        ACTIVE_CHROMA_444.store(c444, Ordering::Relaxed);
+                    }
+
+                    abr_window_start = Instant::now();
+                    abr_bytes_received = 0;
+                    abr_frames_completed = 0;
+                    abr_frames_dropped = 0;
+                }
+
                 // Retry ConnectRequest every 1.2s while peer_addr is not yet resolved
                 if peer_addr.is_none() && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200) {
                     if session_start.elapsed() > Duration::from_secs(10) {
@@ -282,9 +400,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_matchmaker_retry = Instant::now();
                 }
 
-                // Periodically send ClientHello / KeepAlive to peer
+                // Periodically send ClientHello / KeepAlive with ABR quality parameters to peer
                 let hello_interval = if received_any_frame {
-                    Duration::from_millis(750)
+                    Duration::from_millis(500)
                 } else {
                     Duration::from_millis(200)
                 };
@@ -293,13 +411,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     let fps = CLIENT_TARGET_FPS.load(Ordering::Relaxed).clamp(10, 60) as u8;
                     let cur = if CLIENT_CAPTURE_CURSOR.load(Ordering::Relaxed) { 1u8 } else { 0u8 };
                     let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
+                    let (q_val, sc_val, c444) = get_active_quality_params();
 
-                    let mut hello = Vec::with_capacity(11);
+                    let mut hello = Vec::with_capacity(14);
                     hello.extend_from_slice(MAGIC_DSKY);
                     hello.push(PKT_CLIENT_HELLO);
                     hello.push(fps);
                     hello.push(cur);
                     hello.extend_from_slice(&ts_ms.to_le_bytes());
+                    hello.push(q_val);
+                    hello.push(sc_val);
+                    hello.push(if c444 { 1u8 } else { 0u8 });
 
                     if let Some(p_addr) = peer_addr {
                         let _ = socket.send_to(&hello, p_addr).await;
@@ -340,9 +462,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
-                // Wait up to 15ms for incoming UDP packets
-                match tokio::time::timeout(Duration::from_millis(15), socket.recv_from(&mut buf)).await {
+                // Wait up to 10ms for incoming UDP packets
+                match tokio::time::timeout(Duration::from_millis(10), socket.recv_from(&mut buf)).await {
                     Ok(Ok((len, from_addr))) => {
+                        abr_bytes_received += len as u64;
                         let mut slice = &buf[..len];
 
                         // Unwrap relay envelope if forwarded by VDS server
@@ -384,7 +507,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                                         if frame_id <= highest_decoded_frame
                                             || total_chunks == 0
-                                            || total_chunks > 512
+                                            || total_chunks > 2048
                                             || chunk_idx >= total_chunks
                                         {
                                             continue;
@@ -392,7 +515,22 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                                         let pf = match &mut partial_frame {
                                             Some(existing) if existing.frame_id == frame_id => existing,
-                                            _ => {
+                                            Some(old_incomplete) => {
+                                                if old_incomplete.received_count < old_incomplete.total_chunks {
+                                                    abr_frames_dropped += 1;
+                                                }
+                                                partial_frame = Some(PartialFrame {
+                                                    frame_id,
+                                                    total_chunks,
+                                                    orig_width,
+                                                    orig_height,
+                                                    chunks: vec![None; total_chunks as usize],
+                                                    received_count: 0,
+                                                    created_at: Instant::now(),
+                                                });
+                                                partial_frame.as_mut().unwrap()
+                                            }
+                                            None => {
                                                 partial_frame = Some(PartialFrame {
                                                     frame_id,
                                                     total_chunks,
@@ -413,7 +551,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                                         if pf.received_count == pf.total_chunks {
                                             let mut jpeg_data = Vec::with_capacity(
-                                                (pf.total_chunks as usize) * 1180,
+                                                (pf.total_chunks as usize) * 1240,
                                             );
                                             for c in pf.chunks.iter().flatten() {
                                                 jpeg_data.extend_from_slice(c);
@@ -422,6 +560,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             let orig_h = pf.orig_height as u32;
                                             highest_decoded_frame = frame_id;
                                             partial_frame = None;
+                                            abr_frames_completed += 1;
 
                                             if let Some(decoded) = decode_jpeg_to_bgra(
                                                 frame_id,
@@ -504,7 +643,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 }
 
                 if let Some(pf) = &partial_frame {
-                    if pf.created_at.elapsed() > Duration::from_millis(600) {
+                    if pf.created_at.elapsed() > Duration::from_millis(650) {
+                        abr_frames_dropped += 1;
                         partial_frame = None;
                     }
                 }
@@ -655,6 +795,9 @@ impl P2PManager {
                                                     last_seen: Instant::now(),
                                                     target_fps: 30,
                                                     capture_cursor: true,
+                                                    jpeg_quality: 86,
+                                                    scale_pct: 100,
+                                                    chroma_444: true,
                                                     via_relay_id: None,
                                                 },
                                             );
@@ -676,22 +819,28 @@ impl P2PManager {
                     let running_stream = Arc::clone(&running);
                     let id_stream = Arc::clone(&current_id);
 
-                    let (pkt_tx, mut pkt_rx) = tokio::sync::mpsc::channel::<(SocketAddr, Vec<u8>)>(512);
+                    let (pkt_tx, mut pkt_rx) = tokio::sync::mpsc::channel::<(SocketAddr, Vec<u8>)>(2048);
                     let socket_sender = Arc::clone(&socket);
                     tokio::spawn(async move {
+                        let mut burst_count = 0u32;
                         while let Some((dest, data)) = pkt_rx.recv().await {
                             let _ = socket_sender.send_to(&data, dest).await;
+                            burst_count += 1;
+                            // Micro-yield every 24 chunks so high-res 4:4:4 frames never overflow OS UDP buffers
+                            if burst_count >= 24 {
+                                burst_count = 0;
+                                tokio::time::sleep(Duration::from_micros(400)).await;
+                            }
                         }
                     });
 
                     std::thread::spawn(move || {
                         let mut frame_id: u32 = 1;
-                        let mut jpeg_buf: Vec<u8> = Vec::with_capacity(65536);
+                        let mut jpeg_buf: Vec<u8> = Vec::with_capacity(131072);
 
                         while running_stream.load(Ordering::Relaxed) {
                             let loop_start = Instant::now();
 
-                            // Snapshot active subscribers (seen within last 8 seconds)
                             let subscribers: Vec<ClientSubscriber> = {
                                 if let Ok(mut map) = clients_stream.lock() {
                                     map.retain(|_, sub| sub.last_seen.elapsed() < Duration::from_secs(8));
@@ -702,7 +851,7 @@ impl P2PManager {
                             };
 
                             if subscribers.is_empty() {
-                                std::thread::sleep(Duration::from_millis(50));
+                                std::thread::sleep(Duration::from_millis(40));
                                 continue;
                             }
 
@@ -713,15 +862,35 @@ impl P2PManager {
                                 .unwrap_or(30)
                                 .clamp(10, 60);
                             let cap_cursor = subscribers.iter().any(|s| s.capture_cursor);
+                            let jpeg_quality = subscribers
+                                .iter()
+                                .map(|s| s.jpeg_quality)
+                                .max()
+                                .unwrap_or(86)
+                                .clamp(40, 95);
+                            let scale_pct = subscribers
+                                .iter()
+                                .map(|s| s.scale_pct)
+                                .max()
+                                .unwrap_or(100)
+                                .clamp(50, 100);
+                            let use_chroma_444 = subscribers.iter().any(|s| s.chroma_444);
 
                             #[cfg(target_os = "windows")]
-                            let cap_res = crate::windows::capture::capture_screen_frame(cap_cursor);
+                            let cap_res = crate::windows::capture::capture_screen_frame(cap_cursor, scale_pct);
                             #[cfg(target_os = "linux")]
-                            let cap_res = crate::linux::capture::capture_screen_frame(cap_cursor);
+                            let cap_res = crate::linux::capture::capture_screen_frame(cap_cursor, scale_pct);
 
                             if let Ok((orig_w, orig_h, cap_w, cap_h, bgra)) = cap_res {
                                 jpeg_buf.clear();
-                                let encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, 65);
+                                let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality);
+                                // 4:4:4 chroma subsampling eliminates color bleeding on sharp UI text!
+                                encoder.set_sampling_factor(if use_chroma_444 {
+                                    jpeg_encoder::SamplingFactor::R_4_4_4
+                                } else {
+                                    jpeg_encoder::SamplingFactor::R_4_2_0
+                                });
+
                                 if encoder
                                     .encode(
                                         &bgra,
@@ -731,10 +900,10 @@ impl P2PManager {
                                     )
                                     .is_ok()
                                 {
-                                    let chunk_size = 1160usize;
+                                    let chunk_size = 1220usize;
                                     let total_chunks = ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
 
-                                    if total_chunks <= 512 {
+                                    if total_chunks <= 2048 {
                                         let my_norm_id = normalize_id(&id_stream.blocking_read());
 
                                         for (idx, chunk) in jpeg_buf.chunks(chunk_size).enumerate() {
@@ -803,6 +972,9 @@ impl P2PManager {
                                 PKT_CLIENT_HELLO => {
                                     let fps = if slice.len() > 5 { slice[5].clamp(10, 60) as u32 } else { 30 };
                                     let cur = if slice.len() > 6 { slice[6] != 0 } else { true };
+                                    let q_val = if slice.len() > 11 { slice[11].clamp(40, 95) } else { 86 };
+                                    let sc_val = if slice.len() > 12 { slice[12].clamp(50, 100) } else { 100 };
+                                    let c444 = if slice.len() > 13 { slice[13] != 0 } else { true };
 
                                     if let Ok(mut map) = clients_recv.lock() {
                                         let entry = map.entry(from_addr).or_insert_with(|| {
@@ -817,12 +989,18 @@ impl P2PManager {
                                                 last_seen: Instant::now(),
                                                 target_fps: fps,
                                                 capture_cursor: cur,
+                                                jpeg_quality: q_val,
+                                                scale_pct: sc_val,
+                                                chroma_444: c444,
                                                 via_relay_id: relay_from_id.clone(),
                                             }
                                         });
                                         entry.last_seen = Instant::now();
                                         entry.target_fps = fps;
                                         entry.capture_cursor = cur;
+                                        entry.jpeg_quality = q_val;
+                                        entry.scale_pct = sc_val;
+                                        entry.chroma_444 = c444;
                                         if relay_from_id.is_some() {
                                             entry.via_relay_id = relay_from_id.clone();
                                         }
@@ -899,6 +1077,9 @@ impl P2PManager {
                                                     last_seen: Instant::now(),
                                                     target_fps: 30,
                                                     capture_cursor: true,
+                                                    jpeg_quality: 86,
+                                                    scale_pct: 100,
+                                                    chroma_444: true,
                                                     via_relay_id: None,
                                                 },
                                             );
@@ -926,6 +1107,9 @@ impl P2PManager {
                                                 last_seen: Instant::now(),
                                                 target_fps: 30,
                                                 capture_cursor: true,
+                                                jpeg_quality: 86,
+                                                scale_pct: 100,
+                                                chroma_444: true,
                                                 via_relay_id: None,
                                             });
                                     }

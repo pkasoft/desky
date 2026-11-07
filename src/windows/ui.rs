@@ -12,9 +12,9 @@ use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
     CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetStockObject,
     InvalidateRect, ReleaseDC, RoundRect, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
-    SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    COLORONCOLOR, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
-    FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID,
+    SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD,
+    FW_NORMAL, FW_SEMIBOLD, HALFTONE, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID,
     SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::DataExchange::{
@@ -416,7 +416,7 @@ static TARGET_FPS: AtomicU32 = AtomicU32::new(60);
 // Toolbar visibility: true = shown, false = collapsed/hidden
 static SHOW_TOOLBAR: AtomicBool = AtomicBool::new(true);
 
-// Settings modal popup state
+// Full-Screen Settings Page state
 static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 
 // Remote cursor capture toggle (renders live host cursor on stream)
@@ -429,6 +429,16 @@ unsafe fn sync_remote_cursor() {
     };
     if GetCursorInfo(&mut ci).is_ok() && !ci.hCursor.is_invalid() {
         let _ = SetCursor(Some(ci.hCursor));
+    }
+}
+
+fn format_bitrate(kbps: u32) -> String {
+    if kbps >= 1000 {
+        format!("{:.1} Mbps", kbps as f32 / 1000.0)
+    } else if kbps > 0 {
+        format!("{} kbps", kbps)
+    } else {
+        "Measuring...".to_string()
     }
 }
 
@@ -547,11 +557,22 @@ unsafe fn draw_toolbar(
         1 => "↔ Fill",
         _ => "1:1 Original",
     };
-    let cursor_str = if CAPTURE_CURSOR.load(Ordering::Relaxed) { "Cursor: ON" } else { "Cursor: OFF" };
-    let badge_str = format!("{}  •  {} FPS  •  {}  •  RTT: {:?}", mode_str, fps, cursor_str, latency);
+    let q_mode_str = match crate::p2p::get_quality_mode() {
+        0 => "ABR Auto",
+        1 => "Ultra 4:4:4",
+        2 => "High",
+        3 => "Balanced",
+        _ => "Low Data",
+    };
+    let (q_val, sc_val, _) = crate::p2p::get_active_quality_params();
+    let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
+    let badge_str = format!(
+        "{}  •  {} (Q{} / {}%)  •  {}  •  {} FPS  •  RTT: {:?}",
+        mode_str, q_mode_str, q_val, sc_val, bitrate_str, fps, latency
+    );
     SetTextColor(hdc, COLORREF(0x00A0AEC0)); // Slate gray
     let mut badge_wide: Vec<u16> = badge_str.encode_utf16().collect();
-    let mut badge_rect = RECT { left: 160, top: 6, right: client_w - 225, bottom: 34 };
+    let mut badge_rect = RECT { left: 155, top: 6, right: client_w - 225, bottom: 34 };
     let _ = DrawTextW(hdc, &mut badge_wide, &mut badge_rect, DT_SINGLELINE | DT_VCENTER);
 
     // Helper closure to render buttons
@@ -585,148 +606,353 @@ unsafe fn draw_toolbar(
     draw_btn(client_w - 95, client_w - 15, "▲ Hide Bar", false);
 }
 
-unsafe fn draw_settings_modal(
+/// Renders a dedicated Full-Screen Settings Page covering the entire viewport window
+/// so the remote desktop never bleeds behind the settings UI.
+unsafe fn draw_fullscreen_settings_view(
     hdc: HDC,
     client_w: i32,
     client_h: i32,
     mode: u8,
     fps: u32,
 ) {
-    use windows::Win32::Graphics::Gdi::HGDIOBJ;
-
-    let modal_w = 460;
-    let modal_h = 370;
-    let mx = (client_w - modal_w) / 2;
-    let my = (client_h - modal_h) / 2;
-
-    // 1. Subtle dark drop-shadow outline around floating modal card (preserves live remote desktop background)
-    let shadow_brush = CreateSolidBrush(COLORREF(0x0014100E));
-    let shadow_rect = RECT {
-        left: mx - 4,
-        top: my - 4,
-        right: mx + modal_w + 4,
-        bottom: my + modal_h + 4,
+    // 1. Opaque Full-Screen Settings Canvas (#0E1311 dark slate)
+    let page_bg = CreateSolidBrush(COLORREF(0x0013110E));
+    let full_rect = RECT {
+        left: 0,
+        top: 0,
+        right: client_w,
+        bottom: client_h,
     };
-    FillRect(hdc, &shadow_rect, shadow_brush);
-    let _ = DeleteObject(HGDIOBJ(shadow_brush.0));
+    FillRect(hdc, &full_rect, page_bg);
+    let _ = DeleteObject(HGDIOBJ(page_bg.0));
 
-    // 2. Modal Card Background (#181A22)
-    let card_brush = CreateSolidBrush(COLORREF(0x00221A18));
-    let card_rect = RECT {
-        left: mx,
-        top: my,
-        right: mx + modal_w,
-        bottom: my + modal_h,
-    };
-    FillRect(hdc, &card_rect, card_brush);
-    let _ = DeleteObject(HGDIOBJ(card_brush.0));
+    let panel_w = (client_w - 64).clamp(560, 880);
+    let px = ((client_w - panel_w) / 2).max(20);
+    let py = ((client_h - 560) / 2).max(18);
 
-    // 3. Modal Outer Border (#3B4252)
-    let border_brush = CreateSolidBrush(COLORREF(0x0052423B));
-    let top_b = RECT { left: mx, top: my, right: mx + modal_w, bottom: my + 2 };
-    let bot_b = RECT { left: mx, top: my + modal_h - 2, right: mx + modal_w, bottom: my + modal_h };
-    let left_b = RECT { left: mx, top: my, right: mx + 2, bottom: my + modal_h };
-    let right_b = RECT { left: mx + modal_w - 2, top: my, right: mx + modal_w, bottom: my + modal_h };
-    FillRect(hdc, &top_b, border_brush);
-    FillRect(hdc, &bot_b, border_brush);
-    FillRect(hdc, &left_b, border_brush);
-    FillRect(hdc, &right_b, border_brush);
-    let _ = DeleteObject(HGDIOBJ(border_brush.0));
+    let font_hdr = create_segoe_font(24, FW_BOLD);
+    let font_sec = create_segoe_font(14, FW_BOLD);
+    let font_btn = create_segoe_font(15, FW_SEMIBOLD);
+    let font_info = create_segoe_font(14, FW_NORMAL);
 
     SetBkMode(hdc, TRANSPARENT);
 
-    // 4. Header: Title + [ ✕ ] Close
+    // 2. Top Page Header + [ ← Back to Stream ] button
+    let old_font = SelectObject(hdc, HGDIOBJ(font_hdr.0));
     SetTextColor(hdc, COLORREF(0x00F8FAFC));
-    let mut title_text: Vec<u16> = "⚙ Desky Session Settings".encode_utf16().collect();
-    let mut title_rect = RECT { left: mx + 20, top: my + 12, right: mx + modal_w - 50, bottom: my + 38 };
-    let _ = DrawTextW(hdc, &mut title_text, &mut title_rect, DT_SINGLELINE | DT_VCENTER);
+    let mut hdr_text: Vec<u16> = "⚙  Desky Stream & Quality Settings".encode_utf16().collect();
+    let mut hdr_rect = RECT {
+        left: px,
+        top: py,
+        right: px + panel_w - 210,
+        bottom: py + 38,
+    };
+    let _ = DrawTextW(hdc, &mut hdr_text, &mut hdr_rect, DT_SINGLELINE | DT_VCENTER);
 
-    // [ ✕ ] Button
-    let close_brush = CreateSolidBrush(COLORREF(0x00332824));
-    let close_rect = RECT { left: mx + modal_w - 38, top: my + 10, right: mx + modal_w - 12, bottom: my + 34 };
-    FillRect(hdc, &close_rect, close_brush);
-    let _ = DeleteObject(HGDIOBJ(close_brush.0));
-    SetTextColor(hdc, COLORREF(0x00CBD5E0));
-    let mut close_text: Vec<u16> = "✕".encode_utf16().collect();
-    let mut cr = close_rect;
-    let _ = DrawTextW(hdc, &mut close_text, &mut cr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    draw_rounded_box(
+        hdc,
+        px + panel_w - 200,
+        py,
+        200,
+        38,
+        COLORREF(0x004F6A2D),
+        COLORREF(0x0088B752),
+        8,
+    );
+    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+    let mut back_text: Vec<u16> = "← Back to Remote Stream".encode_utf16().collect();
+    let mut back_rect = RECT {
+        left: px + panel_w - 200,
+        top: py,
+        right: px + panel_w,
+        bottom: py + 38,
+    };
+    let _ = DrawTextW(
+        hdc,
+        &mut back_text,
+        &mut back_rect,
+        DT_SINGLELINE | DT_CENTER | DT_VCENTER,
+    );
 
-    // Header divider
-    let div_brush = CreateSolidBrush(COLORREF(0x003B3128));
-    let div_rect = RECT { left: mx + 16, top: my + 44, right: mx + modal_w - 16, bottom: my + 45 };
-    FillRect(hdc, &div_rect, div_brush);
-    let _ = DeleteObject(HGDIOBJ(div_brush.0));
-
-    // Helper for modal buttons
-    let draw_modal_btn = |left: i32, top: i32, right: i32, bottom: i32, text: &str, is_active: bool| {
-        let btn_rect = RECT { left, top, right, bottom };
-        let brush_color = if is_active {
-            COLORREF(0x007E4C2B) // Active blue/navy background
+    let draw_choice_btn = |left: i32, top: i32, right: i32, bottom: i32, text: &str, is_active: bool| {
+        let fill = if is_active {
+            COLORREF(0x004F6A2D) // Active emerald green
         } else {
-            COLORREF(0x002B2522) // Inactive dark card background
+            COLORREF(0x0026211E) // Inactive dark card button
         };
-        let brush = CreateSolidBrush(brush_color);
-        FillRect(hdc, &btn_rect, brush);
-        let _ = DeleteObject(HGDIOBJ(brush.0));
-
-        let text_color = if is_active {
-            COLORREF(0x00EDB363) // Bright active cyan/gold
+        let border = if is_active {
+            COLORREF(0x0088B752)
         } else {
-            COLORREF(0x00A0AEC0) // Muted slate gray
+            COLORREF(0x003D3530)
         };
-        SetTextColor(hdc, text_color);
-        let mut text_wide: Vec<u16> = text.encode_utf16().collect();
-        let mut r = btn_rect;
-        let _ = DrawTextW(hdc, &mut text_wide, &mut r, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, left, top, right - left, bottom - top, fill, border, 8);
+        SetTextColor(
+            hdc,
+            if is_active {
+                COLORREF(0x00FFFFFF)
+            } else {
+                COLORREF(0x00CBD5E0)
+            },
+        );
+        let mut wide: Vec<u16> = text.encode_utf16().collect();
+        let mut r = RECT { left, top, right, bottom };
+        let _ = DrawTextW(hdc, &mut wide, &mut r, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     };
 
-    // SECTION 1: SCREEN DISPLAY MODE
-    SetTextColor(hdc, COLORREF(0x00968071));
-    let mut sec1_text: Vec<u16> = "SCREEN SCALING MODE".encode_utf16().collect();
-    let mut sec1_rect = RECT { left: mx + 20, top: my + 54, right: mx + modal_w - 20, bottom: my + 72 };
-    let _ = DrawTextW(hdc, &mut sec1_text, &mut sec1_rect, DT_SINGLELINE | DT_VCENTER);
+    // =========================================================================
+    // CARD 1: TEXT CLARITY & DYNAMIC ADAPTIVE BITRATE (ABR)
+    // =========================================================================
+    let c1_top = py + 50;
+    let c1_h = 148;
+    draw_rounded_box(
+        hdc,
+        px,
+        c1_top,
+        panel_w,
+        c1_h,
+        COLORREF(0x001C1816),
+        COLORREF(0x00362F2B),
+        10,
+    );
 
-    draw_modal_btn(mx + 20, my + 74, mx + 150, my + 106, "⛶ Auto Fit", mode == 0);
-    draw_modal_btn(mx + 160, my + 74, mx + 300, my + 106, "↔ Fill Window", mode == 1);
-    draw_modal_btn(mx + 310, my + 74, mx + 440, my + 106, "1:1 Original", mode == 2);
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, COLORREF(0x0088B752));
+    let mut sec1_title: Vec<u16> =
+        "TEXT CLARITY & DYNAMIC ADAPTIVE BITRATE (ABR)".encode_utf16().collect();
+    let mut sec1_rect = RECT {
+        left: px + 20,
+        top: c1_top + 12,
+        right: px + panel_w - 20,
+        bottom: c1_top + 32,
+    };
+    let _ = DrawTextW(hdc, &mut sec1_title, &mut sec1_rect, DT_SINGLELINE | DT_VCENTER);
 
-    // SECTION 2: STREAM FRAMERATE (FPS)
-    SetTextColor(hdc, COLORREF(0x00968071));
-    let mut sec2_text: Vec<u16> = "STREAM FRAMERATE".encode_utf16().collect();
-    let mut sec2_rect = RECT { left: mx + 20, top: my + 120, right: mx + modal_w - 20, bottom: my + 138 };
-    let _ = DrawTextW(hdc, &mut sec2_text, &mut sec2_rect, DT_SINGLELINE | DT_VCENTER);
+    let q_mode = crate::p2p::get_quality_mode();
+    let inner_w = panel_w - 40;
+    let gap = 10;
+    let btn5_w = (inner_w - 4 * gap) / 5;
+    let b1_y = c1_top + 40;
+    let b1_bottom = b1_y + 40;
 
-    draw_modal_btn(mx + 20, my + 140, mx + 150, my + 172, "30 FPS", fps == 30);
-    draw_modal_btn(mx + 160, my + 140, mx + 300, my + 172, "60 FPS", fps == 60);
-    draw_modal_btn(mx + 310, my + 140, mx + 440, my + 172, "120 FPS", fps == 120);
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    let q_labels = [
+        "⚡ Auto ABR",
+        "💎 Ultra Text",
+        "🎯 High 4:4:4",
+        "⚖️ Balanced",
+        "🚀 Low Data",
+    ];
+    for i in 0..5 {
+        let bx = px + 20 + (i as i32) * (btn5_w + gap);
+        let br = if i == 4 { px + panel_w - 20 } else { bx + btn5_w };
+        draw_choice_btn(bx, b1_y, br, b1_bottom, q_labels[i], q_mode == i as u8);
+    }
 
-    // SECTION 3: REMOTE CURSOR CAPTURE (Requested Feature)
-    SetTextColor(hdc, COLORREF(0x00968071));
-    let mut sec3_text: Vec<u16> = "REMOTE CURSOR CAPTURE".encode_utf16().collect();
-    let mut sec3_rect = RECT { left: mx + 20, top: my + 186, right: mx + modal_w - 20, bottom: my + 204 };
-    let _ = DrawTextW(hdc, &mut sec3_text, &mut sec3_rect, DT_SINGLELINE | DT_VCENTER);
+    // Live ABR Telemetry Bar inside Card 1
+    let (active_q, active_scale, active_c444) = crate::p2p::get_active_quality_params();
+    let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
+    let rtt_ms = crate::p2p::get_session_rtt_ms();
+    let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
+    let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
+    let res_str = if orig_w > 0 && orig_h > 0 {
+        format!("{}x{} ({}% Scale)", orig_w, orig_h, active_scale)
+    } else {
+        format!("{}% Native Resolution", active_scale)
+    };
+    let chroma_str = if active_c444 {
+        "4:4:4 Subpixel Text"
+    } else {
+        "4:2:0 Fast Chroma"
+    };
+
+    draw_rounded_box(
+        hdc,
+        px + 20,
+        c1_top + 92,
+        inner_w,
+        42,
+        COLORREF(0x00141110),
+        COLORREF(0x002B2522),
+        6,
+    );
+    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
+    SetTextColor(hdc, COLORREF(0x00CBD5E0));
+    let abr_summary = format!(
+        "● Live Speed: {}   |   Encoder: Q{} ({})   |   Stream: {}   |   RTT: {} ms",
+        bitrate_str, active_q, chroma_str, res_str, rtt_ms
+    );
+    let mut abr_wide: Vec<u16> = abr_summary.encode_utf16().collect();
+    let mut abr_rect = RECT {
+        left: px + 32,
+        top: c1_top + 92,
+        right: px + panel_w - 32,
+        bottom: c1_top + 134,
+    };
+    let _ = DrawTextW(hdc, &mut abr_wide, &mut abr_rect, DT_SINGLELINE | DT_VCENTER);
+
+    // =========================================================================
+    // CARD 2: SCREEN SCALING MODE
+    // =========================================================================
+    let c2_top = c1_top + c1_h + 14;
+    let c2_h = 96;
+    draw_rounded_box(
+        hdc,
+        px,
+        c2_top,
+        panel_w,
+        c2_h,
+        COLORREF(0x001C1816),
+        COLORREF(0x00362F2B),
+        10,
+    );
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, COLORREF(0x0088B752));
+    let mut sec2_title: Vec<u16> = "SCREEN SCALING & ASPECT MODE".encode_utf16().collect();
+    let mut sec2_rect = RECT {
+        left: px + 20,
+        top: c2_top + 12,
+        right: px + panel_w - 20,
+        bottom: c2_top + 32,
+    };
+    let _ = DrawTextW(hdc, &mut sec2_title, &mut sec2_rect, DT_SINGLELINE | DT_VCENTER);
+
+    let btn3_w = (inner_w - 2 * gap) / 3;
+    let b2_y = c2_top + 40;
+    let b2_bottom = b2_y + 40;
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    draw_choice_btn(
+        px + 20,
+        b2_y,
+        px + 20 + btn3_w,
+        b2_bottom,
+        "⛶  Auto Fit (Aspect Ratio)",
+        mode == 0,
+    );
+    draw_choice_btn(
+        px + 20 + btn3_w + gap,
+        b2_y,
+        px + 20 + 2 * btn3_w + gap,
+        b2_bottom,
+        "↔  Fill Window (Stretch)",
+        mode == 1,
+    );
+    draw_choice_btn(
+        px + 20 + 2 * (btn3_w + gap),
+        b2_y,
+        px + panel_w - 20,
+        b2_bottom,
+        "1:1  Original Pixel Size",
+        mode == 2,
+    );
+
+    // =========================================================================
+    // CARD 3: TARGET STREAM FRAMERATE
+    // =========================================================================
+    let c3_top = c2_top + c2_h + 14;
+    let c3_h = 96;
+    draw_rounded_box(
+        hdc,
+        px,
+        c3_top,
+        panel_w,
+        c3_h,
+        COLORREF(0x001C1816),
+        COLORREF(0x00362F2B),
+        10,
+    );
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, COLORREF(0x0088B752));
+    let mut sec3_title: Vec<u16> = "TARGET STREAM FRAMERATE (FPS)".encode_utf16().collect();
+    let mut sec3_rect = RECT {
+        left: px + 20,
+        top: c3_top + 12,
+        right: px + panel_w - 20,
+        bottom: c3_top + 32,
+    };
+    let _ = DrawTextW(hdc, &mut sec3_title, &mut sec3_rect, DT_SINGLELINE | DT_VCENTER);
+
+    let b3_y = c3_top + 40;
+    let b3_bottom = b3_y + 40;
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    draw_choice_btn(px + 20, b3_y, px + 20 + btn3_w, b3_bottom, "30 FPS (Power Saver)", fps == 30);
+    draw_choice_btn(
+        px + 20 + btn3_w + gap,
+        b3_y,
+        px + 20 + 2 * btn3_w + gap,
+        b3_bottom,
+        "60 FPS (Smooth)",
+        fps == 60,
+    );
+    draw_choice_btn(
+        px + 20 + 2 * (btn3_w + gap),
+        b3_y,
+        px + panel_w - 20,
+        b3_bottom,
+        "120 FPS (Ultra High)",
+        fps == 120,
+    );
+
+    // =========================================================================
+    // CARD 4: REMOTE CURSOR CAPTURE
+    // =========================================================================
+    let c4_top = c3_top + c3_h + 14;
+    let c4_h = 96;
+    draw_rounded_box(
+        hdc,
+        px,
+        c4_top,
+        panel_w,
+        c4_h,
+        COLORREF(0x001C1816),
+        COLORREF(0x00362F2B),
+        10,
+    );
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, COLORREF(0x0088B752));
+    let mut sec4_title: Vec<u16> = "REMOTE CURSOR OVERLAY".encode_utf16().collect();
+    let mut sec4_rect = RECT {
+        left: px + 20,
+        top: c4_top + 12,
+        right: px + panel_w - 20,
+        bottom: c4_top + 32,
+    };
+    let _ = DrawTextW(hdc, &mut sec4_title, &mut sec4_rect, DT_SINGLELINE | DT_VCENTER);
 
     let cursor_active = CAPTURE_CURSOR.load(Ordering::Relaxed);
     let cursor_label = if cursor_active {
-        "☑  Render Remote Cursor on Stream (Active)"
+        "☑   Render Remote Host Cursor on Stream (Enabled)"
     } else {
-        "☐  Render Remote Cursor on Stream (Hidden)"
+        "☐   Render Remote Host Cursor on Stream (Disabled)"
     };
-    draw_modal_btn(mx + 20, my + 206, mx + 440, my + 240, cursor_label, cursor_active);
+    let b4_y = c4_top + 40;
+    let b4_bottom = b4_y + 40;
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    draw_choice_btn(px + 20, b4_y, px + panel_w - 20, b4_bottom, cursor_label, cursor_active);
 
-    // SECTION 4: ENGINE DIAGNOSTICS
-    SetTextColor(hdc, COLORREF(0x00968071));
-    let mut sec4_text: Vec<u16> = "ENGINE & PIPELINE".encode_utf16().collect();
-    let mut sec4_rect = RECT { left: mx + 20, top: my + 254, right: mx + modal_w - 20, bottom: my + 270 };
-    let _ = DrawTextW(hdc, &mut sec4_text, &mut sec4_rect, DT_SINGLELINE | DT_VCENTER);
+    // =========================================================================
+    // BOTTOM ACTION BUTTON: [ ✓ Apply & Return to Remote Stream ]
+    // =========================================================================
+    let done_y = c4_top + c4_h + 18;
+    let done_w = 320;
+    let done_x = px + (panel_w - done_w) / 2;
+    draw_choice_btn(
+        done_x,
+        done_y,
+        done_x + done_w,
+        done_y + 44,
+        "✓  Apply & Return to Remote Stream",
+        true,
+    );
 
-    SetTextColor(hdc, COLORREF(0x00A0AEC0));
-    let mut diag_text: Vec<u16> = "• Direct P2P UDP Video & Input Stream\n• Remote Desktop Capture & Hardware Blending".encode_utf16().collect();
-    let mut diag_rect = RECT { left: mx + 20, top: my + 272, right: mx + 440, bottom: my + 308 };
-    let _ = DrawTextW(hdc, &mut diag_text, &mut diag_rect, Default::default());
-
-    // Done / Close button at bottom
-    draw_modal_btn(mx + 170, my + 320, mx + 290, my + 354, "Done / Close", true);
+    let _ = SelectObject(hdc, old_font);
+    let _ = DeleteObject(HGDIOBJ(font_hdr.0));
+    let _ = DeleteObject(HGDIOBJ(font_sec.0));
+    let _ = DeleteObject(HGDIOBJ(font_btn.0));
+    let _ = DeleteObject(HGDIOBJ(font_info.0));
 }
 
 /// Spawns the dedicated remote desktop viewport presentation window with a decoupled background render thread
@@ -753,7 +979,6 @@ unsafe fn spawn_viewport_window(target: &str) {
     );
 
     if let Ok(hwnd) = viewport_hwnd {
-        // 1. Enable Immersive Dark Mode for Viewport Titlebar
         let dark_mode: i32 = 1;
         let _ = DwmSetWindowAttribute(
             hwnd,
@@ -801,178 +1026,181 @@ unsafe fn spawn_viewport_window(target: &str) {
                         let mem_bmp = CreateCompatibleBitmap(hdc_window, client_w, client_h);
                         let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
 
-                        let _ = SetStretchBltMode(mem_dc, COLORONCOLOR);
-                        let view_h = client_h - toolbar_h;
-
-                        if let Some(remote_frame) = crate::p2p::get_latest_remote_frame() {
-                            REMOTE_ORIG_W.store(remote_frame.orig_width, Ordering::Relaxed);
-                            REMOTE_ORIG_H.store(remote_frame.orig_height, Ordering::Relaxed);
-
-                            let frame_w = remote_frame.width as i32;
-                            let frame_h = remote_frame.height as i32;
-
-                            let bmi = BITMAPINFO {
-                                bmiHeader: BITMAPINFOHEADER {
-                                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                                    biWidth: frame_w,
-                                    biHeight: -frame_h, // Top-down BGRA
-                                    biPlanes: 1,
-                                    biBitCount: 32,
-                                    biCompression: BI_RGB.0,
-                                    ..Default::default()
-                                },
-                                ..Default::default()
-                            };
-
-                            match mode {
-                                0 => {
-                                    // Auto Fit (Preserve Aspect Ratio)
-                                    let scale_x = client_w as f32 / frame_w as f32;
-                                    let scale_y = view_h as f32 / frame_h as f32;
-                                    let scale = scale_x.min(scale_y);
-
-                                    let render_w = (frame_w as f32 * scale) as i32;
-                                    let render_h = (frame_h as f32 * scale) as i32;
-
-                                    let offset_x = (client_w - render_w) / 2;
-                                    let offset_y = toolbar_h + (view_h - render_h) / 2;
-
-                                    if offset_x > 0 {
-                                        let left_bar = RECT { left: 0, top: toolbar_h, right: offset_x, bottom: client_h };
-                                        FillRect(mem_dc, &left_bar, VIEWPORT_BRUSH);
-                                        let right_bar = RECT { left: offset_x + render_w, top: toolbar_h, right: client_w, bottom: client_h };
-                                        FillRect(mem_dc, &right_bar, VIEWPORT_BRUSH);
-                                    }
-                                    if (view_h - render_h) > 0 {
-                                        let top_bar = RECT { left: 0, top: toolbar_h, right: client_w, bottom: offset_y };
-                                        FillRect(mem_dc, &top_bar, VIEWPORT_BRUSH);
-                                        let bottom_bar = RECT { left: 0, top: offset_y + render_h, right: client_w, bottom: client_h };
-                                        FillRect(mem_dc, &bottom_bar, VIEWPORT_BRUSH);
-                                    }
-
-                                    let _ = StretchDIBits(
-                                        mem_dc,
-                                        offset_x,
-                                        offset_y,
-                                        render_w,
-                                        render_h,
-                                        0,
-                                        0,
-                                        frame_w,
-                                        frame_h,
-                                        Some(remote_frame.bgra.as_ptr() as *const _),
-                                        &bmi,
-                                        DIB_RGB_COLORS,
-                                        SRCCOPY,
-                                    );
-                                }
-                                1 => {
-                                    // Stretch / Fill Window
-                                    let _ = StretchDIBits(
-                                        mem_dc,
-                                        0,
-                                        toolbar_h,
-                                        client_w,
-                                        view_h,
-                                        0,
-                                        0,
-                                        frame_w,
-                                        frame_h,
-                                        Some(remote_frame.bgra.as_ptr() as *const _),
-                                        &bmi,
-                                        DIB_RGB_COLORS,
-                                        SRCCOPY,
-                                    );
-                                }
-                                _ => {
-                                    // 1:1 Original Resolution (Centered)
-                                    let orig_w = remote_frame.orig_width as i32;
-                                    let orig_h = remote_frame.orig_height as i32;
-                                    let offset_x = (client_w - orig_w) / 2;
-                                    let offset_y = toolbar_h + (view_h - orig_h) / 2;
-
-                                    let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
-                                    FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
-
-                                    let _ = StretchDIBits(
-                                        mem_dc,
-                                        offset_x,
-                                        offset_y,
-                                        orig_w,
-                                        orig_h,
-                                        0,
-                                        0,
-                                        frame_w,
-                                        frame_h,
-                                        Some(remote_frame.bgra.as_ptr() as *const _),
-                                        &bmi,
-                                        DIB_RGB_COLORS,
-                                        SRCCOPY,
-                                    );
-                                }
-                            }
-                        } else {
-                            // Waiting for remote host stream or connection error
-                            let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
-                            FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
-
-                            let status = crate::p2p::get_session_status();
-                            let (status_msg, color) = match status {
-                                SessionStatus::Connecting(id) => (
-                                    format!("⚡ Connecting to Remote Desk {} ...", id),
-                                    COLORREF(0x00EDB363),
-                                ),
-                                SessionStatus::Error(err) => (
-                                    format!("❌ {}  (Press Esc to close)", err),
-                                    COLORREF(0x006060FF),
-                                ),
-                                _ => (
-                                    "⚡ Waiting for remote video stream...".to_string(),
-                                    COLORREF(0x00A0AEC0),
-                                ),
-                            };
-
-                            let status_font = create_segoe_font(22, FW_SEMIBOLD);
-                            let old_f = SelectObject(mem_dc, HGDIOBJ(status_font.0));
-                            SetBkMode(mem_dc, TRANSPARENT);
-                            SetTextColor(mem_dc, color);
-                            let mut status_wide: Vec<u16> = status_msg.encode_utf16().collect();
-                            let mut status_rect = RECT {
-                                left: 20,
-                                top: toolbar_h,
-                                right: client_w - 20,
-                                bottom: client_h,
-                            };
-                            let _ = DrawTextW(
-                                mem_dc,
-                                &mut status_wide,
-                                &mut status_rect,
-                                DT_SINGLELINE | DT_CENTER | DT_VCENTER,
-                            );
-                            let _ = SelectObject(mem_dc, old_f);
-                            let _ = DeleteObject(HGDIOBJ(status_font.0));
-                        }
-
-                        // 2. Draw Top Toolbar (Clean AnyDesk style with Settings button)
-                        let rtt = Duration::from_millis(crate::p2p::get_session_rtt_ms() as u64);
-                        if toolbar_visible {
-                            draw_toolbar(mem_dc, client_w, TOOLBAR_HEIGHT, mode, target_fps, rtt);
-                        } else {
-                            let tab_brush = CreateSolidBrush(COLORREF(0x002B2522));
-                            let tab_rect = RECT { left: client_w - 110, top: 0, right: client_w - 10, bottom: 26 };
-                            FillRect(mem_dc, &tab_rect, tab_brush);
-                            let _ = DeleteObject(HGDIOBJ(tab_brush.0));
-
-                            SetBkMode(mem_dc, TRANSPARENT);
-                            SetTextColor(mem_dc, COLORREF(0x00EDB363));
-                            let mut tab_text: Vec<u16> = "⚙ Settings".encode_utf16().collect();
-                            let mut tr = tab_rect;
-                            let _ = DrawTextW(mem_dc, &mut tab_text, &mut tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-                        }
-
-                        // 3. Draw Settings Modal if opened!
+                        // If Full-Screen Settings Page is open, render ONLY the opaque settings view
+                        // so the remote desktop never shows behind it!
                         if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                            draw_settings_modal(mem_dc, client_w, client_h, mode, target_fps);
+                            draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps);
+                        } else {
+                            // HALFTONE high-quality bilinear filtering keeps scaled text sharp and readable
+                            let _ = SetStretchBltMode(mem_dc, HALFTONE);
+                            let _ = SetBrushOrgEx(mem_dc, 0, 0, None);
+                            let view_h = client_h - toolbar_h;
+
+                            if let Some(remote_frame) = crate::p2p::get_latest_remote_frame() {
+                                REMOTE_ORIG_W.store(remote_frame.orig_width, Ordering::Relaxed);
+                                REMOTE_ORIG_H.store(remote_frame.orig_height, Ordering::Relaxed);
+
+                                let frame_w = remote_frame.width as i32;
+                                let frame_h = remote_frame.height as i32;
+
+                                let bmi = BITMAPINFO {
+                                    bmiHeader: BITMAPINFOHEADER {
+                                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                                        biWidth: frame_w,
+                                        biHeight: -frame_h, // Top-down BGRA
+                                        biPlanes: 1,
+                                        biBitCount: 32,
+                                        biCompression: BI_RGB.0,
+                                        ..Default::default()
+                                    },
+                                    ..Default::default()
+                                };
+
+                                match mode {
+                                    0 => {
+                                        // Auto Fit (Preserve Aspect Ratio)
+                                        let scale_x = client_w as f32 / frame_w as f32;
+                                        let scale_y = view_h as f32 / frame_h as f32;
+                                        let scale = scale_x.min(scale_y);
+
+                                        let render_w = (frame_w as f32 * scale) as i32;
+                                        let render_h = (frame_h as f32 * scale) as i32;
+
+                                        let offset_x = (client_w - render_w) / 2;
+                                        let offset_y = toolbar_h + (view_h - render_h) / 2;
+
+                                        if offset_x > 0 {
+                                            let left_bar = RECT { left: 0, top: toolbar_h, right: offset_x, bottom: client_h };
+                                            FillRect(mem_dc, &left_bar, VIEWPORT_BRUSH);
+                                            let right_bar = RECT { left: offset_x + render_w, top: toolbar_h, right: client_w, bottom: client_h };
+                                            FillRect(mem_dc, &right_bar, VIEWPORT_BRUSH);
+                                        }
+                                        if (view_h - render_h) > 0 {
+                                            let top_bar = RECT { left: 0, top: toolbar_h, right: client_w, bottom: offset_y };
+                                            FillRect(mem_dc, &top_bar, VIEWPORT_BRUSH);
+                                            let bottom_bar = RECT { left: 0, top: offset_y + render_h, right: client_w, bottom: client_h };
+                                            FillRect(mem_dc, &bottom_bar, VIEWPORT_BRUSH);
+                                        }
+
+                                        let _ = StretchDIBits(
+                                            mem_dc,
+                                            offset_x,
+                                            offset_y,
+                                            render_w,
+                                            render_h,
+                                            0,
+                                            0,
+                                            frame_w,
+                                            frame_h,
+                                            Some(remote_frame.bgra.as_ptr() as *const _),
+                                            &bmi,
+                                            DIB_RGB_COLORS,
+                                            SRCCOPY,
+                                        );
+                                    }
+                                    1 => {
+                                        // Stretch / Fill Window
+                                        let _ = StretchDIBits(
+                                            mem_dc,
+                                            0,
+                                            toolbar_h,
+                                            client_w,
+                                            view_h,
+                                            0,
+                                            0,
+                                            frame_w,
+                                            frame_h,
+                                            Some(remote_frame.bgra.as_ptr() as *const _),
+                                            &bmi,
+                                            DIB_RGB_COLORS,
+                                            SRCCOPY,
+                                        );
+                                    }
+                                    _ => {
+                                        // 1:1 Original Resolution (Centered)
+                                        let orig_w = remote_frame.orig_width as i32;
+                                        let orig_h = remote_frame.orig_height as i32;
+                                        let offset_x = (client_w - orig_w) / 2;
+                                        let offset_y = toolbar_h + (view_h - orig_h) / 2;
+
+                                        let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
+                                        FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
+
+                                        let _ = StretchDIBits(
+                                            mem_dc,
+                                            offset_x,
+                                            offset_y,
+                                            orig_w,
+                                            orig_h,
+                                            0,
+                                            0,
+                                            frame_w,
+                                            frame_h,
+                                            Some(remote_frame.bgra.as_ptr() as *const _),
+                                            &bmi,
+                                            DIB_RGB_COLORS,
+                                            SRCCOPY,
+                                        );
+                                    }
+                                }
+                            } else {
+                                // Waiting for remote host stream or connection error
+                                let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
+                                FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
+
+                                let status = crate::p2p::get_session_status();
+                                let (status_msg, color) = match status {
+                                    SessionStatus::Connecting(id) => (
+                                        format!("⚡ Connecting to Remote Desk {} ...", id),
+                                        COLORREF(0x00EDB363),
+                                    ),
+                                    SessionStatus::Error(err) => (
+                                        format!("❌ {}  (Press Esc to close)", err),
+                                        COLORREF(0x006060FF),
+                                    ),
+                                    _ => (
+                                        "⚡ Waiting for remote video stream...".to_string(),
+                                        COLORREF(0x00A0AEC0),
+                                    ),
+                                };
+
+                                let status_font = create_segoe_font(22, FW_SEMIBOLD);
+                                let old_f = SelectObject(mem_dc, HGDIOBJ(status_font.0));
+                                SetBkMode(mem_dc, TRANSPARENT);
+                                SetTextColor(mem_dc, color);
+                                let mut status_wide: Vec<u16> = status_msg.encode_utf16().collect();
+                                let mut status_rect = RECT {
+                                    left: 20,
+                                    top: toolbar_h,
+                                    right: client_w - 20,
+                                    bottom: client_h,
+                                };
+                                let _ = DrawTextW(
+                                    mem_dc,
+                                    &mut status_wide,
+                                    &mut status_rect,
+                                    DT_SINGLELINE | DT_CENTER | DT_VCENTER,
+                                );
+                                let _ = SelectObject(mem_dc, old_f);
+                                let _ = DeleteObject(HGDIOBJ(status_font.0));
+                            }
+
+                            // Draw Top Toolbar (or compact settings tab when collapsed)
+                            let rtt = Duration::from_millis(crate::p2p::get_session_rtt_ms() as u64);
+                            if toolbar_visible {
+                                draw_toolbar(mem_dc, client_w, TOOLBAR_HEIGHT, mode, target_fps, rtt);
+                            } else {
+                                let tab_brush = CreateSolidBrush(COLORREF(0x002B2522));
+                                let tab_rect = RECT { left: client_w - 110, top: 0, right: client_w - 10, bottom: 26 };
+                                FillRect(mem_dc, &tab_rect, tab_brush);
+                                let _ = DeleteObject(HGDIOBJ(tab_brush.0));
+
+                                SetBkMode(mem_dc, TRANSPARENT);
+                                SetTextColor(mem_dc, COLORREF(0x00EDB363));
+                                let mut tab_text: Vec<u16> = "⚙ Settings".encode_utf16().collect();
+                                let mut tr = tab_rect;
+                                let _ = DrawTextW(mem_dc, &mut tab_text, &mut tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+                            }
                         }
 
                         // Atomic blit completed frame to screen in ONE pass
@@ -1540,52 +1768,71 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let client_w = rect.right - rect.left;
             let client_h = rect.bottom - rect.top;
 
-            // 1. If Settings Modal is open, handle modal interactive controls!
+            // 1. If Full-Screen Settings Page is open, handle all settings controls!
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                let modal_w = 460;
-                let modal_h = 370;
-                let mx = (client_w - modal_w) / 2;
-                let my = (client_h - modal_h) / 2;
+                let panel_w = (client_w - 64).clamp(560, 880);
+                let px = ((client_w - panel_w) / 2).max(20);
+                let py = ((client_h - 560) / 2).max(18);
+                let inner_w = panel_w - 40;
+                let gap = 10;
 
-                // Clicked outside modal card -> dismiss modal
-                if client_x < mx || client_x > mx + modal_w || client_y < my || client_y > my + modal_h {
+                // Top-right [ ← Back to Remote Stream ] button
+                if client_x >= px + panel_w - 200
+                    && client_x <= px + panel_w
+                    && client_y >= py
+                    && client_y <= py + 38
+                {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                     return LRESULT(0);
                 }
 
-                // [✕] Close button or bottom [Done / Close] button
-                if (client_x >= mx + modal_w - 38 && client_x <= mx + modal_w - 12 && client_y >= my + 10 && client_y <= my + 34)
-                    || (client_x >= mx + 170 && client_x <= mx + 290 && client_y >= my + 320 && client_y <= my + 354) {
-                    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-                    return LRESULT(0);
+                // Card 1: Text Clarity & ABR Mode (5 buttons)
+                let c1_top = py + 50;
+                let c1_h = 148;
+                let b1_y = c1_top + 40;
+                let b1_bottom = b1_y + 40;
+                let btn5_w = (inner_w - 4 * gap) / 5;
+                if client_y >= b1_y && client_y <= b1_bottom {
+                    for i in 0..5 {
+                        let bx = px + 20 + (i as i32) * (btn5_w + gap);
+                        let br = if i == 4 { px + panel_w - 20 } else { bx + btn5_w };
+                        if client_x >= bx && client_x <= br {
+                            crate::p2p::set_quality_mode(i as u8);
+                            info!("Settings: Quality / ABR mode set to {}", i);
+                            return LRESULT(0);
+                        }
+                    }
                 }
 
-                // Section 1: Screen Scaling Mode (AutoFit, Fill, 1:1)
-                if client_y >= my + 74 && client_y <= my + 106 {
-                    if client_x >= mx + 20 && client_x <= mx + 150 {
+                // Card 2: Screen Scaling Mode (3 buttons)
+                let c2_top = c1_top + c1_h + 14;
+                let c2_h = 96;
+                let b2_y = c2_top + 40;
+                let b2_bottom = b2_y + 40;
+                let btn3_w = (inner_w - 2 * gap) / 3;
+                if client_y >= b2_y && client_y <= b2_bottom {
+                    if client_x >= px + 20 && client_x <= px + 20 + btn3_w {
                         DISPLAY_MODE.store(0, Ordering::Relaxed);
-                        info!("Settings Modal: Mode set to Auto Fit");
-                    } else if client_x >= mx + 160 && client_x <= mx + 300 {
+                    } else if client_x >= px + 20 + btn3_w + gap && client_x <= px + 20 + 2 * btn3_w + gap {
                         DISPLAY_MODE.store(1, Ordering::Relaxed);
-                        info!("Settings Modal: Mode set to Fill Window");
-                    } else if client_x >= mx + 310 && client_x <= mx + 440 {
+                    } else if client_x >= px + 20 + 2 * (btn3_w + gap) && client_x <= px + panel_w - 20 {
                         DISPLAY_MODE.store(2, Ordering::Relaxed);
-                        info!("Settings Modal: Mode set to 1:1 Original");
                     }
                     return LRESULT(0);
                 }
 
-                // Section 2: Framerate (30, 60, 120 FPS)
-                if client_y >= my + 140 && client_y <= my + 172 {
-                    if client_x >= mx + 20 && client_x <= mx + 150 {
+                // Card 3: Target Stream Framerate (3 buttons)
+                let c3_top = c2_top + c2_h + 14;
+                let c3_h = 96;
+                let b3_y = c3_top + 40;
+                let b3_bottom = b3_y + 40;
+                if client_y >= b3_y && client_y <= b3_bottom {
+                    if client_x >= px + 20 && client_x <= px + 20 + btn3_w {
                         TARGET_FPS.store(30, Ordering::Relaxed);
-                        info!("Settings Modal: Framerate set to 30 FPS");
-                    } else if client_x >= mx + 160 && client_x <= mx + 300 {
+                    } else if client_x >= px + 20 + btn3_w + gap && client_x <= px + 20 + 2 * btn3_w + gap {
                         TARGET_FPS.store(60, Ordering::Relaxed);
-                        info!("Settings Modal: Framerate set to 60 FPS");
-                    } else if client_x >= mx + 310 && client_x <= mx + 440 {
+                    } else if client_x >= px + 20 + 2 * (btn3_w + gap) && client_x <= px + panel_w - 20 {
                         TARGET_FPS.store(120, Ordering::Relaxed);
-                        info!("Settings Modal: Framerate set to 120 FPS");
                     }
                     crate::p2p::update_client_preferences(
                         TARGET_FPS.load(Ordering::Relaxed),
@@ -1594,21 +1841,42 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     return LRESULT(0);
                 }
 
-                // Section 3: Remote Cursor Capture Toggle
-                if client_y >= my + 206 && client_y <= my + 240 && client_x >= mx + 20 && client_x <= mx + 440 {
+                // Card 4: Remote Cursor Capture Toggle
+                let c4_top = c3_top + c3_h + 14;
+                let c4_h = 96;
+                let b4_y = c4_top + 40;
+                let b4_bottom = b4_y + 40;
+                if client_y >= b4_y
+                    && client_y <= b4_bottom
+                    && client_x >= px + 20
+                    && client_x <= px + panel_w - 20
+                {
                     let prev = CAPTURE_CURSOR.fetch_xor(true, Ordering::Relaxed);
-                    info!("Settings Modal: Remote cursor capture toggled: {}", !prev);
+                    info!("Settings: Remote cursor capture toggled: {}", !prev);
                     crate::p2p::update_client_preferences(
                         TARGET_FPS.load(Ordering::Relaxed),
                         CAPTURE_CURSOR.load(Ordering::Relaxed),
                     );
+                    return LRESULT(0);
+                }
+
+                // Bottom [ ✓ Apply & Return to Remote Stream ] button
+                let done_y = c4_top + c4_h + 18;
+                let done_w = 320;
+                let done_x = px + (panel_w - done_w) / 2;
+                if client_x >= done_x
+                    && client_x <= done_x + done_w
+                    && client_y >= done_y
+                    && client_y <= done_y + 44
+                {
+                    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                     return LRESULT(0);
                 }
 
                 return LRESULT(0);
             }
 
-            // 2. Toolbar clicks when modal is closed
+            // 2. Toolbar clicks when settings page is closed
             if toolbar_visible && client_y < TOOLBAR_HEIGHT {
                 // Click [ ⚙ Settings ]
                 if client_x >= client_w - 215 && client_x <= client_w - 105 {
@@ -1747,7 +2015,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
         }
         WM_KEYDOWN => {
             if wparam.0 == 0x1B {
-                // Esc key: closes settings modal if open, otherwise closes viewport window
+                // Esc key: closes full-screen settings if open, otherwise closes viewport window
                 if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                 } else {
@@ -1758,9 +2026,9 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     }
                 }
             } else if wparam.0 == 0x09 {
-                // Tab key toggles settings modal!
+                // Tab key toggles full-screen settings page!
                 let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
-                info!("Settings Modal toggled: {}", !prev);
+                info!("Full-Screen Settings Page toggled: {}", !prev);
             } else if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 unsafe {
                     inject_remote_key(wparam.0 as u8, false);
