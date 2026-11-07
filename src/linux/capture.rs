@@ -1,7 +1,21 @@
 use anyhow::Result;
+use std::sync::{Mutex, OnceLock};
 use tracing::info;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{get_image, ImageFormat};
+use x11rb::rust_connection::RustConnection;
+
+static X11_CAP_CONN: OnceLock<Mutex<Option<(RustConnection, usize)>>> = OnceLock::new();
+
+fn get_or_init_x11() -> Result<std::sync::MutexGuard<'static, Option<(RustConnection, usize)>>> {
+    let lock = X11_CAP_CONN.get_or_init(|| Mutex::new(None));
+    let mut guard = lock.lock().map_err(|_| anyhow::anyhow!("X11 mutex poisoned"))?;
+    if guard.is_none() {
+        let (conn, screen_num) = x11rb::connect(None)?;
+        *guard = Some((conn, screen_num));
+    }
+    Ok(guard)
+}
 
 /// Probes and logs display information from the local X11 server
 pub fn diagnose_x11() -> Result<()> {
@@ -21,26 +35,35 @@ impl LinuxX11Capture {
         Self
     }
 
-    /// Captures the full desktop frame directly from the X11 root window
+    /// Captures the full desktop frame directly from the X11 root window using a persistent connection
     pub fn capture_frame() -> Result<(u32, u32, Vec<u8>)> {
+        let mut guard = get_or_init_x11()?;
+        let res = if let Some((conn, screen_num)) = guard.as_ref() {
+            let screen = &conn.setup().roots[*screen_num];
+            let w = screen.width_in_pixels;
+            let h = screen.height_in_pixels;
+            get_image(conn, ImageFormat::Z_PIXMAP, screen.root, 0, 0, w, h, !0)
+                .ok()
+                .and_then(|cookie| cookie.reply().ok())
+                .map(|reply| (w as u32, h as u32, reply.data))
+        } else {
+            None
+        };
+
+        if let Some(frame) = res {
+            return Ok(frame);
+        }
+
+        // Reconnect once if X11 connection was reset
+        *guard = None;
         let (conn, screen_num) = x11rb::connect(None)?;
         let screen = &conn.setup().roots[screen_num];
         let w = screen.width_in_pixels;
         let h = screen.height_in_pixels;
-
-        let reply = get_image(
-            &conn,
-            ImageFormat::Z_PIXMAP,
-            screen.root,
-            0,
-            0,
-            w,
-            h,
-            !0,
-        )?
-        .reply()?;
-
-        Ok((w as u32, h as u32, reply.data))
+        let reply = get_image(&conn, ImageFormat::Z_PIXMAP, screen.root, 0, 0, w, h, !0)?.reply()?;
+        let data = reply.data;
+        *guard = Some((conn, screen_num));
+        Ok((w as u32, h as u32, data))
     }
 }
 
@@ -70,7 +93,6 @@ pub fn capture_screen_frame(
     let cap_h = ((orig_h * clamped_scale) / 100).max(2) & !1;
     let mut scaled = vec![0u8; (cap_w as usize) * (cap_h as usize) * 4];
 
-    // Bilinear box sampling to preserve text legibility when downscaling
     for y in 0..cap_h {
         let src_yf = (y as f32) * (orig_h as f32 - 1.0) / (cap_h as f32 - 1.0).max(1.0);
         let y0 = (src_yf as u32).min(orig_h - 1) as usize;
