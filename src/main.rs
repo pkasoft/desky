@@ -1,12 +1,12 @@
-pub mod identity;
-pub mod p2p;
-pub mod protocol;
+mod identity;
+mod p2p;
+mod protocol;
 
 #[cfg(target_os = "windows")]
-pub mod windows;
+mod windows;
 
 #[cfg(target_os = "linux")]
-pub mod linux;
+mod linux;
 
 use tracing::info;
 
@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     {
         info!(" Operating System: Windows 64-bit");
         info!(" UI Architecture: Direct Win32 pkasoft.com White Theme");
-        info!(" Graphics: Direct3D 11 & DXGI Pipeline");
+        info!(" Graphics: High-Speed GDI & 4:4:4 Pipeline");
         windows::run()?;
     }
     #[cfg(target_os = "linux")]

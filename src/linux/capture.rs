@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::sync::{Mutex, OnceLock};
-use tracing::info;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{get_image, ImageFormat};
 use x11rb::rust_connection::RustConnection;
@@ -17,54 +16,34 @@ fn get_or_init_x11() -> Result<std::sync::MutexGuard<'static, Option<(RustConnec
     Ok(guard)
 }
 
-/// Probes and logs display information from the local X11 server
-pub fn diagnose_x11() -> Result<()> {
-    let (conn, screen_num) = x11rb::connect(None)?;
-    let screen = &conn.setup().roots[screen_num];
-    info!(
-        "X11 Display Connected: Screen [{}] ({}x{}, Depth: {} bpp, Root Window: 0x{:x})",
-        screen_num, screen.width_in_pixels, screen.height_in_pixels, screen.root_depth, screen.root
-    );
-    Ok(())
-}
-
-pub struct LinuxX11Capture;
-
-impl LinuxX11Capture {
-    pub fn new() -> Self {
-        Self
-    }
-
-    /// Captures the full desktop frame directly from the X11 root window using a persistent connection
-    pub fn capture_frame() -> Result<(u32, u32, Vec<u8>)> {
-        let mut guard = get_or_init_x11()?;
-        let res = if let Some((conn, screen_num)) = guard.as_ref() {
-            let screen = &conn.setup().roots[*screen_num];
-            let w = screen.width_in_pixels;
-            let h = screen.height_in_pixels;
-            get_image(conn, ImageFormat::Z_PIXMAP, screen.root, 0, 0, w, h, !0)
-                .ok()
-                .and_then(|cookie| cookie.reply().ok())
-                .map(|reply| (w as u32, h as u32, reply.data))
-        } else {
-            None
-        };
-
-        if let Some(frame) = res {
-            return Ok(frame);
-        }
-
-        // Reconnect once if X11 connection was reset
-        *guard = None;
-        let (conn, screen_num) = x11rb::connect(None)?;
-        let screen = &conn.setup().roots[screen_num];
+fn capture_x11_root_frame() -> Result<(u32, u32, Vec<u8>)> {
+    let mut guard = get_or_init_x11()?;
+    let res = if let Some((conn, screen_num)) = guard.as_ref() {
+        let screen = &conn.setup().roots[*screen_num];
         let w = screen.width_in_pixels;
         let h = screen.height_in_pixels;
-        let reply = get_image(&conn, ImageFormat::Z_PIXMAP, screen.root, 0, 0, w, h, !0)?.reply()?;
-        let data = reply.data;
-        *guard = Some((conn, screen_num));
-        Ok((w as u32, h as u32, data))
+        get_image(conn, ImageFormat::Z_PIXMAP, screen.root, 0, 0, w, h, !0)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| (w as u32, h as u32, reply.data))
+    } else {
+        None
+    };
+
+    if let Some(frame) = res {
+        return Ok(frame);
     }
+
+    // Reconnect once if X11 connection was reset
+    *guard = None;
+    let (conn, screen_num) = x11rb::connect(None)?;
+    let screen = &conn.setup().roots[screen_num];
+    let w = screen.width_in_pixels;
+    let h = screen.height_in_pixels;
+    let reply = get_image(&conn, ImageFormat::Z_PIXMAP, screen.root, 0, 0, w, h, !0)?.reply()?;
+    let data = reply.data;
+    *guard = Some((conn, screen_num));
+    Ok((w as u32, h as u32, data))
 }
 
 /// Captures the local Linux X11 desktop into a top-down BGRA pixel buffer.
@@ -74,7 +53,7 @@ pub fn capture_screen_frame(
     _capture_cursor: bool,
     scale_pct: u8,
 ) -> Result<(u32, u32, u32, u32, Vec<u8>)> {
-    let (orig_w, orig_h, data) = LinuxX11Capture::capture_frame()?;
+    let (orig_w, orig_h, data) = capture_x11_root_frame()?;
     if orig_w == 0 || orig_h == 0 {
         anyhow::bail!("X11 returned empty screen dimensions");
     }
