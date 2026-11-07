@@ -7,6 +7,7 @@ use x11rb::wrapper::ConnectionExt as _;
 
 pub static LOCAL_DESKY_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 static RUNNING: AtomicBool = AtomicBool::new(true);
+static POPUP_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 pub fn set_assigned_desky_id(id: &str) {
     if let Ok(mut guard) = LOCAL_DESKY_ID.lock() {
@@ -22,6 +23,9 @@ pub fn set_assigned_desky_id(id: &str) {
 
 /// Spawns a native X11 approval popup dialog when a remote client requests to connect
 pub fn spawn_linux_approval_popup(client_id: String) {
+    if POPUP_ACTIVE.swap(true, Ordering::SeqCst) {
+        return;
+    }
     std::thread::spawn(move || {
         println!("\n\x1b[1;33m==================================================\x1b[0m");
         println!("\x1b[1;33m  🔔 INCOMING DESKY CONNECTION REQUEST!\x1b[0m");
@@ -31,7 +35,10 @@ pub fn spawn_linux_approval_popup(client_id: String) {
 
         if let Ok((conn, screen_num)) = x11rb::connect(None) {
             let screen = &conn.setup().roots[screen_num];
-            let Ok(win_id) = conn.generate_id() else { return };
+            let Ok(win_id) = conn.generate_id() else {
+                POPUP_ACTIVE.store(false, Ordering::SeqCst);
+                return;
+            };
             let win_w = 440u16;
             let win_h = 210u16;
             let pos_x = ((screen.width_in_pixels.saturating_sub(win_w)) / 2) as i16;
@@ -188,9 +195,11 @@ pub fn spawn_linux_approval_popup(client_id: String) {
                 }
             }
 
+            let _ = conn.unmap_window(win_id);
             let _ = conn.destroy_window(win_id);
             let _ = conn.flush();
         }
+        POPUP_ACTIVE.store(false, Ordering::SeqCst);
     });
 }
 
