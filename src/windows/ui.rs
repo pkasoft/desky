@@ -1,6 +1,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+use crate::p2p::SessionStatus;
+use crate::protocol::{InputEvent, MouseButton};
 use anyhow::Result;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 use tracing::info;
 use windows::core::{w, PCWSTR};
@@ -8,35 +10,29 @@ use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POI
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateFontW, CreatePen,
-    CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC,
-    GetStockObject, InvalidateRect, ReleaseDC, RoundRect, ScreenToClient, SelectObject, SetBkColor,
-    SetBkMode, SetStretchBltMode, SetTextColor, StretchBlt, COLORONCOLOR, DEFAULT_GUI_FONT,
-    DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC,
-    HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetStockObject,
+    InvalidateRect, ReleaseDC, RoundRect, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
+    SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    COLORONCOLOR, DEFAULT_GUI_FONT, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
+    FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID,
+    SRCCOPY, TRANSPARENT,
 };
-use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+use windows::Win32::System::DataExchange::{
+    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, mouse_event, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-    MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
-};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, DrawIconEx, GetClientRect,
-    GetCursorInfo, GetCursorPos, GetIconInfo, GetMessageW, GetSystemMetrics, GetWindowTextLengthW,
-    GetWindowTextW, IsWindow, LoadCursorW, PostQuitMessage, RegisterClassExW, SendMessageW,
-    SetCursor, SetCursorPos, SetWindowDisplayAffinity, ShowWindow, TranslateMessage,
-    CS_HREDRAW, CS_VREDRAW, CURSORINFO, CURSOR_SHOWING, CW_USEDEFAULT, DI_NORMAL, HMENU,
-    ICONINFO, IDC_ARROW, IDC_HAND, MSG, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW,
-    WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CREATE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_CHILD,
-    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorInfo,
+    GetCursorPos, GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW,
+    PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetWindowDisplayAffinity,
+    SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CURSORINFO, CW_USEDEFAULT,
+    HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WDA_EXCLUDEFROMCAPTURE,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT,
+    WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
-use std::sync::atomic::AtomicIsize;
-
-
 
 // pkasoft.com White Theme color palette (GDI COLORREF little-endian: 0x00BBGGRR)
 const PK_BG: COLORREF = COLORREF(0x00F5F7F5);          // #f5f7f5 (--paper soft clean canvas)
@@ -60,6 +56,9 @@ const ID_EDIT_TARGET_CODE: usize = 1003;
 
 static IS_RUNNING: AtomicBool = AtomicBool::new(false);
 static VIEWPORT_RUNNING: AtomicBool = AtomicBool::new(false);
+
+static REMOTE_ORIG_W: AtomicU32 = AtomicU32::new(0);
+static REMOTE_ORIG_H: AtomicU32 = AtomicU32::new(0);
 
 static mut HWND_MAIN_WINDOW: HWND = HWND(std::ptr::null_mut());
 static mut HWND_EDIT_TARGET: HWND = HWND(std::ptr::null_mut());
@@ -119,7 +118,6 @@ unsafe fn create_segoe_font(height: i32, weight: windows::Win32::Graphics::Gdi::
         w!("Segoe UI"),
     )
 }
-
 
 unsafe fn draw_rounded_box(
     hdc: HDC,
@@ -258,9 +256,6 @@ fn get_responsive_layout(w: i32, h: i32) -> ResponsiveLayout {
     }
 }
 
-
-
-
 pub struct NativeWin32App {
     pub hwnd: HWND,
 }
@@ -271,7 +266,6 @@ impl NativeWin32App {
             let h_module = GetModuleHandleW(None)?;
             let h_instance: HINSTANCE = h_module.into();
 
-            // pkasoft.com theme brushes: canvas #131916, card #1c2420, input #131916
             BG_BRUSH = CreateSolidBrush(PK_BG);
             CARD_BRUSH = CreateSolidBrush(PK_CARD);
             VIEWPORT_BRUSH = CreateSolidBrush(COLORREF(0x000C0A09));
@@ -727,7 +721,7 @@ unsafe fn draw_settings_modal(
     let _ = DrawTextW(hdc, &mut sec4_text, &mut sec4_rect, DT_SINGLELINE | DT_VCENTER);
 
     SetTextColor(hdc, COLORREF(0x00A0AEC0));
-    let mut diag_text: Vec<u16> = "• Native DirectX / DXGI Desktop Duplication\n• Direct Input & Hardware Blending Active".encode_utf16().collect();
+    let mut diag_text: Vec<u16> = "• Direct P2P UDP Video & Input Stream\n• Remote Desktop Capture & Hardware Blending".encode_utf16().collect();
     let mut diag_rect = RECT { left: mx + 20, top: my + 272, right: mx + 440, bottom: my + 308 };
     let _ = DrawTextW(hdc, &mut diag_text, &mut diag_rect, Default::default());
 
@@ -768,14 +762,13 @@ unsafe fn spawn_viewport_window(target: &str) {
             std::mem::size_of::<i32>() as u32,
         );
 
-        // 2. EXCLUDE FROM CAPTURE: Prevents the hall-of-mirrors effect on local loopback!
         let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
-
         let _ = ShowWindow(hwnd, SW_SHOW);
         info!("Remote Viewport Window successfully spawned! (HWND: {:?})", hwnd);
 
-        // 3. START DEDICATED RENDER THREAD:
-        // Pass HWND as raw isize to decouple rendering from UI window dragging!
+        REMOTE_ORIG_W.store(0, Ordering::Relaxed);
+        REMOTE_ORIG_H.store(0, Ordering::Relaxed);
+
         VIEWPORT_RUNNING.store(true, Ordering::SeqCst);
         let hwnd_raw = hwnd.0 as isize;
 
@@ -800,181 +793,171 @@ unsafe fn spawn_viewport_window(target: &str) {
                     let toolbar_h = if toolbar_visible { TOOLBAR_HEIGHT } else { 0 };
 
                     if client_w > 50 && client_h > 50 {
-                        use windows::Win32::Graphics::Gdi::HGDIOBJ;
                         let hdc_window = GetDC(Some(target_hwnd));
-                        let hdc_screen = GetDC(None); // Desktop DC
-
-                        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-                        let screen_h = GetSystemMetrics(SM_CYSCREEN);
                         let mode = DISPLAY_MODE.load(Ordering::Relaxed);
                         let target_fps = TARGET_FPS.load(Ordering::Relaxed).clamp(15, 240);
 
-                        // Double-buffer memory DC: composite all stream layers off-screen
-                        // to guarantee 0% flicker, 0% strobe, and zero intermediate flashes
                         let mem_dc = CreateCompatibleDC(Some(hdc_window));
                         let mem_bmp = CreateCompatibleBitmap(hdc_window, client_w, client_h);
                         let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
 
                         let _ = SetStretchBltMode(mem_dc, COLORONCOLOR);
-
                         let view_h = client_h - toolbar_h;
 
-                        match mode {
-                            0 => {
-                                // Auto Fit (Preserve Aspect Ratio)
-                                let scale_x = client_w as f32 / screen_w as f32;
-                                let scale_y = view_h as f32 / screen_h as f32;
-                                let scale = scale_x.min(scale_y);
+                        if let Some(remote_frame) = crate::p2p::get_latest_remote_frame() {
+                            REMOTE_ORIG_W.store(remote_frame.orig_width, Ordering::Relaxed);
+                            REMOTE_ORIG_H.store(remote_frame.orig_height, Ordering::Relaxed);
 
-                                let render_w = (screen_w as f32 * scale) as i32;
-                                let render_h = (screen_h as f32 * scale) as i32;
+                            let frame_w = remote_frame.width as i32;
+                            let frame_h = remote_frame.height as i32;
 
-                                let offset_x = (client_w - render_w) / 2;
-                                let offset_y = toolbar_h + (view_h - render_h) / 2;
-
-                                // Letterbox black borders if any
-                                if offset_x > 0 {
-                                    let left_bar = RECT { left: 0, top: toolbar_h, right: offset_x, bottom: client_h };
-                                    FillRect(mem_dc, &left_bar, VIEWPORT_BRUSH);
-                                    let right_bar = RECT { left: offset_x + render_w, top: toolbar_h, right: client_w, bottom: client_h };
-                                    FillRect(mem_dc, &right_bar, VIEWPORT_BRUSH);
-                                }
-                                if (view_h - render_h) > 0 {
-                                    let top_bar = RECT { left: 0, top: toolbar_h, right: client_w, bottom: offset_y };
-                                    FillRect(mem_dc, &top_bar, VIEWPORT_BRUSH);
-                                    let bottom_bar = RECT { left: 0, top: offset_y + render_h, right: client_w, bottom: client_h };
-                                    FillRect(mem_dc, &bottom_bar, VIEWPORT_BRUSH);
-                                }
-
-                                let _ = StretchBlt(
-                                    mem_dc,
-                                    offset_x,
-                                    offset_y,
-                                    render_w,
-                                    render_h,
-                                    Some(hdc_screen),
-                                    0,
-                                    0,
-                                    screen_w,
-                                    screen_h,
-                                    SRCCOPY,
-                                );
-                            }
-                            1 => {
-                                // Stretch / Fill Window
-                                let _ = StretchBlt(
-                                    mem_dc,
-                                    0,
-                                    toolbar_h,
-                                    client_w,
-                                    view_h,
-                                    Some(hdc_screen),
-                                    0,
-                                    0,
-                                    screen_w,
-                                    screen_h,
-                                    SRCCOPY,
-                                );
-                            }
-                            _ => {
-                                // 1:1 Original Resolution (Centered)
-                                let offset_x = (client_w - screen_w) / 2;
-                                let offset_y = toolbar_h + (view_h - screen_h) / 2;
-
-                                // Fill letterbox background
-                                let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
-                                FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
-
-                                let _ = StretchBlt(
-                                    mem_dc,
-                                    offset_x,
-                                    offset_y,
-                                    screen_w,
-                                    screen_h,
-                                    Some(hdc_screen),
-                                    0,
-                                    0,
-                                    screen_w,
-                                    screen_h,
-                                    SRCCOPY,
-                                );
-                            }
-                        }
-
-                        // 1. Render Captured Remote Cursor directly onto the stream if enabled!
-                        if CAPTURE_CURSOR.load(Ordering::Relaxed) {
-                            use windows::Win32::Graphics::Gdi::HGDIOBJ;
-                            let mut ci = CURSORINFO {
-                                cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+                            let bmi = BITMAPINFO {
+                                bmiHeader: BITMAPINFOHEADER {
+                                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                                    biWidth: frame_w,
+                                    biHeight: -frame_h, // Top-down BGRA
+                                    biPlanes: 1,
+                                    biBitCount: 32,
+                                    biCompression: BI_RGB.0,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
                             };
-                            if GetCursorInfo(&mut ci).is_ok() && (ci.flags.0 & CURSOR_SHOWING.0 != 0) && !ci.hCursor.is_invalid() {
-                                let mut icon_info = ICONINFO::default();
-                                let (hot_x, hot_y) = if GetIconInfo(windows::Win32::UI::WindowsAndMessaging::HICON(ci.hCursor.0), &mut icon_info).is_ok() {
-                                    if !icon_info.hbmMask.0.is_null() {
-                                        let _ = DeleteObject(HGDIOBJ(icon_info.hbmMask.0));
-                                    }
-                                    if !icon_info.hbmColor.0.is_null() {
-                                        let _ = DeleteObject(HGDIOBJ(icon_info.hbmColor.0));
-                                    }
-                                    (icon_info.xHotspot as i32, icon_info.yHotspot as i32)
-                                } else {
-                                    (0, 0)
-                                };
 
-                                let cursor_x = ci.ptScreenPos.x;
-                                let cursor_y = ci.ptScreenPos.y;
+                            match mode {
+                                0 => {
+                                    // Auto Fit (Preserve Aspect Ratio)
+                                    let scale_x = client_w as f32 / frame_w as f32;
+                                    let scale_y = view_h as f32 / frame_h as f32;
+                                    let scale = scale_x.min(scale_y);
 
-                                let render_pos = match mode {
-                                    0 => {
-                                        let scale_x = client_w as f32 / screen_w as f32;
-                                        let scale_y = view_h as f32 / screen_h as f32;
-                                        let scale = scale_x.min(scale_y);
-                                        let render_w = (screen_w as f32 * scale) as i32;
-                                        let offset_x = (client_w - render_w) / 2;
-                                        let render_h = (screen_h as f32 * scale) as i32;
-                                        let offset_y = toolbar_h + (view_h - render_h) / 2;
-                                        (
-                                            offset_x + (cursor_x as f32 * scale) as i32 - hot_x,
-                                            offset_y + (cursor_y as f32 * scale) as i32 - hot_y,
-                                        )
-                                    }
-                                    1 => {
-                                        (
-                                            (cursor_x * client_w) / screen_w - hot_x,
-                                            toolbar_h + (cursor_y * view_h) / screen_h - hot_y,
-                                        )
-                                    }
-                                    _ => {
-                                        let offset_x = (client_w - screen_w) / 2;
-                                        let offset_y = toolbar_h + (view_h - screen_h) / 2;
-                                        (
-                                            offset_x + cursor_x - hot_x,
-                                            offset_y + cursor_y - hot_y,
-                                        )
-                                    }
-                                };
+                                    let render_w = (frame_w as f32 * scale) as i32;
+                                    let render_h = (frame_h as f32 * scale) as i32;
 
-                                let _ = DrawIconEx(
-                                    mem_dc,
-                                    render_pos.0,
-                                    render_pos.1,
-                                    ci.hCursor.into(),
-                                    0,
-                                    0,
-                                    0,
-                                    None,
-                                    DI_NORMAL,
-                                );
+                                    let offset_x = (client_w - render_w) / 2;
+                                    let offset_y = toolbar_h + (view_h - render_h) / 2;
+
+                                    if offset_x > 0 {
+                                        let left_bar = RECT { left: 0, top: toolbar_h, right: offset_x, bottom: client_h };
+                                        FillRect(mem_dc, &left_bar, VIEWPORT_BRUSH);
+                                        let right_bar = RECT { left: offset_x + render_w, top: toolbar_h, right: client_w, bottom: client_h };
+                                        FillRect(mem_dc, &right_bar, VIEWPORT_BRUSH);
+                                    }
+                                    if (view_h - render_h) > 0 {
+                                        let top_bar = RECT { left: 0, top: toolbar_h, right: client_w, bottom: offset_y };
+                                        FillRect(mem_dc, &top_bar, VIEWPORT_BRUSH);
+                                        let bottom_bar = RECT { left: 0, top: offset_y + render_h, right: client_w, bottom: client_h };
+                                        FillRect(mem_dc, &bottom_bar, VIEWPORT_BRUSH);
+                                    }
+
+                                    let _ = StretchDIBits(
+                                        mem_dc,
+                                        offset_x,
+                                        offset_y,
+                                        render_w,
+                                        render_h,
+                                        0,
+                                        0,
+                                        frame_w,
+                                        frame_h,
+                                        Some(remote_frame.bgra.as_ptr() as *const _),
+                                        &bmi,
+                                        DIB_RGB_COLORS,
+                                        SRCCOPY,
+                                    );
+                                }
+                                1 => {
+                                    // Stretch / Fill Window
+                                    let _ = StretchDIBits(
+                                        mem_dc,
+                                        0,
+                                        toolbar_h,
+                                        client_w,
+                                        view_h,
+                                        0,
+                                        0,
+                                        frame_w,
+                                        frame_h,
+                                        Some(remote_frame.bgra.as_ptr() as *const _),
+                                        &bmi,
+                                        DIB_RGB_COLORS,
+                                        SRCCOPY,
+                                    );
+                                }
+                                _ => {
+                                    // 1:1 Original Resolution (Centered)
+                                    let orig_w = remote_frame.orig_width as i32;
+                                    let orig_h = remote_frame.orig_height as i32;
+                                    let offset_x = (client_w - orig_w) / 2;
+                                    let offset_y = toolbar_h + (view_h - orig_h) / 2;
+
+                                    let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
+                                    FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
+
+                                    let _ = StretchDIBits(
+                                        mem_dc,
+                                        offset_x,
+                                        offset_y,
+                                        orig_w,
+                                        orig_h,
+                                        0,
+                                        0,
+                                        frame_w,
+                                        frame_h,
+                                        Some(remote_frame.bgra.as_ptr() as *const _),
+                                        &bmi,
+                                        DIB_RGB_COLORS,
+                                        SRCCOPY,
+                                    );
+                                }
                             }
+                        } else {
+                            // Waiting for remote host stream or connection error
+                            let bg_rect = RECT { left: 0, top: toolbar_h, right: client_w, bottom: client_h };
+                            FillRect(mem_dc, &bg_rect, VIEWPORT_BRUSH);
+
+                            let status = crate::p2p::get_session_status();
+                            let (status_msg, color) = match status {
+                                SessionStatus::Connecting(id) => (
+                                    format!("⚡ Connecting to Remote Desk {} ...", id),
+                                    COLORREF(0x00EDB363),
+                                ),
+                                SessionStatus::Error(err) => (
+                                    format!("❌ {}  (Press Esc to close)", err),
+                                    COLORREF(0x006060FF),
+                                ),
+                                _ => (
+                                    "⚡ Waiting for remote video stream...".to_string(),
+                                    COLORREF(0x00A0AEC0),
+                                ),
+                            };
+
+                            let status_font = create_segoe_font(22, FW_SEMIBOLD);
+                            let old_f = SelectObject(mem_dc, HGDIOBJ(status_font.0));
+                            SetBkMode(mem_dc, TRANSPARENT);
+                            SetTextColor(mem_dc, color);
+                            let mut status_wide: Vec<u16> = status_msg.encode_utf16().collect();
+                            let mut status_rect = RECT {
+                                left: 20,
+                                top: toolbar_h,
+                                right: client_w - 20,
+                                bottom: client_h,
+                            };
+                            let _ = DrawTextW(
+                                mem_dc,
+                                &mut status_wide,
+                                &mut status_rect,
+                                DT_SINGLELINE | DT_CENTER | DT_VCENTER,
+                            );
+                            let _ = SelectObject(mem_dc, old_f);
+                            let _ = DeleteObject(HGDIOBJ(status_font.0));
                         }
 
                         // 2. Draw Top Toolbar (Clean AnyDesk style with Settings button)
+                        let rtt = Duration::from_millis(crate::p2p::get_session_rtt_ms() as u64);
                         if toolbar_visible {
-                            draw_toolbar(mem_dc, client_w, TOOLBAR_HEIGHT, mode, target_fps, frame_start.elapsed());
+                            draw_toolbar(mem_dc, client_w, TOOLBAR_HEIGHT, mode, target_fps, rtt);
                         } else {
-                            // Show compact "⚙ Settings" tab in top right
-                            use windows::Win32::Graphics::Gdi::HGDIOBJ;
                             let tab_brush = CreateSolidBrush(COLORREF(0x002B2522));
                             let tab_rect = RECT { left: client_w - 110, top: 0, right: client_w - 10, bottom: 26 };
                             FillRect(mem_dc, &tab_rect, tab_brush);
@@ -992,13 +975,12 @@ unsafe fn spawn_viewport_window(target: &str) {
                             draw_settings_modal(mem_dc, client_w, client_h, mode, target_fps);
                         }
 
-                        // Atomic blit completed frame to screen in ONE pass: zero intermediate redraws or flashes!
+                        // Atomic blit completed frame to screen in ONE pass
                         let _ = BitBlt(hdc_window, 0, 0, client_w, client_h, Some(mem_dc), 0, 0, SRCCOPY);
 
                         let _ = SelectObject(mem_dc, old_bmp);
                         let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
                         let _ = DeleteObject(HGDIOBJ(mem_dc.0));
-                        let _ = ReleaseDC(None, hdc_screen);
                         let _ = ReleaseDC(Some(target_hwnd), hdc_window);
                     }
                 }
@@ -1011,6 +993,7 @@ unsafe fn spawn_viewport_window(target: &str) {
                     std::thread::sleep(target_interval - elapsed);
                 }
             }
+            crate::p2p::stop_client_session();
             info!("Dedicated Viewport Render Thread Exited.");
         });
     } else {
@@ -1024,22 +1007,24 @@ unsafe fn inject_remote_mouse(hwnd: HWND, client_x: i32, client_y: i32, is_down:
     let client_w = rect.right - rect.left;
     let client_h = rect.bottom - rect.top;
 
-    if client_w > 0 && client_h > 0 {
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+    let screen_w = REMOTE_ORIG_W.load(Ordering::Relaxed) as i32;
+    let screen_h = REMOTE_ORIG_H.load(Ordering::Relaxed) as i32;
+
+    if client_w > 0 && client_h > 0 && screen_w > 0 && screen_h > 0 {
         let toolbar_h = if SHOW_TOOLBAR.load(Ordering::Relaxed) { TOOLBAR_HEIGHT } else { 0 };
         let mode = DISPLAY_MODE.load(Ordering::Relaxed);
 
         if let Some((dest_x, dest_y)) = map_client_to_screen(
             client_x, client_y, client_w, client_h, screen_w, screen_h, toolbar_h, mode,
         ) {
-            let _ = SetCursorPos(dest_x, dest_y);
-            let flag = if is_right {
-                if is_down { MOUSEEVENTF_RIGHTDOWN } else { MOUSEEVENTF_RIGHTUP }
+            crate::p2p::send_remote_input(InputEvent::MouseMove { x: dest_x, y: dest_y });
+            let button = if is_right { MouseButton::Right } else { MouseButton::Left };
+            let ev = if is_down {
+                InputEvent::MouseDown { button }
             } else {
-                if is_down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP }
+                InputEvent::MouseUp { button }
             };
-            mouse_event(flag, 0, 0, 0, 0);
+            crate::p2p::send_remote_input(ev);
         }
     }
 }
@@ -1050,16 +1035,17 @@ unsafe fn inject_remote_mouse_move(hwnd: HWND, client_x: i32, client_y: i32) {
     let client_w = rect.right - rect.left;
     let client_h = rect.bottom - rect.top;
 
-    if client_w > 0 && client_h > 0 {
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+    let screen_w = REMOTE_ORIG_W.load(Ordering::Relaxed) as i32;
+    let screen_h = REMOTE_ORIG_H.load(Ordering::Relaxed) as i32;
+
+    if client_w > 0 && client_h > 0 && screen_w > 0 && screen_h > 0 {
         let toolbar_h = if SHOW_TOOLBAR.load(Ordering::Relaxed) { TOOLBAR_HEIGHT } else { 0 };
         let mode = DISPLAY_MODE.load(Ordering::Relaxed);
 
         if let Some((dest_x, dest_y)) = map_client_to_screen(
             client_x, client_y, client_w, client_h, screen_w, screen_h, toolbar_h, mode,
         ) {
-            let _ = SetCursorPos(dest_x, dest_y);
+            crate::p2p::send_remote_input(InputEvent::MouseMove { x: dest_x, y: dest_y });
         }
     }
 }
@@ -1070,25 +1056,34 @@ unsafe fn inject_remote_mouse_middle(hwnd: HWND, client_x: i32, client_y: i32, i
     let client_w = rect.right - rect.left;
     let client_h = rect.bottom - rect.top;
 
-    if client_w > 0 && client_h > 0 {
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+    let screen_w = REMOTE_ORIG_W.load(Ordering::Relaxed) as i32;
+    let screen_h = REMOTE_ORIG_H.load(Ordering::Relaxed) as i32;
+
+    if client_w > 0 && client_h > 0 && screen_w > 0 && screen_h > 0 {
         let toolbar_h = if SHOW_TOOLBAR.load(Ordering::Relaxed) { TOOLBAR_HEIGHT } else { 0 };
         let mode = DISPLAY_MODE.load(Ordering::Relaxed);
 
         if let Some((dest_x, dest_y)) = map_client_to_screen(
             client_x, client_y, client_w, client_h, screen_w, screen_h, toolbar_h, mode,
         ) {
-            let _ = SetCursorPos(dest_x, dest_y);
-            let flag = if is_down { MOUSEEVENTF_MIDDLEDOWN } else { MOUSEEVENTF_MIDDLEUP };
-            mouse_event(flag, 0, 0, 0, 0);
+            crate::p2p::send_remote_input(InputEvent::MouseMove { x: dest_x, y: dest_y });
+            let ev = if is_down {
+                InputEvent::MouseDown { button: MouseButton::Middle }
+            } else {
+                InputEvent::MouseUp { button: MouseButton::Middle }
+            };
+            crate::p2p::send_remote_input(ev);
         }
     }
 }
 
 unsafe fn inject_remote_key(vk: u8, is_up: bool) {
-    let flags = if is_up { KEYEVENTF_KEYUP } else { Default::default() };
-    keybd_event(vk, 0, flags, 0);
+    let ev = if is_up {
+        InputEvent::KeyUp { key_code: vk as u32 }
+    } else {
+        InputEvent::KeyDown { key_code: vk as u32 }
+    };
+    crate::p2p::send_remote_input(ev);
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -1325,12 +1320,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let mut tag2_rect = RECT { left: c2_x + 18, top: card_y + 14, right: c2_x + 18 + tag2_w, bottom: card_y + 14 + tag2_h };
                     let _ = DrawTextW(mem_dc, &mut tag2, &mut tag2_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-                    // Label above input box
-                    SetTextColor(mem_dc, PK_MUTED);
-                    let mut enter_label: Vec<u16> = "REMOTE ID".encode_utf16().collect();
-                    let mut enter_label_rect = RECT { left: c2_x + 18, top: input_box_y - f_badge - 6, right: c2_x + card_w - 18, bottom: input_box_y - 2 };
-                    let _ = DrawTextW(mem_dc, &mut enter_label, &mut enter_label_rect, DT_SINGLELINE | DT_VCENTER);
-
                     // Input Box Frame
                     draw_rounded_box(mem_dc, input_box_x, input_box_y, input_box_w, input_box_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
@@ -1471,6 +1460,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         return LRESULT(0);
                     }
 
+                    let local_id_digits: String = {
+                        let guard = LOCAL_DESKY_ID.lock().unwrap();
+                        let s = if !guard.is_empty() {
+                            guard.clone()
+                        } else {
+                            crate::identity::load_or_create_identity()
+                                .desky_id
+                                .unwrap_or_default()
+                        };
+                        s.chars().filter(|c| c.is_ascii_digit()).collect()
+                    };
+
+                    if !local_id_digits.is_empty() && digits == local_id_digits {
+                        append_status_log("⚠️ That is THIS computer's own ID! Please enter the remote computer's ID.");
+                        return LRESULT(0);
+                    }
+
                     let target_display = if digits.len() == 9 {
                         format!("{} {} {}", &digits[0..3], &digits[3..6], &digits[6..9])
                     } else {
@@ -1480,13 +1486,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     info!("Initiating P2P session to remote Desky ID: {}", target_display);
                     append_status_log(&format!("⚡ Connecting to Remote Desky ID: {} via UDP Rendezvous...", target_display));
 
+                    // Start real P2P client connection & stream receiver for the targeted remote ID
+                    crate::p2p::start_client_session(
+                        &target_display,
+                        TARGET_FPS.load(Ordering::Relaxed),
+                        CAPTURE_CURSOR.load(Ordering::Relaxed),
+                    );
+
                     // Launch the Viewport Stream Window!
                     spawn_viewport_window(&target_display);
                 }
             }
             LRESULT(0)
         }
-
 
         WM_CTLCOLOREDIT => {
             unsafe {
@@ -1505,6 +1517,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let _ = DeleteObject(HGDIOBJ(old as *mut _));
                 }
                 VIEWPORT_RUNNING.store(false, Ordering::SeqCst);
+                crate::p2p::stop_client_session();
                 PostQuitMessage(0);
             }
             LRESULT(0)
@@ -1574,6 +1587,10 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                         TARGET_FPS.store(120, Ordering::Relaxed);
                         info!("Settings Modal: Framerate set to 120 FPS");
                     }
+                    crate::p2p::update_client_preferences(
+                        TARGET_FPS.load(Ordering::Relaxed),
+                        CAPTURE_CURSOR.load(Ordering::Relaxed),
+                    );
                     return LRESULT(0);
                 }
 
@@ -1581,6 +1598,10 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 if client_y >= my + 206 && client_y <= my + 240 && client_x >= mx + 20 && client_x <= mx + 440 {
                     let prev = CAPTURE_CURSOR.fetch_xor(true, Ordering::Relaxed);
                     info!("Settings Modal: Remote cursor capture toggled: {}", !prev);
+                    crate::p2p::update_client_preferences(
+                        TARGET_FPS.load(Ordering::Relaxed),
+                        CAPTURE_CURSOR.load(Ordering::Relaxed),
+                    );
                     return LRESULT(0);
                 }
 
@@ -1698,7 +1719,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
         }
         WM_SETCURSOR => {
             let hit_test = (lparam.0 & 0xffff) as i16 as i32;
-            if hit_test == 1 { // HTCLIENT
+            if hit_test == 1 {
                 let toolbar_visible = SHOW_TOOLBAR.load(Ordering::Relaxed);
                 let modal_open = SHOW_SETTINGS_MODAL.load(Ordering::Relaxed);
                 let mut cursor_pt = POINT::default();
@@ -1720,10 +1741,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
         WM_MOUSEWHEEL => {
             if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
-                unsafe {
-                    use windows::Win32::UI::Input::KeyboardAndMouse::{mouse_event, MOUSEEVENTF_WHEEL};
-                    mouse_event(MOUSEEVENTF_WHEEL, 0, 0, delta, 0);
-                }
+                crate::p2p::send_remote_input(InputEvent::MouseWheel { delta });
             }
             LRESULT(0)
         }
@@ -1734,6 +1752,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                 } else {
                     VIEWPORT_RUNNING.store(false, Ordering::SeqCst);
+                    crate::p2p::stop_client_session();
                     unsafe {
                         let _ = DestroyWindow(hwnd);
                     }
@@ -1767,6 +1786,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
         }
         WM_DESTROY => {
             VIEWPORT_RUNNING.store(false, Ordering::SeqCst);
+            crate::p2p::stop_client_session();
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
