@@ -1,8 +1,8 @@
 use anyhow::Result;
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchBlt, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HALFTONE, HGDIOBJ, SRCCOPY,
+    ReleaseDC, SelectObject, SetStretchBltMode, StretchBlt, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+    COLORONCOLOR, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, CURSORINFO, CURSOR_SHOWING,
@@ -41,9 +41,8 @@ pub fn capture_screen_frame(
         if cap_w == orig_w && cap_h == orig_h {
             let _ = BitBlt(mem_dc, 0, 0, cap_w, cap_h, Some(hdc_screen), 0, 0, SRCCOPY);
         } else {
-            // HALFTONE interpolation preserves crisp text anti-aliasing when downscaling
-            let _ = SetStretchBltMode(mem_dc, HALFTONE);
-            let _ = SetBrushOrgEx(mem_dc, 0, 0, None);
+            // Fast hardware-accelerated downscaling for smooth high-FPS capture
+            let _ = SetStretchBltMode(mem_dc, COLORONCOLOR);
             let _ = StretchBlt(
                 mem_dc,
                 0,

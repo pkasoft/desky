@@ -76,7 +76,7 @@ static CLIENT_CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 static QUALITY_MODE: AtomicU8 = AtomicU8::new(0);
 
 static ACTIVE_JPEG_QUALITY: AtomicU8 = AtomicU8::new(76);
-static ACTIVE_SCALE_PCT: AtomicU8 = AtomicU8::new(90);
+static ACTIVE_SCALE_PCT: AtomicU8 = AtomicU8::new(100);
 static ACTIVE_CHROMA_444: AtomicBool = AtomicBool::new(true);
 static SESSION_RTT_MS: AtomicU32 = AtomicU32::new(0);
 static SESSION_BITRATE_KBPS: AtomicU32 = AtomicU32::new(0);
@@ -234,9 +234,9 @@ fn apply_preset_for_mode(mode: u8) {
             ACTIVE_CHROMA_444.store(false, Ordering::Relaxed);
         }
         _ => {
-            // Auto Adaptive initial baseline: fast guaranteed first-frame delivery, then scales up to 100% 4:4:4
+            // Auto Adaptive initial baseline: 100% 1:1 native capture (zero downscale CPU overhead)
             ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
-            ACTIVE_SCALE_PCT.store(90, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
     }
@@ -442,17 +442,64 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut last_matchmaker_retry = Instant::now();
             let mut received_any_frame = false;
 
+            // Dedicated Latest-Frame JPEG Decoder Thread so UDP recv_from NEVER blocks on CPU decoding!
+            let decode_slot: Arc<(Mutex<Option<(u32, u32, u32, Vec<u8>)>>, std::sync::Condvar)> =
+                Arc::new((Mutex::new(None), std::sync::Condvar::new()));
+            {
+                let slot_worker = Arc::clone(&decode_slot);
+                let disp_worker = display_target.clone();
+                std::thread::spawn(move || {
+                    let mut logged_first = false;
+                    while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
+                        && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
+                    {
+                        let job = {
+                            let (lock, cvar) = &*slot_worker;
+                            let mut guard = match lock.lock() {
+                                Ok(g) => g,
+                                Err(_) => break,
+                            };
+                            if guard.is_none() {
+                                let (g, _) = match cvar.wait_timeout(guard, Duration::from_millis(50)) {
+                                    Ok(res) => res,
+                                    Err(_) => break,
+                                };
+                                guard = g;
+                            }
+                            guard.take()
+                        };
+
+                        if let Some((f_id, orig_w, orig_h, jpeg_bytes)) = job {
+                            if let Some(decoded) = decode_jpeg_to_bgra(f_id, orig_w, orig_h, &jpeg_bytes) {
+                                if !logged_first {
+                                    logged_first = true;
+                                    set_session_status(SessionStatus::Connected(disp_worker.clone()));
+                                    #[cfg(target_os = "windows")]
+                                    crate::windows::ui::append_status_log(&format!(
+                                        "🎉 Connected to Remote Desk {} ({}x{})!",
+                                        disp_worker, decoded.orig_width, decoded.orig_height
+                                    ));
+                                }
+                                if let Ok(mut g) = frame_store().lock() {
+                                    *g = Some(Arc::new(decoded));
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
             // Dynamic Adaptive Bitrate (ABR) telemetry state
             let mut abr_window_start = Instant::now();
             let mut abr_bytes_received: u64 = 0;
             let mut abr_frames_completed: u32 = 0;
             let mut abr_frames_dropped: u32 = 0;
-            let mut abr_tier: i32 = 1; // Starts at Tier 1 for instant first-frame delivery, then scales up to Tier 3!
+            let mut abr_tier: i32 = 2;
 
             while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                 && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
             {
-                // Update ABR & live bitrate telemetry every 650ms (even before first frame so it can step down if needed!)
+                // Update ABR & live bitrate telemetry every 650ms
                 let abr_elapsed = abr_window_start.elapsed();
                 if abr_elapsed >= Duration::from_millis(650) {
                     let secs = abr_elapsed.as_secs_f64().max(0.1);
@@ -461,22 +508,22 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                     if QUALITY_MODE.load(Ordering::Relaxed) == 0 {
                         let rtt = SESSION_RTT_MS.load(Ordering::Relaxed);
-                        if abr_frames_dropped >= 1 || rtt > 220 {
+                        if abr_frames_dropped >= 2 || rtt > 220 {
                             abr_tier = (abr_tier - 1).max(0);
                         } else if received_any_frame
                             && abr_frames_dropped == 0
-                            && abr_frames_completed >= 4
+                            && abr_frames_completed >= 5
                             && rtt < 110
                         {
                             abr_tier = (abr_tier + 1).min(3);
                         }
 
-                        // Prioritizes low latency + 4:4:4 sharp text
+                        // Keep 100% 1:1 native capture on Tiers 1..3 so Host never wastes CPU downscaling!
                         let (q, sc, c444) = match abr_tier {
                             3 => (82u8, 100u8, true),
-                            2 => (76u8, 100u8, true),
-                            1 => (72u8, 90u8, true),
-                            _ => (62u8, 75u8, false),
+                            2 => (75u8, 100u8, true),
+                            1 => (68u8, 100u8, true),
+                            _ => (58u8, 80u8, false),
                         };
                         ACTIVE_JPEG_QUALITY.store(q, Ordering::Relaxed);
                         ACTIVE_SCALE_PCT.store(sc, Ordering::Relaxed);
@@ -694,29 +741,14 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 highest_decoded_frame = frame_id;
                                                 partial_frame = None;
                                                 abr_frames_completed += 1;
+                                                received_any_frame = true;
 
-                                                if let Some(decoded) = decode_jpeg_to_bgra(
-                                                    frame_id,
-                                                    orig_w,
-                                                    orig_h,
-                                                    &jpeg_data,
-                                                ) {
-                                                    if !received_any_frame {
-                                                        received_any_frame = true;
-                                                        set_session_status(SessionStatus::Connected(
-                                                            display_target.clone(),
-                                                        ));
-                                                        #[cfg(target_os = "windows")]
-                                                        crate::windows::ui::append_status_log(&format!(
-                                                            "🎉 Connected to Remote Desk {} ({}x{})!",
-                                                            display_target,
-                                                            decoded.orig_width,
-                                                            decoded.orig_height
-                                                        ));
-                                                    }
-                                                    if let Ok(mut g) = frame_store().lock() {
-                                                        *g = Some(Arc::new(decoded));
-                                                    }
+                                                // Hand off JPEG buffer to dedicated decoder thread in <1µs
+                                                // so UDP recv_from never pauses and never drops incoming chunks!
+                                                let (lock, cvar) = &*decode_slot;
+                                                if let Ok(mut slot) = lock.lock() {
+                                                    *slot = Some((frame_id, orig_w, orig_h, jpeg_data));
+                                                    cvar.notify_one();
                                                 }
                                             }
                                         }
@@ -954,6 +986,7 @@ impl P2PManager {
                         stream_rt.block_on(async move {
                             let mut frame_id: u32 = 1;
                             let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
+                            let mut last_jpeg_len: usize = 0;
 
                             while running_stream.load(Ordering::Relaxed) {
                                 let loop_start = Instant::now();
@@ -972,7 +1005,7 @@ impl P2PManager {
                                 };
 
                                 if subscribers.is_empty() {
-                                    std::thread::sleep(Duration::from_millis(15));
+                                    std::thread::sleep(Duration::from_millis(12));
                                     continue;
                                 }
 
@@ -983,11 +1016,11 @@ impl P2PManager {
                                     .unwrap_or(60)
                                     .clamp(15, 60);
                                 let cap_cursor = subscribers.iter().any(|s| s.capture_cursor);
-                                let jpeg_quality = subscribers
+                                let req_quality = subscribers
                                     .iter()
                                     .map(|s| s.jpeg_quality)
                                     .max()
-                                    .unwrap_or(76)
+                                    .unwrap_or(75)
                                     .clamp(40, 92);
                                 let scale_pct = subscribers
                                     .iter()
@@ -995,7 +1028,16 @@ impl P2PManager {
                                     .max()
                                     .unwrap_or(100)
                                     .clamp(50, 100);
-                                let use_chroma_444 = subscribers.iter().any(|s| s.chroma_444);
+                                let req_chroma_444 = subscribers.iter().any(|s| s.chroma_444);
+
+                                // Single-pass adaptive sizing based on previous frame size (zero double-encoding!)
+                                let (jpeg_quality, use_chroma_444) = if last_jpeg_len > 72_000 {
+                                    ((req_quality.saturating_sub(10)).max(55), false)
+                                } else if last_jpeg_len > 55_000 {
+                                    ((req_quality.saturating_sub(5)).max(62), req_chroma_444)
+                                } else {
+                                    (req_quality, req_chroma_444)
+                                };
 
                                 #[cfg(target_os = "windows")]
                                 let cap_res = crate::windows::capture::capture_screen_frame(cap_cursor, scale_pct);
@@ -1011,34 +1053,17 @@ impl P2PManager {
                                         jpeg_encoder::SamplingFactor::R_4_2_0
                                     });
 
-                                    let mut encoded_ok = encoder
+                                    if encoder
                                         .encode(
                                             &bgra,
                                             cap_w as u16,
                                             cap_h as u16,
                                             jpeg_encoder::ColorType::Bgra,
                                         )
-                                        .is_ok();
-
-                                    // Frame size guard: if a complex frame exceeds 64 KB (~52 UDP packets),
-                                    // re-encode compactly so the UDP burst never overflows home router upload queues!
-                                    if encoded_ok && jpeg_buf.len() > 64_000 {
-                                        jpeg_buf.clear();
-                                        let fallback_q = (jpeg_quality.saturating_sub(14)).max(52);
-                                        let mut enc2 = jpeg_encoder::Encoder::new(&mut jpeg_buf, fallback_q);
-                                        enc2.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
-                                        encoded_ok = enc2
-                                            .encode(
-                                                &bgra,
-                                                cap_w as u16,
-                                                cap_h as u16,
-                                                jpeg_encoder::ColorType::Bgra,
-                                            )
-                                            .is_ok();
-                                    }
-
-                                    if encoded_ok {
-                                        let chunk_size = 1240usize;
+                                        .is_ok()
+                                    {
+                                        last_jpeg_len = jpeg_buf.len();
+                                        let chunk_size = 1280usize;
                                         let total_chunks = ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
 
                                         if total_chunks <= 2048 {
@@ -1057,11 +1082,10 @@ impl P2PManager {
                                                     let _ = socket_stream.send_to(&pkt, sub.addr).await;
                                                 }
 
-                                                // Smooth ~45 Mbps micro-pacing (220µs every 4 chunks = ~2.5ms per 50KB frame)
-                                                // Prevents router upload buffer drops while keeping latency <3ms!
-                                                if (idx + 1) % 4 == 0 {
+                                                // Fast micro-pacing (140µs every 6 chunks = ~1ms total per frame)
+                                                if (idx + 1) % 6 == 0 {
                                                     let t_pace = Instant::now();
-                                                    while t_pace.elapsed() < Duration::from_micros(220) {
+                                                    while t_pace.elapsed() < Duration::from_micros(140) {
                                                         std::hint::spin_loop();
                                                     }
                                                 }

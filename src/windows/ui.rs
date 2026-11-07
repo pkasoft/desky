@@ -13,8 +13,9 @@ use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, InvalidateRect,
     ReleaseDC, RoundRect, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetBrushOrgEx,
     SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD,
-    HALFTONE, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    COLORONCOLOR, DIB_RGB_COLORS, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL,
+    FW_SEMIBOLD, HALFTONE, HBRUSH, HDC, HFONT, HGDIOBJ, OPAQUE, PAINTSTRUCT, PS_SOLID, SRCCOPY,
+    TRANSPARENT,
 };
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
@@ -22,16 +23,15 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorInfo,
-    GetCursorPos, GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW,
-    PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow,
-    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
-    CURSORINFO, CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE, SWP_NOZORDER,
-    SW_HIDE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW,
-    WS_TABSTOP, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
+    GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW, PostQuitMessage,
+    RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow, SetWindowDisplayAffinity,
+    SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU,
+    IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
+    WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND,
+    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT, WM_SIZE,
+    WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
 
 // pkasoft.com White Theme color palette (GDI COLORREF little-endian: 0x00BBGGRR)
@@ -372,18 +372,12 @@ static SHOW_TOOLBAR: AtomicBool = AtomicBool::new(true);
 // Full-Screen Settings Page state
 static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 
+// Active AnyDesk-style settings sidebar category:
+// 0 = Display & Quality, 1 = Adaptive Bitrate (ABR), 2 = Performance & Input, 3 = Connection Info
+static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
+
 // Remote cursor capture toggle (renders live host cursor on stream)
 static CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
-
-unsafe fn sync_remote_cursor() {
-    let mut ci = CURSORINFO {
-        cbSize: std::mem::size_of::<CURSORINFO>() as u32,
-        ..Default::default()
-    };
-    if GetCursorInfo(&mut ci).is_ok() && !ci.hCursor.is_invalid() {
-        let _ = SetCursor(Some(ci.hCursor));
-    }
-}
 
 fn format_bitrate(kbps: u32) -> String {
     if kbps >= 1000 {
@@ -467,21 +461,17 @@ unsafe fn draw_toolbar(
     fps: u32,
     latency: Duration,
 ) {
-    use windows::Win32::Graphics::Gdi::HGDIOBJ;
-
-    // 1. Toolbar background (#16181D)
-    let bg_brush = CreateSolidBrush(COLORREF(0x001D1816));
+    // 1. Clean White Toolbar Background (PK_CARD)
     let bar_rect = RECT {
         left: 0,
         top: 0,
         right: client_w,
         bottom: toolbar_h,
     };
-    FillRect(hdc, &bar_rect, bg_brush);
-    let _ = DeleteObject(HGDIOBJ(bg_brush.0));
+    FillRect(hdc, &bar_rect, CARD_BRUSH);
 
-    // 2. Bottom border line (#2B2F3A)
-    let border_brush = CreateSolidBrush(COLORREF(0x003A2F2B));
+    // 2. Subtle Emerald-Sage Bottom Border Line (PK_CARD_BORDER)
+    let border_brush = CreateSolidBrush(PK_CARD_BORDER);
     let border_rect = RECT {
         left: 0,
         top: toolbar_h - 1,
@@ -491,20 +481,25 @@ unsafe fn draw_toolbar(
     FillRect(hdc, &border_rect, border_brush);
     let _ = DeleteObject(HGDIOBJ(border_brush.0));
 
+    let font_bold = create_segoe_font(15, FW_BOLD);
+    let font_reg = create_segoe_font(14, FW_SEMIBOLD);
+    let old_font = SelectObject(hdc, HGDIOBJ(font_bold.0));
     SetBkMode(hdc, TRANSPARENT);
 
-    // 3. Logo & Status
-    SetTextColor(hdc, COLORREF(0x0000D7FF)); // Cyan/Gold accent
+    // 3. Logo & Live Status Pill
+    SetTextColor(hdc, PK_GREEN_DARK);
     let mut logo_text: Vec<u16> = "⚡ DESKY".encode_utf16().collect();
-    let mut logo_rect = RECT { left: 12, top: 6, right: 85, bottom: 34 };
+    let mut logo_rect = RECT { left: 14, top: 6, right: 86, bottom: 34 };
     let _ = DrawTextW(hdc, &mut logo_text, &mut logo_rect, DT_SINGLELINE | DT_VCENTER);
 
-    SetTextColor(hdc, COLORREF(0x0078BB48)); // Green live status
+    draw_rounded_box(hdc, 88, 8, 62, 24, PK_GREEN_TINT, PK_GREEN, 12);
+    let _ = SelectObject(hdc, HGDIOBJ(font_reg.0));
+    SetTextColor(hdc, PK_GREEN);
     let mut live_text: Vec<u16> = "● LIVE".encode_utf16().collect();
-    let mut live_rect = RECT { left: 88, top: 6, right: 145, bottom: 34 };
-    let _ = DrawTextW(hdc, &mut live_text, &mut live_rect, DT_SINGLELINE | DT_VCENTER);
+    let mut live_rect = RECT { left: 88, top: 8, right: 150, bottom: 32 };
+    let _ = DrawTextW(hdc, &mut live_text, &mut live_rect, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // 4. Live Session Summary Badge (Clean, unstacked!)
+    // 4. Live Session Summary Badge
     let mode_str = match mode {
         0 => "⛶ Auto Fit",
         1 => "↔ Fill",
@@ -520,47 +515,36 @@ unsafe fn draw_toolbar(
     let (q_val, sc_val, _) = crate::p2p::get_active_quality_params();
     let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
     let badge_str = format!(
-        "{}  •  {} (Q{} / {}%)  •  {}  •  {} FPS  •  RTT: {:?}",
+        "{}   •   {} (Q{} / {}%)   •   {}   •   {} FPS   •   RTT: {:?}",
         mode_str, q_mode_str, q_val, sc_val, bitrate_str, fps, latency
     );
-    SetTextColor(hdc, COLORREF(0x00A0AEC0)); // Slate gray
+    SetTextColor(hdc, PK_MUTED);
     let mut badge_wide: Vec<u16> = badge_str.encode_utf16().collect();
-    let mut badge_rect = RECT { left: 155, top: 6, right: client_w - 225, bottom: 34 };
+    let mut badge_rect = RECT { left: 162, top: 6, right: client_w - 225, bottom: 34 };
     let _ = DrawTextW(hdc, &mut badge_wide, &mut badge_rect, DT_SINGLELINE | DT_VCENTER);
 
-    // Helper closure to render buttons
-    let draw_btn = |left: i32, right: i32, text: &str, is_highlighted: bool| {
-        let btn_rect = RECT { left, top: 6, right, bottom: 34 };
-        let brush_color = if is_highlighted {
-            COLORREF(0x007E4C2B) // Blue accent
-        } else {
-            COLORREF(0x002B2522) // Inactive dark background
-        };
-        let brush = CreateSolidBrush(brush_color);
-        FillRect(hdc, &btn_rect, brush);
-        let _ = DeleteObject(HGDIOBJ(brush.0));
-
-        let text_color = if is_highlighted {
-            COLORREF(0x00EDB363) // Bright active cyan/gold
-        } else {
-            COLORREF(0x00CBD5E0) // Light slate gray
-        };
-        SetTextColor(hdc, text_color);
+    let draw_btn = |left: i32, right: i32, text: &str, is_primary: bool| {
+        let fill = if is_primary { PK_GREEN } else { PK_GREEN_TINT };
+        let border = if is_primary { PK_GREEN_DARK } else { PK_CARD_BORDER };
+        draw_rounded_box(hdc, left, 6, right - left, 28, fill, border, 7);
+        SetTextColor(hdc, if is_primary { COLORREF(0x00FFFFFF) } else { PK_TEXT });
         let mut text_wide: Vec<u16> = text.encode_utf16().collect();
-        let mut r = btn_rect;
+        let mut r = RECT { left, top: 6, right, bottom: 34 };
         let _ = DrawTextW(hdc, &mut text_wide, &mut r, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     };
 
     // Right action buttons:
-    // [ ⚙ Settings ] Button
-    draw_btn(client_w - 215, client_w - 105, "⚙ Settings", SHOW_SETTINGS_MODAL.load(Ordering::Relaxed));
-
-    // [ ▲ Hide Bar ] Button
+    draw_btn(client_w - 215, client_w - 105, "⚙ Settings", true);
     draw_btn(client_w - 95, client_w - 15, "▲ Hide Bar", false);
+
+    let _ = SelectObject(hdc, old_font);
+    let _ = DeleteObject(HGDIOBJ(font_bold.0));
+    let _ = DeleteObject(HGDIOBJ(font_reg.0));
 }
 
-/// Renders a dedicated Full-Screen Settings Page covering the entire viewport window
-/// so the remote desktop never bleeds behind the settings UI.
+/// Renders an AnyDesk-inspired Full-Screen Settings Page in the signature
+/// White & Emerald Green (`pkasoft.com`) theme, with a Left Category Navigation Sidebar
+/// and Right Settings Content Panel covering the entire viewport window.
 unsafe fn draw_fullscreen_settings_view(
     hdc: HDC,
     client_w: i32,
@@ -568,124 +552,298 @@ unsafe fn draw_fullscreen_settings_view(
     mode: u8,
     fps: u32,
 ) {
-    // 1. Opaque Full-Screen Settings Canvas (#0E1311 dark slate)
-    let page_bg = CreateSolidBrush(COLORREF(0x0013110E));
+    // 1. Opaque Full-Screen Soft Sage-White Canvas (PK_BG)
     let full_rect = RECT {
         left: 0,
         top: 0,
         right: client_w,
         bottom: client_h,
     };
-    FillRect(hdc, &full_rect, page_bg);
-    let _ = DeleteObject(HGDIOBJ(page_bg.0));
+    FillRect(hdc, &full_rect, BG_BRUSH);
 
-    let panel_w = (client_w - 64).clamp(560, 880);
-    let px = ((client_w - panel_w) / 2).max(20);
-    let py = ((client_h - 560) / 2).max(18);
+    // 2. Top Navigation Bar (White Card Header with Bottom Border, height 56px)
+    let hdr_h = 56;
+    let hdr_rect = RECT {
+        left: 0,
+        top: 0,
+        right: client_w,
+        bottom: hdr_h,
+    };
+    FillRect(hdc, &hdr_rect, CARD_BRUSH);
+    let line_brush = CreateSolidBrush(PK_CARD_BORDER);
+    let line_rc = RECT {
+        left: 0,
+        top: hdr_h - 1,
+        right: client_w,
+        bottom: hdr_h,
+    };
+    FillRect(hdc, &line_rc, line_brush);
 
-    let font_hdr = create_segoe_font(24, FW_BOLD);
-    let font_sec = create_segoe_font(14, FW_BOLD);
-    let font_btn = create_segoe_font(15, FW_SEMIBOLD);
-    let font_info = create_segoe_font(14, FW_NORMAL);
+    let font_brand = create_segoe_font(20, FW_BOLD);
+    let font_title = create_segoe_font(20, FW_BOLD);
+    let font_sec = create_segoe_font(13, FW_BOLD);
+    let font_btn = create_segoe_font(14, FW_SEMIBOLD);
+    let font_info = create_segoe_font(13, FW_NORMAL);
 
     SetBkMode(hdc, TRANSPARENT);
 
-    // 2. Top Page Header + [ ← Back to Stream ] button
-    let old_font = SelectObject(hdc, HGDIOBJ(font_hdr.0));
-    SetTextColor(hdc, COLORREF(0x00F8FAFC));
-    let mut hdr_text: Vec<u16> = "⚙  Desky Stream & Quality Settings".encode_utf16().collect();
-    let mut hdr_rect = RECT {
-        left: px,
-        top: py,
-        right: px + panel_w - 210,
-        bottom: py + 38,
+    let old_font = SelectObject(hdc, HGDIOBJ(font_brand.0));
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut brand_txt: Vec<u16> = "⚡ DESKY".encode_utf16().collect();
+    let mut brand_rc = RECT { left: 24, top: 0, right: 135, bottom: hdr_h };
+    let _ = DrawTextW(hdc, &mut brand_txt, &mut brand_rc, DT_SINGLELINE | DT_VCENTER);
+
+    // Breadcrumb badge in top bar
+    draw_rounded_box(hdc, 138, 14, 150, 28, PK_GREEN_TINT, PK_CARD_BORDER, 14);
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, PK_GREEN);
+    let mut crumb_txt: Vec<u16> = "⚙  SESSION SETTINGS".encode_utf16().collect();
+    let mut crumb_rc = RECT { left: 138, top: 14, right: 288, bottom: 42 };
+    let _ = DrawTextW(hdc, &mut crumb_txt, &mut crumb_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    // Top-right [ ← Back to Remote Desktop ] button
+    let back_w = 216;
+    let back_x = (client_w - back_w - 24).max(300);
+    draw_rounded_box(hdc, back_x, 10, back_w, 36, PK_GREEN, PK_GREEN_DARK, 8);
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+    let mut back_txt: Vec<u16> = "←  Back to Remote Desktop".encode_utf16().collect();
+    let mut back_rc = RECT { left: back_x, top: 10, right: back_x + back_w, bottom: 46 };
+    let _ = DrawTextW(hdc, &mut back_txt, &mut back_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    // 3. AnyDesk-Style Two-Column Layout Geometry
+    let total_w = (client_w - 48).clamp(680, 1140);
+    let start_x = ((client_w - total_w) / 2).max(16);
+    let top_y = hdr_h + 20;
+    let body_h = (client_h - top_y - 20).clamp(480, 760);
+
+    let side_w = 240;
+    let side_x = start_x;
+    let main_x = side_x + side_w + 18;
+    let main_w = total_w - side_w - 18;
+
+    // =========================================================================
+    // LEFT COLUMN: ANYDESK-STYLE CATEGORY SIDEBAR (White Card)
+    // =========================================================================
+    draw_rounded_box(hdc, side_x, top_y, side_w, body_h, PK_CARD, PK_CARD_BORDER, 12);
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut nav_hdr: Vec<u16> = "CATEGORIES".encode_utf16().collect();
+    let mut nav_hdr_rc = RECT {
+        left: side_x + 20,
+        top: top_y + 16,
+        right: side_x + side_w - 16,
+        bottom: top_y + 38,
     };
-    let _ = DrawTextW(hdc, &mut hdr_text, &mut hdr_rect, DT_SINGLELINE | DT_VCENTER);
+    let _ = DrawTextW(hdc, &mut nav_hdr, &mut nav_hdr_rc, DT_SINGLELINE | DT_VCENTER);
+
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed);
+    let categories = [
+        "🖥   Display & Quality",
+        "⚡   Adaptive Bitrate",
+        "🎮   Input & Framerate",
+        "📡   Connection Status",
+    ];
 
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    for (i, label) in categories.iter().enumerate() {
+        let item_y = top_y + 46 + (i as i32) * 48;
+        let is_sel = active_cat == i as u8;
+        if is_sel {
+            draw_rounded_box(
+                hdc,
+                side_x + 12,
+                item_y,
+                side_w - 24,
+                40,
+                PK_GREEN_TINT,
+                PK_GREEN,
+                8,
+            );
+            // Left emerald accent bar inside selected item
+            let bar_brush = CreateSolidBrush(PK_GREEN);
+            let bar_rc = RECT {
+                left: side_x + 12,
+                top: item_y + 8,
+                right: side_x + 16,
+                bottom: item_y + 32,
+            };
+            FillRect(hdc, &bar_rc, bar_brush);
+            let _ = DeleteObject(HGDIOBJ(bar_brush.0));
+            SetTextColor(hdc, PK_GREEN_DARK);
+        } else {
+            draw_rounded_box(
+                hdc,
+                side_x + 12,
+                item_y,
+                side_w - 24,
+                40,
+                PK_CARD,
+                PK_CARD,
+                8,
+            );
+            SetTextColor(hdc, PK_TEXT);
+        }
+
+        let mut item_wide: Vec<u16> = label.encode_utf16().collect();
+        let mut item_rc = RECT {
+            left: side_x + 26,
+            top: item_y,
+            right: side_x + side_w - 16,
+            bottom: item_y + 40,
+        };
+        let _ = DrawTextW(hdc, &mut item_wide, &mut item_rc, DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // Sidebar Bottom Live Telemetry Card
+    let tele_h = 166;
+    let tele_y = (top_y + body_h - tele_h - 14).max(top_y + 245);
     draw_rounded_box(
         hdc,
-        px + panel_w - 200,
-        py,
-        200,
-        38,
-        COLORREF(0x004F6A2D),
-        COLORREF(0x0088B752),
-        8,
-    );
-    SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let mut back_text: Vec<u16> = "← Back to Remote Stream".encode_utf16().collect();
-    let mut back_rect = RECT {
-        left: px + panel_w - 200,
-        top: py,
-        right: px + panel_w,
-        bottom: py + 38,
-    };
-    let _ = DrawTextW(
-        hdc,
-        &mut back_text,
-        &mut back_rect,
-        DT_SINGLELINE | DT_CENTER | DT_VCENTER,
-    );
-
-    let draw_choice_btn = |left: i32, top: i32, right: i32, bottom: i32, text: &str, is_active: bool| {
-        let fill = if is_active {
-            COLORREF(0x004F6A2D) // Active emerald green
-        } else {
-            COLORREF(0x0026211E) // Inactive dark card button
-        };
-        let border = if is_active {
-            COLORREF(0x0088B752)
-        } else {
-            COLORREF(0x003D3530)
-        };
-        draw_rounded_box(hdc, left, top, right - left, bottom - top, fill, border, 8);
-        SetTextColor(
-            hdc,
-            if is_active {
-                COLORREF(0x00FFFFFF)
-            } else {
-                COLORREF(0x00CBD5E0)
-            },
-        );
-        let mut wide: Vec<u16> = text.encode_utf16().collect();
-        let mut r = RECT { left, top, right, bottom };
-        let _ = DrawTextW(hdc, &mut wide, &mut r, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    };
-
-    // =========================================================================
-    // CARD 1: TEXT CLARITY & DYNAMIC ADAPTIVE BITRATE (ABR)
-    // =========================================================================
-    let c1_top = py + 50;
-    let c1_h = 148;
-    draw_rounded_box(
-        hdc,
-        px,
-        c1_top,
-        panel_w,
-        c1_h,
-        COLORREF(0x001C1816),
-        COLORREF(0x00362F2B),
+        side_x + 12,
+        tele_y,
+        side_w - 24,
+        tele_h,
+        PK_GREEN_TINT,
+        PK_CARD_BORDER,
         10,
     );
 
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, COLORREF(0x0088B752));
-    let mut sec1_title: Vec<u16> =
-        "TEXT CLARITY & DYNAMIC ADAPTIVE BITRATE (ABR)".encode_utf16().collect();
-    let mut sec1_rect = RECT {
-        left: px + 20,
-        top: c1_top + 12,
-        right: px + panel_w - 20,
-        bottom: c1_top + 32,
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut tele_hdr: Vec<u16> = "● LIVE DIRECT P2P".encode_utf16().collect();
+    let mut tele_hdr_rc = RECT {
+        left: side_x + 24,
+        top: tele_y + 12,
+        right: side_x + side_w - 20,
+        bottom: tele_y + 32,
     };
-    let _ = DrawTextW(hdc, &mut sec1_title, &mut sec1_rect, DT_SINGLELINE | DT_VCENTER);
+    let _ = DrawTextW(hdc, &mut tele_hdr, &mut tele_hdr_rc, DT_SINGLELINE | DT_VCENTER);
+
+    let (active_q, active_scale, active_c444) = crate::p2p::get_active_quality_params();
+    let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
+    let rtt_ms = crate::p2p::get_session_rtt_ms();
+    let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
+    let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
+    let res_str = if orig_w > 0 && orig_h > 0 {
+        format!("{}×{} ({}%)", orig_w, orig_h, active_scale)
+    } else {
+        format!("{}% Native", active_scale)
+    };
+    let chroma_str = if active_c444 { "4:4:4 Crisp" } else { "4:2:0 Fast" };
+
+    let stats_lines = [
+        format!("Speed:   {}", bitrate_str),
+        format!("Ping:    {} ms RTT", rtt_ms),
+        format!("Codec:   Q{} ({})", active_q, chroma_str),
+        format!("Stream:  {}", res_str),
+        "Route:   Direct UDP (No Relay)".to_string(),
+    ];
+    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
+    SetTextColor(hdc, PK_TEXT);
+    for (idx, line) in stats_lines.iter().enumerate() {
+        let ly = tele_y + 38 + (idx as i32) * 23;
+        let mut lw: Vec<u16> = line.encode_utf16().collect();
+        let mut lrc = RECT {
+            left: side_x + 24,
+            top: ly,
+            right: side_x + side_w - 18,
+            bottom: ly + 22,
+        };
+        let _ = DrawTextW(hdc, &mut lw, &mut lrc, DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // =========================================================================
+    // RIGHT COLUMN: ANYDESK-STYLE MAIN SETTINGS CONTENT PANEL (White Card)
+    // =========================================================================
+    draw_rounded_box(hdc, main_x, top_y, main_w, body_h, PK_CARD, PK_CARD_BORDER, 12);
+
+    let pad_x = main_x + 28;
+    let inner_w = main_w - 56;
+    let gap = 10;
+
+    // Panel Title & Subtitle
+    let cat_title = match active_cat {
+        0 => "Display & Image Quality",
+        1 => "Dynamic Adaptive Bitrate (ABR)",
+        2 => "Input & Stream Framerate",
+        _ => "Direct P2P Connection & Security",
+    };
+    let _ = SelectObject(hdc, HGDIOBJ(font_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut ct_wide: Vec<u16> = cat_title.encode_utf16().collect();
+    let mut ct_rc = RECT {
+        left: pad_x,
+        top: top_y + 18,
+        right: pad_x + inner_w,
+        bottom: top_y + 46,
+    };
+    let _ = DrawTextW(hdc, &mut ct_wide, &mut ct_rc, DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut sub_wide: Vec<u16> =
+        "Configure real-time display scaling, text clarity, and low-latency stream parameters."
+            .encode_utf16()
+            .collect();
+    let mut sub_rc = RECT {
+        left: pad_x,
+        top: top_y + 46,
+        right: pad_x + inner_w,
+        bottom: top_y + 68,
+    };
+    let _ = DrawTextW(hdc, &mut sub_wide, &mut sub_rc, DT_SINGLELINE | DT_VCENTER);
+
+    // Header divider line
+    let div_rc = RECT {
+        left: pad_x,
+        top: top_y + 74,
+        right: pad_x + inner_w,
+        bottom: top_y + 75,
+    };
+    FillRect(hdc, &div_rc, line_brush);
+
+    let draw_choice_btn =
+        |left: i32, top: i32, right: i32, bottom: i32, text: &str, is_active: bool| {
+            let fill = if is_active { PK_GREEN } else { PK_INPUT_BG };
+            let border = if is_active { PK_GREEN_DARK } else { PK_CARD_BORDER };
+            draw_rounded_box(hdc, left, top, right - left, bottom - top, fill, border, 8);
+            SetTextColor(
+                hdc,
+                if is_active {
+                    COLORREF(0x00FFFFFF)
+                } else {
+                    PK_TEXT
+                },
+            );
+            let mut wide: Vec<u16> = text.encode_utf16().collect();
+            let mut r = RECT { left, top, right, bottom };
+            let _ = DrawTextW(hdc, &mut wide, &mut r, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        };
+
+    // -------------------------------------------------------------------------
+    // SECTION 1: IMAGE QUALITY & ADAPTIVE BITRATE (ABR)
+    // -------------------------------------------------------------------------
+    let s1_top = top_y + 88;
+    draw_rounded_box(hdc, pad_x, s1_top, inner_w, 92, PK_INPUT_BG, PK_CARD_BORDER, 10);
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut s1_lbl: Vec<u16> =
+        "TEXT CLARITY & ADAPTIVE BITRATE PRESET".encode_utf16().collect();
+    let mut s1_rc = RECT {
+        left: pad_x + 16,
+        top: s1_top + 10,
+        right: pad_x + inner_w - 16,
+        bottom: s1_top + 30,
+    };
+    let _ = DrawTextW(hdc, &mut s1_lbl, &mut s1_rc, DT_SINGLELINE | DT_VCENTER);
 
     let q_mode = crate::p2p::get_quality_mode();
-    let inner_w = panel_w - 40;
-    let gap = 10;
-    let btn5_w = (inner_w - 4 * gap) / 5;
-    let b1_y = c1_top + 40;
+    let row_w = inner_w - 32;
+    let btn5_w = (row_w - 4 * gap) / 5;
+    let b1_y = s1_top + 38;
     let b1_bottom = b1_y + 40;
 
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
@@ -694,215 +852,172 @@ unsafe fn draw_fullscreen_settings_view(
         "💎 Ultra Text",
         "🎯 High 4:4:4",
         "⚖️ Balanced",
-        "🚀 Low Data",
+        "🚀 Fast 4:2:0",
     ];
     for i in 0..5 {
-        let bx = px + 20 + (i as i32) * (btn5_w + gap);
-        let br = if i == 4 { px + panel_w - 20 } else { bx + btn5_w };
+        let bx = pad_x + 16 + (i as i32) * (btn5_w + gap);
+        let br = if i == 4 { pad_x + inner_w - 16 } else { bx + btn5_w };
         draw_choice_btn(bx, b1_y, br, b1_bottom, q_labels[i], q_mode == i as u8);
     }
 
-    // Live ABR Telemetry Bar inside Card 1
-    let (active_q, active_scale, active_c444) = crate::p2p::get_active_quality_params();
-    let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
-    let rtt_ms = crate::p2p::get_session_rtt_ms();
-    let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
-    let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
-    let res_str = if orig_w > 0 && orig_h > 0 {
-        format!("{}x{} ({}% Scale)", orig_w, orig_h, active_scale)
-    } else {
-        format!("{}% Native Resolution", active_scale)
-    };
-    let chroma_str = if active_c444 {
-        "4:4:4 Subpixel Text"
-    } else {
-        "4:2:0 Fast Chroma"
-    };
-
-    draw_rounded_box(
-        hdc,
-        px + 20,
-        c1_top + 92,
-        inner_w,
-        42,
-        COLORREF(0x00141110),
-        COLORREF(0x002B2522),
-        6,
-    );
-    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-    SetTextColor(hdc, COLORREF(0x00CBD5E0));
-    let abr_summary = format!(
-        "● Live Speed: {}   |   Encoder: Q{} ({})   |   Stream: {}   |   RTT: {} ms",
-        bitrate_str, active_q, chroma_str, res_str, rtt_ms
-    );
-    let mut abr_wide: Vec<u16> = abr_summary.encode_utf16().collect();
-    let mut abr_rect = RECT {
-        left: px + 32,
-        top: c1_top + 92,
-        right: px + panel_w - 32,
-        bottom: c1_top + 134,
-    };
-    let _ = DrawTextW(hdc, &mut abr_wide, &mut abr_rect, DT_SINGLELINE | DT_VCENTER);
-
-    // =========================================================================
-    // CARD 2: SCREEN SCALING MODE
-    // =========================================================================
-    let c2_top = c1_top + c1_h + 14;
-    let c2_h = 96;
-    draw_rounded_box(
-        hdc,
-        px,
-        c2_top,
-        panel_w,
-        c2_h,
-        COLORREF(0x001C1816),
-        COLORREF(0x00362F2B),
-        10,
-    );
+    // -------------------------------------------------------------------------
+    // SECTION 2: VIEWPORT SCALING MODE (AnyDesk Display Mode)
+    // -------------------------------------------------------------------------
+    let s2_top = s1_top + 104;
+    draw_rounded_box(hdc, pad_x, s2_top, inner_w, 92, PK_INPUT_BG, PK_CARD_BORDER, 10);
 
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, COLORREF(0x0088B752));
-    let mut sec2_title: Vec<u16> = "SCREEN SCALING & ASPECT MODE".encode_utf16().collect();
-    let mut sec2_rect = RECT {
-        left: px + 20,
-        top: c2_top + 12,
-        right: px + panel_w - 20,
-        bottom: c2_top + 32,
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut s2_lbl: Vec<u16> = "DISPLAY SCALING & VIEWPORT MODE".encode_utf16().collect();
+    let mut s2_rc = RECT {
+        left: pad_x + 16,
+        top: s2_top + 10,
+        right: pad_x + inner_w - 16,
+        bottom: s2_top + 30,
     };
-    let _ = DrawTextW(hdc, &mut sec2_title, &mut sec2_rect, DT_SINGLELINE | DT_VCENTER);
+    let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_VCENTER);
 
-    let btn3_w = (inner_w - 2 * gap) / 3;
-    let b2_y = c2_top + 40;
+    let btn3_w = (row_w - 2 * gap) / 3;
+    let b2_y = s2_top + 38;
     let b2_bottom = b2_y + 40;
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
     draw_choice_btn(
-        px + 20,
+        pad_x + 16,
         b2_y,
-        px + 20 + btn3_w,
+        pad_x + 16 + btn3_w,
         b2_bottom,
-        "⛶  Auto Fit (Aspect Ratio)",
+        "⛶  Auto Fit (Best Ratio)",
         mode == 0,
     );
     draw_choice_btn(
-        px + 20 + btn3_w + gap,
+        pad_x + 16 + btn3_w + gap,
         b2_y,
-        px + 20 + 2 * btn3_w + gap,
+        pad_x + 16 + 2 * btn3_w + gap,
         b2_bottom,
-        "↔  Fill Window (Stretch)",
+        "↔  Stretch to Window",
         mode == 1,
     );
     draw_choice_btn(
-        px + 20 + 2 * (btn3_w + gap),
+        pad_x + 16 + 2 * (btn3_w + gap),
         b2_y,
-        px + panel_w - 20,
+        pad_x + inner_w - 16,
         b2_bottom,
         "1:1  Original Pixel Size",
         mode == 2,
     );
 
-    // =========================================================================
-    // CARD 3: TARGET STREAM FRAMERATE
-    // =========================================================================
-    let c3_top = c2_top + c2_h + 14;
-    let c3_h = 96;
-    draw_rounded_box(
-        hdc,
-        px,
-        c3_top,
-        panel_w,
-        c3_h,
-        COLORREF(0x001C1816),
-        COLORREF(0x00362F2B),
-        10,
-    );
+    // -------------------------------------------------------------------------
+    // SECTION 3: TARGET STREAM FRAMERATE (FPS)
+    // -------------------------------------------------------------------------
+    let s3_top = s2_top + 104;
+    draw_rounded_box(hdc, pad_x, s3_top, inner_w, 92, PK_INPUT_BG, PK_CARD_BORDER, 10);
 
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, COLORREF(0x0088B752));
-    let mut sec3_title: Vec<u16> = "TARGET STREAM FRAMERATE (FPS)".encode_utf16().collect();
-    let mut sec3_rect = RECT {
-        left: px + 20,
-        top: c3_top + 12,
-        right: px + panel_w - 20,
-        bottom: c3_top + 32,
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut s3_lbl: Vec<u16> = "TARGET STREAM FRAMERATE (FPS)".encode_utf16().collect();
+    let mut s3_rc = RECT {
+        left: pad_x + 16,
+        top: s3_top + 10,
+        right: pad_x + inner_w - 16,
+        bottom: s3_top + 30,
     };
-    let _ = DrawTextW(hdc, &mut sec3_title, &mut sec3_rect, DT_SINGLELINE | DT_VCENTER);
+    let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_VCENTER);
 
-    let b3_y = c3_top + 40;
+    let b3_y = s3_top + 38;
     let b3_bottom = b3_y + 40;
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-    draw_choice_btn(px + 20, b3_y, px + 20 + btn3_w, b3_bottom, "30 FPS (Power Saver)", fps == 30);
     draw_choice_btn(
-        px + 20 + btn3_w + gap,
+        pad_x + 16,
         b3_y,
-        px + 20 + 2 * btn3_w + gap,
+        pad_x + 16 + btn3_w,
         b3_bottom,
-        "60 FPS (Smooth)",
+        "30 FPS (Power Saver)",
+        fps == 30,
+    );
+    draw_choice_btn(
+        pad_x + 16 + btn3_w + gap,
+        b3_y,
+        pad_x + 16 + 2 * btn3_w + gap,
+        b3_bottom,
+        "60 FPS (Smooth Default)",
         fps == 60,
     );
     draw_choice_btn(
-        px + 20 + 2 * (btn3_w + gap),
+        pad_x + 16 + 2 * (btn3_w + gap),
         b3_y,
-        px + panel_w - 20,
+        pad_x + inner_w - 16,
         b3_bottom,
-        "120 FPS (Ultra High)",
+        "120 FPS (Ultra Low Latency)",
         fps == 120,
     );
 
-    // =========================================================================
-    // CARD 4: REMOTE CURSOR CAPTURE
-    // =========================================================================
-    let c4_top = c3_top + c3_h + 14;
-    let c4_h = 96;
-    draw_rounded_box(
-        hdc,
-        px,
-        c4_top,
-        panel_w,
-        c4_h,
-        COLORREF(0x001C1816),
-        COLORREF(0x00362F2B),
-        10,
-    );
+    // -------------------------------------------------------------------------
+    // SECTION 4: REMOTE CURSOR OVERLAY & INPUT SYNCHRONIZATION
+    // -------------------------------------------------------------------------
+    let s4_top = s3_top + 104;
+    draw_rounded_box(hdc, pad_x, s4_top, inner_w, 92, PK_INPUT_BG, PK_CARD_BORDER, 10);
 
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, COLORREF(0x0088B752));
-    let mut sec4_title: Vec<u16> = "REMOTE CURSOR OVERLAY".encode_utf16().collect();
-    let mut sec4_rect = RECT {
-        left: px + 20,
-        top: c4_top + 12,
-        right: px + panel_w - 20,
-        bottom: c4_top + 32,
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut s4_lbl: Vec<u16> = "REMOTE HOST CURSOR & INPUT".encode_utf16().collect();
+    let mut s4_rc = RECT {
+        left: pad_x + 16,
+        top: s4_top + 10,
+        right: pad_x + inner_w - 16,
+        bottom: s4_top + 30,
     };
-    let _ = DrawTextW(hdc, &mut sec4_title, &mut sec4_rect, DT_SINGLELINE | DT_VCENTER);
+    let _ = DrawTextW(hdc, &mut s4_lbl, &mut s4_rc, DT_SINGLELINE | DT_VCENTER);
 
     let cursor_active = CAPTURE_CURSOR.load(Ordering::Relaxed);
     let cursor_label = if cursor_active {
-        "☑   Render Remote Host Cursor on Stream (Enabled)"
+        "☑   Show Remote Host Cursor on Stream (Enabled)"
     } else {
-        "☐   Render Remote Host Cursor on Stream (Disabled)"
+        "☐   Show Remote Host Cursor on Stream (Disabled)"
     };
-    let b4_y = c4_top + 40;
+    let b4_y = s4_top + 38;
     let b4_bottom = b4_y + 40;
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-    draw_choice_btn(px + 20, b4_y, px + panel_w - 20, b4_bottom, cursor_label, cursor_active);
-
-    // =========================================================================
-    // BOTTOM ACTION BUTTON: [ ✓ Apply & Return to Remote Stream ]
-    // =========================================================================
-    let done_y = c4_top + c4_h + 18;
-    let done_w = 320;
-    let done_x = px + (panel_w - done_w) / 2;
     draw_choice_btn(
-        done_x,
-        done_y,
-        done_x + done_w,
-        done_y + 44,
-        "✓  Apply & Return to Remote Stream",
-        true,
+        pad_x + 16,
+        b4_y,
+        pad_x + inner_w - 16,
+        b4_bottom,
+        cursor_label,
+        cursor_active,
     );
 
+    // -------------------------------------------------------------------------
+    // BOTTOM ACTION BAR: [ ✓ Apply & Return to Remote Desktop ]
+    // -------------------------------------------------------------------------
+    let done_y = (s4_top + 104).min(top_y + body_h - 52);
+    let done_w = 290;
+    let done_x = pad_x + inner_w - done_w;
+    draw_rounded_box(hdc, done_x, done_y, done_w, 40, PK_GREEN, PK_GREEN_DARK, 8);
+    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+    let mut done_txt: Vec<u16> = "✓  Apply & Return to Remote Desktop".encode_utf16().collect();
+    let mut done_rc = RECT {
+        left: done_x,
+        top: done_y,
+        right: done_x + done_w,
+        bottom: done_y + 40,
+    };
+    let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut hint_txt: Vec<u16> = "Tip: Press Tab or Esc anytime to toggle Settings".encode_utf16().collect();
+    let mut hint_rc = RECT {
+        left: pad_x,
+        top: done_y,
+        right: done_x - 12,
+        bottom: done_y + 40,
+    };
+    let _ = DrawTextW(hdc, &mut hint_txt, &mut hint_rc, DT_SINGLELINE | DT_VCENTER);
+
     let _ = SelectObject(hdc, old_font);
-    let _ = DeleteObject(HGDIOBJ(font_hdr.0));
+    let _ = DeleteObject(HGDIOBJ(line_brush.0));
+    let _ = DeleteObject(HGDIOBJ(font_brand.0));
+    let _ = DeleteObject(HGDIOBJ(font_title.0));
     let _ = DeleteObject(HGDIOBJ(font_sec.0));
     let _ = DeleteObject(HGDIOBJ(font_btn.0));
     let _ = DeleteObject(HGDIOBJ(font_info.0));
@@ -932,7 +1047,7 @@ unsafe fn spawn_viewport_window(target: &str) {
     );
 
     if let Ok(hwnd) = viewport_hwnd {
-        let dark_mode: i32 = 1;
+        let dark_mode: i32 = 0;
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -960,7 +1075,10 @@ unsafe fn spawn_viewport_window(target: &str) {
             let mut last_mode: u8 = 255;
             let mut last_toolbar: bool = true;
             let mut last_modal: bool = false;
+            let mut last_cat: u8 = 255;
             let mut last_ui_refresh = Instant::now();
+            let mut last_frame_change_time = Instant::now();
+            let mut sharp_pass_done: bool = false;
 
             while VIEWPORT_RUNNING.load(Ordering::Relaxed) {
                 unsafe {
@@ -975,23 +1093,36 @@ unsafe fn spawn_viewport_window(target: &str) {
 
                     let toolbar_visible = SHOW_TOOLBAR.load(Ordering::Relaxed);
                     let modal_open = SHOW_SETTINGS_MODAL.load(Ordering::Relaxed);
+                    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed);
                     let mode = DISPLAY_MODE.load(Ordering::Relaxed);
                     let target_fps = TARGET_FPS.load(Ordering::Relaxed).clamp(15, 240);
 
                     let latest_frame = crate::p2p::get_latest_remote_frame();
                     let cur_frame_id = latest_frame.as_ref().map(|f| f.frame_id).unwrap_or(0);
+                    let frame_changed = cur_frame_id != last_rendered_frame_id;
+                    if frame_changed {
+                        last_frame_change_time = Instant::now();
+                        sharp_pass_done = false;
+                    }
 
-                    let state_changed = cur_frame_id != last_rendered_frame_id
+                    let needs_sharp_pass = !modal_open
+                        && cur_frame_id > 0
+                        && !sharp_pass_done
+                        && last_frame_change_time.elapsed() >= Duration::from_millis(140);
+
+                    let state_changed = frame_changed
+                        || needs_sharp_pass
                         || client_w != last_w
                         || client_h != last_h
                         || mode != last_mode
                         || toolbar_visible != last_toolbar
                         || modal_open != last_modal
+                        || (modal_open && active_cat != last_cat)
                         || cur_frame_id == 0
-                        || last_ui_refresh.elapsed() >= Duration::from_millis(250);
+                        || last_ui_refresh.elapsed() >= Duration::from_millis(400);
 
                     if !state_changed {
-                        std::thread::sleep(Duration::from_millis(3));
+                        std::thread::sleep(Duration::from_millis(2));
                         continue;
                     }
 
@@ -1001,6 +1132,7 @@ unsafe fn spawn_viewport_window(target: &str) {
                     last_mode = mode;
                     last_toolbar = toolbar_visible;
                     last_modal = modal_open;
+                    last_cat = active_cat;
                     last_ui_refresh = Instant::now();
 
                     let toolbar_h = if toolbar_visible { TOOLBAR_HEIGHT } else { 0 };
@@ -1014,8 +1146,15 @@ unsafe fn spawn_viewport_window(target: &str) {
                         if modal_open {
                             draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps);
                         } else {
-                            let _ = SetStretchBltMode(mem_dc, HALFTONE);
-                            let _ = SetBrushOrgEx(mem_dc, 0, 0, None);
+                            // Fast hardware-friendly COLORONCOLOR during motion (60 FPS smooth),
+                            // then a single HALFTONE pass once static for 140 ms for razor-sharp text.
+                            if needs_sharp_pass {
+                                let _ = SetStretchBltMode(mem_dc, HALFTONE);
+                                let _ = SetBrushOrgEx(mem_dc, 0, 0, None);
+                                sharp_pass_done = true;
+                            } else {
+                                let _ = SetStretchBltMode(mem_dc, COLORONCOLOR);
+                            }
                             let view_h = client_h - toolbar_h;
 
                             if let Some(remote_frame) = latest_frame {
@@ -1175,15 +1314,11 @@ unsafe fn spawn_viewport_window(target: &str) {
                             if toolbar_visible {
                                 draw_toolbar(mem_dc, client_w, TOOLBAR_HEIGHT, mode, target_fps, rtt);
                             } else {
-                                let tab_brush = CreateSolidBrush(COLORREF(0x002B2522));
-                                let tab_rect = RECT { left: client_w - 110, top: 0, right: client_w - 10, bottom: 26 };
-                                FillRect(mem_dc, &tab_rect, tab_brush);
-                                let _ = DeleteObject(HGDIOBJ(tab_brush.0));
-
+                                draw_rounded_box(mem_dc, client_w - 112, 4, 102, 26, PK_CARD, PK_GREEN, 6);
                                 SetBkMode(mem_dc, TRANSPARENT);
-                                SetTextColor(mem_dc, COLORREF(0x00EDB363));
+                                SetTextColor(mem_dc, PK_GREEN_DARK);
                                 let mut tab_text: Vec<u16> = "⚙ Settings".encode_utf16().collect();
-                                let mut tr = tab_rect;
+                                let mut tr = RECT { left: client_w - 112, top: 4, right: client_w - 10, bottom: 30 };
                                 let _ = DrawTextW(mem_dc, &mut tab_text, &mut tr, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
                             }
                         }
@@ -1838,34 +1973,57 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let client_w = rect.right - rect.left;
             let client_h = rect.bottom - rect.top;
 
-            // 1. If Full-Screen Settings Page is open, handle all settings controls!
+            // 1. If Full-Screen Settings Page is open, handle all AnyDesk-style settings controls!
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                let panel_w = (client_w - 64).clamp(560, 880);
-                let px = ((client_w - panel_w) / 2).max(20);
-                let py = ((client_h - 560) / 2).max(18);
-                let inner_w = panel_w - 40;
-                let gap = 10;
+                let hdr_h = 56;
+                let back_w = 216;
+                let back_x = (client_w - back_w - 24).max(300);
 
-                // Top-right [ ← Back to Remote Stream ] button
-                if client_x >= px + panel_w - 200
-                    && client_x <= px + panel_w
-                    && client_y >= py
-                    && client_y <= py + 38
+                // Top-right [ ← Back to Remote Desktop ] button
+                if client_x >= back_x
+                    && client_x <= back_x + back_w
+                    && client_y >= 10
+                    && client_y <= 46
                 {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                     return LRESULT(0);
                 }
 
-                // Card 1: Text Clarity & ABR Mode (5 buttons)
-                let c1_top = py + 50;
-                let c1_h = 148;
-                let b1_y = c1_top + 40;
+                let total_w = (client_w - 48).clamp(680, 1140);
+                let start_x = ((client_w - total_w) / 2).max(16);
+                let top_y = hdr_h + 20;
+                let body_h = (client_h - top_y - 20).clamp(480, 760);
+
+                let side_w = 240;
+                let side_x = start_x;
+                let main_x = side_x + side_w + 18;
+                let main_w = total_w - side_w - 18;
+
+                // Left Sidebar Category Navigation Items (0..4)
+                if client_x >= side_x + 12 && client_x <= side_x + side_w - 12 {
+                    for i in 0..4 {
+                        let item_y = top_y + 46 + (i as i32) * 48;
+                        if client_y >= item_y && client_y <= item_y + 40 {
+                            SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
+                            return LRESULT(0);
+                        }
+                    }
+                }
+
+                let pad_x = main_x + 28;
+                let inner_w = main_w - 56;
+                let row_w = inner_w - 32;
+                let gap = 10;
+
+                // Section 1: Text Clarity & ABR Preset (5 buttons)
+                let s1_top = top_y + 88;
+                let b1_y = s1_top + 38;
                 let b1_bottom = b1_y + 40;
-                let btn5_w = (inner_w - 4 * gap) / 5;
+                let btn5_w = (row_w - 4 * gap) / 5;
                 if client_y >= b1_y && client_y <= b1_bottom {
                     for i in 0..5 {
-                        let bx = px + 20 + (i as i32) * (btn5_w + gap);
-                        let br = if i == 4 { px + panel_w - 20 } else { bx + btn5_w };
+                        let bx = pad_x + 16 + (i as i32) * (btn5_w + gap);
+                        let br = if i == 4 { pad_x + inner_w - 16 } else { bx + btn5_w };
                         if client_x >= bx && client_x <= br {
                             crate::p2p::set_quality_mode(i as u8);
                             info!("Settings: Quality / ABR mode set to {}", i);
@@ -1874,34 +2032,40 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     }
                 }
 
-                // Card 2: Screen Scaling Mode (3 buttons)
-                let c2_top = c1_top + c1_h + 14;
-                let c2_h = 96;
-                let b2_y = c2_top + 40;
+                // Section 2: Display Scaling & Viewport Mode (3 buttons)
+                let s2_top = s1_top + 104;
+                let b2_y = s2_top + 38;
                 let b2_bottom = b2_y + 40;
-                let btn3_w = (inner_w - 2 * gap) / 3;
+                let btn3_w = (row_w - 2 * gap) / 3;
                 if client_y >= b2_y && client_y <= b2_bottom {
-                    if client_x >= px + 20 && client_x <= px + 20 + btn3_w {
+                    if client_x >= pad_x + 16 && client_x <= pad_x + 16 + btn3_w {
                         DISPLAY_MODE.store(0, Ordering::Relaxed);
-                    } else if client_x >= px + 20 + btn3_w + gap && client_x <= px + 20 + 2 * btn3_w + gap {
+                    } else if client_x >= pad_x + 16 + btn3_w + gap
+                        && client_x <= pad_x + 16 + 2 * btn3_w + gap
+                    {
                         DISPLAY_MODE.store(1, Ordering::Relaxed);
-                    } else if client_x >= px + 20 + 2 * (btn3_w + gap) && client_x <= px + panel_w - 20 {
+                    } else if client_x >= pad_x + 16 + 2 * (btn3_w + gap)
+                        && client_x <= pad_x + inner_w - 16
+                    {
                         DISPLAY_MODE.store(2, Ordering::Relaxed);
                     }
                     return LRESULT(0);
                 }
 
-                // Card 3: Target Stream Framerate (3 buttons)
-                let c3_top = c2_top + c2_h + 14;
-                let c3_h = 96;
-                let b3_y = c3_top + 40;
+                // Section 3: Target Stream Framerate (3 buttons)
+                let s3_top = s2_top + 104;
+                let b3_y = s3_top + 38;
                 let b3_bottom = b3_y + 40;
                 if client_y >= b3_y && client_y <= b3_bottom {
-                    if client_x >= px + 20 && client_x <= px + 20 + btn3_w {
+                    if client_x >= pad_x + 16 && client_x <= pad_x + 16 + btn3_w {
                         TARGET_FPS.store(30, Ordering::Relaxed);
-                    } else if client_x >= px + 20 + btn3_w + gap && client_x <= px + 20 + 2 * btn3_w + gap {
+                    } else if client_x >= pad_x + 16 + btn3_w + gap
+                        && client_x <= pad_x + 16 + 2 * btn3_w + gap
+                    {
                         TARGET_FPS.store(60, Ordering::Relaxed);
-                    } else if client_x >= px + 20 + 2 * (btn3_w + gap) && client_x <= px + panel_w - 20 {
+                    } else if client_x >= pad_x + 16 + 2 * (btn3_w + gap)
+                        && client_x <= pad_x + inner_w - 16
+                    {
                         TARGET_FPS.store(120, Ordering::Relaxed);
                     }
                     crate::p2p::update_client_preferences(
@@ -1911,15 +2075,14 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     return LRESULT(0);
                 }
 
-                // Card 4: Remote Cursor Capture Toggle
-                let c4_top = c3_top + c3_h + 14;
-                let c4_h = 96;
-                let b4_y = c4_top + 40;
+                // Section 4: Remote Cursor Capture Toggle
+                let s4_top = s3_top + 104;
+                let b4_y = s4_top + 38;
                 let b4_bottom = b4_y + 40;
                 if client_y >= b4_y
                     && client_y <= b4_bottom
-                    && client_x >= px + 20
-                    && client_x <= px + panel_w - 20
+                    && client_x >= pad_x + 16
+                    && client_x <= pad_x + inner_w - 16
                 {
                     let prev = CAPTURE_CURSOR.fetch_xor(true, Ordering::Relaxed);
                     info!("Settings: Remote cursor capture toggled: {}", !prev);
@@ -1930,14 +2093,14 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     return LRESULT(0);
                 }
 
-                // Bottom [ ✓ Apply & Return to Remote Stream ] button
-                let done_y = c4_top + c4_h + 18;
-                let done_w = 320;
-                let done_x = px + (panel_w - done_w) / 2;
+                // Bottom [ ✓ Apply & Return to Remote Desktop ] button
+                let done_y = (s4_top + 104).min(top_y + body_h - 52);
+                let done_w = 290;
+                let done_x = pad_x + inner_w - done_w;
                 if client_x >= done_x
                     && client_x <= done_x + done_w
                     && client_y >= done_y
-                    && client_y <= done_y + 44
+                    && client_y <= done_y + 40
                 {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                     return LRESULT(0);
@@ -2034,20 +2197,9 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let toolbar_visible = SHOW_TOOLBAR.load(Ordering::Relaxed);
             let modal_open = SHOW_SETTINGS_MODAL.load(Ordering::Relaxed);
 
-            if modal_open {
-                unsafe {
-                    let hand_cursor = LoadCursorW(None, IDC_HAND).unwrap_or_default();
-                    SetCursor(Some(hand_cursor));
-                }
-            } else if toolbar_visible && client_y < TOOLBAR_HEIGHT {
-                unsafe {
-                    let hand_cursor = LoadCursorW(None, IDC_HAND).unwrap_or_default();
-                    SetCursor(Some(hand_cursor));
-                }
-            } else {
+            if !modal_open && (!toolbar_visible || client_y >= TOOLBAR_HEIGHT) {
                 unsafe {
                     inject_remote_mouse_move(hwnd, client_x, client_y);
-                    sync_remote_cursor();
                 }
             }
             LRESULT(0)
@@ -2064,11 +2216,11 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     if modal_open || (toolbar_visible && cursor_pt.y < TOOLBAR_HEIGHT) {
                         let hand_cursor = LoadCursorW(None, IDC_HAND).unwrap_or_default();
                         SetCursor(Some(hand_cursor));
-                        return LRESULT(1);
                     } else {
-                        sync_remote_cursor();
-                        return LRESULT(1);
+                        let arrow_cursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+                        SetCursor(Some(arrow_cursor));
                     }
+                    return LRESULT(1);
                 }
             }
             unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
