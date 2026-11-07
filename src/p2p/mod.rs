@@ -61,6 +61,7 @@ static INPUT_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
 
 static PENDING_APPROVAL: OnceLock<Mutex<Option<PendingApprovalRequest>>> = OnceLock::new();
 static HOST_SUBSCRIBERS: OnceLock<Arc<Mutex<HashMap<String, ClientSubscriber>>>> = OnceLock::new();
+static HOST_SOCKET: OnceLock<Mutex<Option<Arc<UdpSocket>>>> = OnceLock::new();
 
 static CLIENT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CLIENT_SESSION_GEN: AtomicU32 = AtomicU32::new(0);
@@ -105,6 +106,10 @@ fn host_subscribers_store() -> &'static Arc<Mutex<HashMap<String, ClientSubscrib
     HOST_SUBSCRIBERS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
+fn host_socket_store() -> &'static Mutex<Option<Arc<UdpSocket>>> {
+    HOST_SOCKET.get_or_init(|| Mutex::new(None))
+}
+
 pub fn get_pending_approval() -> Option<PendingApprovalRequest> {
     pending_approval_store().lock().ok().and_then(|g| g.clone())
 }
@@ -119,23 +124,52 @@ pub fn respond_to_pending_approval(approved: bool) {
         }
     };
 
-    if let Ok(mut map) = host_subscribers_store().lock() {
-        let now = Instant::now();
-        for (key, sub) in map.iter_mut() {
-            let matches_req = req
-                .as_ref()
-                .map(|r| &r.client_key == key || r.client_id == sub.client_id)
-                .unwrap_or(false);
-            if matches_req || sub.auth_state == AuthState::Pending {
-                if approved {
-                    sub.auth_state = AuthState::Approved;
-                    sub.last_seen = now;
-                } else {
-                    sub.auth_state = AuthState::Declined(now);
-                }
-            }
-        }
-    }
+                                    let mut acks_to_send: Vec<(SocketAddr, u8)> = Vec::new();
+                                    if let Ok(mut map) = host_subscribers_store().lock() {
+                                        let now = Instant::now();
+                                        for (key, sub) in map.iter_mut() {
+                                            let matches_req = req
+                                                .as_ref()
+                                                .map(|r| &r.client_key == key || r.client_id == sub.client_id)
+                                                .unwrap_or(false);
+                                            if matches_req || sub.auth_state == AuthState::Pending {
+                                                if approved {
+                                                    sub.auth_state = AuthState::Approved;
+                                                    sub.last_seen = now;
+                                                    acks_to_send.push((sub.addr, AUTH_APPROVED));
+                                                } else {
+                                                    sub.auth_state = AuthState::Declined(now);
+                                                    acks_to_send.push((sub.addr, AUTH_DECLINED));
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if !acks_to_send.is_empty() {
+                                        if let Ok(Some(sock)) = host_socket_store()
+                                            .lock()
+                                            .map(|g| g.clone())
+                                        {
+                                            std::thread::spawn(move || {
+                                                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                                                    .enable_all()
+                                                    .build()
+                                                {
+                                                    rt.block_on(async move {
+                                                        for (addr, status_byte) in acks_to_send {
+                                                            let mut auth_pkt = Vec::with_capacity(6);
+                                                            auth_pkt.extend_from_slice(MAGIC_DSKY);
+                                                            auth_pkt.push(PKT_AUTH_STATUS);
+                                                            auth_pkt.push(status_byte);
+                                                            for _ in 0..4 {
+                                                                let _ = sock.send_to(&auth_pkt, addr).await;
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                            });
+                                        }
+                                    }
 
     if let Some(pending) = req {
         if approved {
@@ -588,6 +622,16 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         hello.extend_from_slice(my_id_padded.as_bytes());
 
                         let _ = socket.send_to(&hello, p_addr).await;
+                        if !host_contacted {
+                            // Also probe neighboring ports (+1..+8) in case the Host's router uses Symmetric NAT
+                            let base_ip = p_addr.ip();
+                            let base_port = p_addr.port();
+                            for offset in 1..=8u16 {
+                                if let Some(p) = base_port.checked_add(offset) {
+                                    let _ = socket.send_to(&hello, SocketAddr::new(base_ip, p)).await;
+                                }
+                            }
+                        }
                     }
                     last_hello = Instant::now();
                 }
@@ -904,7 +948,13 @@ impl P2PManager {
 
             rt.block_on(async move {
                 let socket = match UdpSocket::bind("0.0.0.0:0").await {
-                    Ok(s) => Arc::new(s),
+                    Ok(s) => {
+                        let arc_s = Arc::new(s);
+                        if let Ok(mut g) = host_socket_store().lock() {
+                            *g = Some(Arc::clone(&arc_s));
+                        }
+                        arc_s
+                    }
                     Err(e) => {
                         error!("Failed to bind local UDP socket for P2P: {:?}", e);
                         return;
@@ -1154,6 +1204,15 @@ impl P2PManager {
                                                 }
                                             }
 
+                                            let addr_key = from_addr.to_string();
+                                            if client_key != addr_key {
+                                                if let Some(mut pre_sub) = map.remove(&addr_key) {
+                                                    pre_sub.client_id = client_id_disp.clone();
+                                                    pre_sub.addr = from_addr;
+                                                    pre_sub.last_seen = Instant::now();
+                                                    map.insert(client_key.clone(), pre_sub);
+                                                }
+                                            }
                                             let entry = map.entry(client_key.clone()).or_insert_with(|| {
                                                 info!(
                                                     "🔔 [HOST APPROVAL] Incoming connection request from {} ({})",
@@ -1172,6 +1231,7 @@ impl P2PManager {
                                                     chroma_444: c444,
                                                 }
                                             });
+                                            entry.client_id = client_id_disp.clone();
                                             entry.addr = from_addr;
                                             entry.last_seen = Instant::now();
                                             entry.target_fps = fps;
@@ -1290,13 +1350,75 @@ impl P2PManager {
                                     );
                                     if let Ok(parsed_addr) = client_public_addr.parse::<SocketAddr>() {
                                         let client_addr = fix_loopback_peer(parsed_addr, target_server);
+                                        let client_key = client_addr.to_string();
+
+                                        // Immediately register incoming peer & show Accept/Decline dialog on Host!
+                                        // (Even before direct UDP hole-punch completes across symmetric/same-IP NATs)
+                                        let mut need_ui_prompt = false;
+                                        if let Ok(mut map) = clients_recv.lock() {
+                                            let already_active = map.values().any(|sub| {
+                                                sub.addr == client_addr
+                                                    || (sub.auth_state == AuthState::Pending
+                                                        && sub.last_seen.elapsed() < Duration::from_secs(12))
+                                            });
+                                            if !already_active {
+                                                need_ui_prompt = true;
+                                                map.insert(
+                                                    client_key.clone(),
+                                                    ClientSubscriber {
+                                                        client_id: format!("Peer ({})", client_addr.ip()),
+                                                        addr: client_addr,
+                                                        auth_state: AuthState::Pending,
+                                                        last_seen: Instant::now(),
+                                                        target_fps: 60,
+                                                        capture_cursor: true,
+                                                        jpeg_quality: 76,
+                                                        scale_pct: 100,
+                                                        chroma_444: true,
+                                                    },
+                                                );
+                                            }
+                                        }
+
+                                        if need_ui_prompt {
+                                            let display_cid = format!("Peer ({})", client_addr.ip());
+                                            if let Ok(mut pg) = pending_approval_store().lock() {
+                                                *pg = Some(PendingApprovalRequest {
+                                                    client_key,
+                                                    client_id: display_cid.clone(),
+                                                });
+                                            }
+                                            #[cfg(target_os = "windows")]
+                                            {
+                                                crate::windows::ui::append_status_log(&format!(
+                                                    "🔔 Incoming request from {} — Click Accept or Decline!",
+                                                    display_cid
+                                                ));
+                                                crate::windows::ui::bring_main_window_to_front();
+                                            }
+                                            #[cfg(target_os = "linux")]
+                                            {
+                                                trigger_linux_approval_dialog(display_cid);
+                                            }
+                                        }
+
                                         let my_id = current_id_clone.read().await.clone();
                                         let punch = SignalMsg::Punch { from_id: my_id };
                                         if let Ok(pbytes) = serde_json::to_vec(&punch) {
                                             let sock_punch = Arc::clone(&socket_recv);
                                             tokio::spawn(async move {
+                                                // Probe the reported port + neighboring ports (+0..+12) to pierce Symmetric NATs!
+                                                let base_ip = client_addr.ip();
+                                                let base_port = client_addr.port();
                                                 for _ in 0..8 {
                                                     let _ = sock_punch.send_to(&pbytes, client_addr).await;
+                                                    for offset in 1..=12u16 {
+                                                        if let Some(p) = base_port.checked_add(offset) {
+                                                            let _ = sock_punch
+                                                                .send_to(&pbytes, SocketAddr::new(base_ip, p))
+                                                                .await;
+                                                        }
+                                                    }
                                                     tokio::time::sleep(Duration::from_millis(25)).await;
                                                 }
                                             });
@@ -1308,10 +1430,88 @@ impl P2PManager {
                                         "🎉 [DIRECT P2P ESTABLISHED] Received direct hole-punch from peer ID '{}' ({})!",
                                         from_id, from_addr
                                     );
+                                    let norm_cid = normalize_id(&from_id);
+                                    let client_key = if !norm_cid.is_empty() && norm_cid != "000000000" {
+                                        norm_cid
+                                    } else {
+                                        from_addr.to_string()
+                                    };
+                                    let client_id_disp = format_id_display(&from_id);
+
+                                    let mut need_ui_prompt = false;
+                                    let auth_status_byte = if let Ok(mut map) = clients_recv.lock() {
+                                        // Upgrade any IP-based entry created by IncomingPeer to the peer's real 9-digit Desky ID
+                                        let addr_key = from_addr.to_string();
+                                        if client_key != addr_key {
+                                            if let Some(mut pre_sub) = map.remove(&addr_key) {
+                                                pre_sub.client_id = client_id_disp.clone();
+                                                pre_sub.addr = from_addr;
+                                                pre_sub.last_seen = Instant::now();
+                                                map.insert(client_key.clone(), pre_sub);
+                                            }
+                                        }
+                                        let entry = map.entry(client_key.clone()).or_insert_with(|| {
+                                            need_ui_prompt = true;
+                                            ClientSubscriber {
+                                                client_id: client_id_disp.clone(),
+                                                addr: from_addr,
+                                                auth_state: AuthState::Pending,
+                                                last_seen: Instant::now(),
+                                                target_fps: 60,
+                                                capture_cursor: true,
+                                                jpeg_quality: 76,
+                                                scale_pct: 100,
+                                                chroma_444: true,
+                                            }
+                                        });
+                                        entry.client_id = client_id_disp.clone();
+                                        entry.addr = from_addr;
+                                        entry.last_seen = Instant::now();
+
+                                        match entry.auth_state {
+                                            AuthState::Pending => AUTH_PENDING,
+                                            AuthState::Approved => AUTH_APPROVED,
+                                            AuthState::Declined(_) => AUTH_DECLINED,
+                                        }
+                                    } else {
+                                        AUTH_PENDING
+                                    };
+
+                                    if let Ok(mut pg) = pending_approval_store().lock() {
+                                        if pg.is_some() || need_ui_prompt {
+                                            *pg = Some(PendingApprovalRequest {
+                                                client_key: client_key.clone(),
+                                                client_id: client_id_disp.clone(),
+                                            });
+                                        }
+                                    }
+                                    if need_ui_prompt {
+                                        #[cfg(target_os = "windows")]
+                                        {
+                                            crate::windows::ui::append_status_log(&format!(
+                                                "🔔 Incoming request from ID: {} — Click Accept or Decline!",
+                                                client_id_disp
+                                            ));
+                                            crate::windows::ui::bring_main_window_to_front();
+                                        }
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            trigger_linux_approval_dialog(client_id_disp);
+                                        }
+                                    } else {
+                                        #[cfg(target_os = "windows")]
+                                        crate::windows::ui::request_main_redraw();
+                                    }
+
                                     let ack = SignalMsg::PunchAck;
                                     if let Ok(abytes) = serde_json::to_vec(&ack) {
                                         let _ = socket_recv.send_to(&abytes, from_addr).await;
                                     }
+                                    let mut auth_pkt = Vec::with_capacity(6);
+                                    auth_pkt.extend_from_slice(MAGIC_DSKY);
+                                    auth_pkt.push(PKT_AUTH_STATUS);
+                                    auth_pkt.push(auth_status_byte);
+                                    let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
                                 }
                                 SignalMsg::PunchAck => {
                                     info!(
