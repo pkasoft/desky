@@ -564,8 +564,51 @@ pub fn clipboard_notify() -> &'static Arc<Notify> {
     CLIPBOARD_NOTIFY.get_or_init(|| Arc::new(Notify::new()))
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct TransferProgress {
+    #[allow(dead_code)]
+    pub is_active: bool,
+    pub is_sending: bool,
+    pub file_name: String,
+    pub current_bytes: u64,
+    pub total_bytes: u64,
+    pub percentage: u32,
+    pub is_complete: bool,
+}
+
+static ACTIVE_TRANSFER_PROGRESS: OnceLock<Mutex<TransferProgress>> = OnceLock::new();
+
+pub fn get_transfer_progress() -> TransferProgress {
+    let store = ACTIVE_TRANSFER_PROGRESS.get_or_init(|| Mutex::new(TransferProgress::default()));
+    if let Ok(guard) = store.lock() {
+        guard.clone()
+    } else {
+        TransferProgress::default()
+    }
+}
+
+pub fn update_transfer_progress(is_sending: bool, file_name: &str, current: u64, total: u64, is_complete: bool) {
+    let pct = if total > 0 {
+        ((current as f64 / total as f64) * 100.0).clamp(0.0, 100.0) as u32
+    } else {
+        0
+    };
+    let store = ACTIVE_TRANSFER_PROGRESS.get_or_init(|| Mutex::new(TransferProgress::default()));
+    if let Ok(mut guard) = store.lock() {
+        *guard = TransferProgress {
+            is_active: !is_complete || current > 0,
+            is_sending,
+            file_name: file_name.to_string(),
+            current_bytes: current,
+            total_bytes: total,
+            percentage: pct,
+            is_complete,
+        };
+    }
+}
+
 pub fn send_file_transfer(path: std::path::PathBuf) {
-    tokio::spawn(async move {
+    std::thread::spawn(move || {
         if let Ok(data) = std::fs::read(&path) {
             let file_name = path
                 .file_name()
@@ -573,6 +616,11 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
                 .unwrap_or_else(|| "transferred_file.dat".into());
             let name_bytes = file_name.as_bytes();
             let total_size = data.len() as u64;
+
+            #[cfg(target_os = "windows")]
+            crate::windows::ui::trigger_transfer_progress_window();
+
+            update_transfer_progress(true, &file_name, 0, total_size, false);
 
             let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(Vec::new()));
             let notify = FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()));
@@ -590,9 +638,10 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
             }
             notify.notify_waiters();
 
-            // 2. Send chunks (1024 bytes each)
-            let chunk_size = 1024;
+            // 2. Send chunks (1200 bytes each) with smooth micro-pacing
+            let chunk_size = 1200;
             let mut chunk_idx: u32 = 0;
+            let mut sent_bytes: u64 = 0;
             for chunk in data.chunks(chunk_size) {
                 let mut chunk_pkt = Vec::with_capacity(5 + 4 + chunk.len());
                 chunk_pkt.extend_from_slice(MAGIC_DSKY);
@@ -604,7 +653,14 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
                     q.push(chunk_pkt);
                 }
                 notify.notify_waiters();
+
+                sent_bytes += chunk.len() as u64;
                 chunk_idx += 1;
+
+                if chunk_idx % 24 == 0 {
+                    update_transfer_progress(true, &file_name, sent_bytes, total_size, false);
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
             }
 
             // 3. Send PKT_FILE_FINISH
@@ -617,6 +673,7 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
             }
             notify.notify_waiters();
 
+            update_transfer_progress(true, &file_name, total_size, total_size, true);
             info!("Transmitting file '{}' ({} bytes, {} chunks)...", file_name, total_size, chunk_idx);
         }
     });
@@ -675,6 +732,10 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
                 save_path: target_path.clone(),
             });
         }
+        #[cfg(target_os = "windows")]
+        crate::windows::ui::trigger_transfer_progress_window();
+
+        update_transfer_progress(false, &safe_name, 0, total_size, false);
         info!("📁 Incoming file '{}' ({} KB) starting -> {:?}", safe_name, total_size / 1024, target_path);
     }
 }
@@ -687,6 +748,7 @@ pub fn handle_incoming_file_chunk(_chunk_idx: u32, data: &[u8]) {
             if let Some(file) = transfer.handle.as_mut() {
                 let _ = file.write_all(data);
                 transfer.received_bytes += data.len() as u64;
+                update_transfer_progress(false, &transfer.file_name, transfer.received_bytes, transfer.total_size, false);
             }
         }
     }
@@ -700,6 +762,7 @@ pub fn handle_incoming_file_finish() {
             if let Some(mut file) = transfer.handle.take() {
                 let _ = file.flush();
             }
+            update_transfer_progress(false, &transfer.file_name, transfer.total_size, transfer.total_size, true);
             info!("✅ File transfer complete: '{}' ({} KB) saved at {:?}", transfer.file_name, transfer.total_size / 1024, transfer.save_path);
         }
     }
@@ -768,4 +831,41 @@ pub fn read_clipboard_text() -> Option<String> {
 #[cfg(not(windows))]
 pub fn read_clipboard_text() -> Option<String> {
     None
+}
+
+
+#[cfg(windows)]
+pub fn read_clipboard_files() -> Vec<std::path::PathBuf> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard};
+    use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
+    const CF_HDROP: u32 = 15;
+    unsafe {
+        let mut files = Vec::new();
+        if IsClipboardFormatAvailable(CF_HDROP).is_ok() {
+            if OpenClipboard(None).is_ok() {
+                if let Ok(h) = GetClipboardData(CF_HDROP) {
+                    if !h.0.is_null() {
+                        let hdrop = HDROP(h.0);
+                        let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+                        for i in 0..count {
+                            let mut buf = [0u16; 512];
+                            let len = DragQueryFileW(hdrop, i, Some(&mut buf));
+                            if len > 0 {
+                                let path_str = String::from_utf16_lossy(&buf[..len as usize]);
+                                files.push(std::path::PathBuf::from(path_str));
+                            }
+                        }
+                        DragFinish(hdrop);
+                    }
+                }
+                let _ = CloseClipboard();
+            }
+        }
+        files
+    }
+}
+
+#[cfg(not(windows))]
+pub fn read_clipboard_files() -> Vec<std::path::PathBuf> {
+    Vec::new()
 }
