@@ -1,5 +1,5 @@
 use crate::protocol::InputEvent;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -519,7 +519,7 @@ pub static LAST_SYNCED_CLIPBOARD_HASH: std::sync::atomic::AtomicU64 = std::sync:
 static OUTGOING_CLIPBOARD: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static CLIPBOARD_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
 
-static OUTGOING_FILE_PACKETS: OnceLock<Mutex<Vec<Vec<u8>>>> = OnceLock::new();
+static OUTGOING_FILE_PACKETS: OnceLock<Mutex<VecDeque<Vec<u8>>>> = OnceLock::new();
 static FILE_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
 
 pub fn compute_clipboard_hash(text: &str) -> u64 {
@@ -619,7 +619,7 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
 
             update_transfer_progress(true, &file_name, 0, total_size, false);
 
-            let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(Vec::new()));
+            let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(VecDeque::new()));
             let notify = FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()));
 
             // 1. Send PKT_FILE_START: [MAGIC_DSKY, PKT_FILE_START, 8B size, 2B name_len, name_bytes]
@@ -631,7 +631,7 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
             start_pkt.extend_from_slice(name_bytes);
 
             if let Ok(mut q) = store.lock() {
-                q.push(start_pkt);
+                q.push_back(start_pkt);
             }
             notify.notify_waiters();
 
@@ -647,7 +647,7 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
                 chunk_pkt.extend_from_slice(chunk);
 
                 if let Ok(mut q) = store.lock() {
-                    q.push(chunk_pkt);
+                    q.push_back(chunk_pkt);
                 }
                 notify.notify_waiters();
 
@@ -666,7 +666,7 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
             finish_pkt.push(PKT_FILE_FINISH);
 
             if let Ok(mut q) = store.lock() {
-                q.push(finish_pkt);
+                q.push_back(finish_pkt);
             }
             notify.notify_waiters();
 
@@ -677,11 +677,9 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
 }
 
 pub fn pop_outgoing_file_packet() -> Option<Vec<u8>> {
-    let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(Vec::new()));
+    let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(VecDeque::new()));
     if let Ok(mut q) = store.lock() {
-        if !q.is_empty() {
-            return Some(q.remove(0));
-        }
+        return q.pop_front();
     }
     None
 }
@@ -704,16 +702,26 @@ static INCOMING_FILE: OnceLock<Mutex<Option<IncomingFileTransfer>>> = OnceLock::
 pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
     let mut safe_name = file_name
         .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_' || *c == ' ' || *c == '(' || *c == ')' || *c == '[' || *c == ']')
         .collect::<String>();
     if safe_name.is_empty() {
         safe_name = "received_file.dat".into();
     }
 
     let dest_dir = if let Ok(profile) = std::env::var("USERPROFILE") {
-        std::path::PathBuf::from(profile).join("Downloads").join("Desky_Transfers")
+        let desktop = std::path::PathBuf::from(&profile).join("Desktop");
+        if desktop.exists() {
+            desktop
+        } else {
+            let downloads = std::path::PathBuf::from(&profile).join("Downloads");
+            if downloads.exists() {
+                downloads
+            } else {
+                std::path::PathBuf::from(&profile)
+            }
+        }
     } else {
-        std::path::PathBuf::from("Desky_Transfers")
+        std::path::PathBuf::from(".")
     };
     let _ = std::fs::create_dir_all(&dest_dir);
     let target_path = dest_dir.join(&safe_name);
@@ -760,7 +768,68 @@ pub fn handle_incoming_file_finish() {
                 let _ = file.flush();
             }
             update_transfer_progress(false, &transfer.file_name, transfer.total_size, transfer.total_size, true);
+
+            #[cfg(windows)]
+            {
+                use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEDIR, SHCNF_PATHW};
+                let dir_str = transfer.save_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                if !dir_str.is_empty() {
+                    let wide_dir: Vec<u16> = dir_str.encode_utf16().chain(std::iter::once(0)).collect();
+                    unsafe {
+                        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, Some(wide_dir.as_ptr() as *const _), None);
+                    }
+                }
+                write_clipboard_files(&[transfer.save_path.clone()]);
+            }
+
             info!("✅ File transfer complete: '{}' ({} KB) saved at {:?}", transfer.file_name, transfer.total_size / 1024, transfer.save_path);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn write_clipboard_files(paths: &[std::path::PathBuf]) {
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
+    use windows::Win32::UI::Shell::DROPFILES;
+    use windows::Win32::Foundation::POINT;
+
+    if paths.is_empty() {
+        return;
+    }
+    unsafe {
+        if OpenClipboard(None).is_ok() {
+            let _ = EmptyClipboard();
+
+            let mut wide_bytes = Vec::new();
+            for p in paths {
+                let wide: Vec<u16> = p.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
+                for w in wide {
+                    wide_bytes.extend_from_slice(&w.to_le_bytes());
+                }
+            }
+            // Double null-terminated
+            wide_bytes.extend_from_slice(&0u16.to_le_bytes());
+
+            let dropfiles_size = std::mem::size_of::<DROPFILES>();
+            let total_size = dropfiles_size + wide_bytes.len();
+
+            if let Ok(handle) = GlobalAlloc(GHND, total_size) {
+                let ptr = GlobalLock(handle);
+                if !ptr.is_null() {
+                    let df = DROPFILES {
+                        pFiles: dropfiles_size as u32,
+                        pt: POINT { x: 0, y: 0 },
+                        fNC: false.into(),
+                        fWide: true.into(),
+                    };
+                    std::ptr::copy_nonoverlapping(&df as *const _ as *const u8, ptr as *mut u8, dropfiles_size);
+                    std::ptr::copy_nonoverlapping(wide_bytes.as_ptr(), (ptr as *mut u8).add(dropfiles_size), wide_bytes.len());
+                    let _ = GlobalUnlock(handle);
+                    let _ = SetClipboardData(15, Some(windows::Win32::Foundation::HANDLE(handle.0)));
+                }
+            }
+            let _ = CloseClipboard();
         }
     }
 }
