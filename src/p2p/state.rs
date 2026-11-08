@@ -17,6 +17,7 @@ pub const PKT_DISCONNECT: u8 = 0x04;
 pub const PKT_LAN_DISCOVERY: u8 = 0x05;
 pub const PKT_PONG: u8 = 0x06;
 pub const PKT_AUTH_STATUS: u8 = 0x07;
+pub const PKT_RELAY: u8 = 0x08;
 
 pub const AUTH_PENDING: u8 = 0;
 pub const AUTH_APPROVED: u8 = 1;
@@ -65,6 +66,7 @@ pub struct ClientSubscriber {
     pub jpeg_quality: u8,
     pub scale_pct: u8,
     pub chroma_444: bool,
+    pub is_direct: bool,
 }
 
 static LATEST_REMOTE_FRAME: OnceLock<Mutex<Option<Arc<RemoteFrame>>>> = OnceLock::new();
@@ -160,6 +162,11 @@ pub fn respond_to_pending_approval(approved: bool) {
 
     if !acks_to_send.is_empty() {
         if let Ok(Some(sock)) = host_socket_store().lock().map(|g| g.clone()) {
+            let server_addr = resolve_server_addr();
+            let my_id = {
+                let ident = crate::identity::load_or_create_identity();
+                ident.desky_id.unwrap_or_default()
+            };
             std::thread::spawn(move || {
                 if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -171,8 +178,15 @@ pub fn respond_to_pending_approval(approved: bool) {
                             auth_pkt.extend_from_slice(MAGIC_DSKY);
                             auth_pkt.push(PKT_AUTH_STATUS);
                             auth_pkt.push(status_byte);
+
+                            // Send directly to peer
                             for _ in 0..4 {
                                 let _ = sock.send_to(&auth_pkt, addr).await;
+                            }
+                            // ALSO send via VDS Relay so NAT never blocks approval!
+                            let relay_pkt = wrap_relay_packet(&my_id, &auth_pkt);
+                            for _ in 0..4 {
+                                let _ = sock.send_to(&relay_pkt, server_addr).await;
                             }
                         }
                     });
@@ -347,6 +361,21 @@ pub fn resolve_server_addr() -> SocketAddr {
     server_str
         .parse()
         .unwrap_or_else(|_| "131.222.194.92:21116".parse().unwrap())
+}
+
+/// Wraps a standard DSKY packet into a VDS Relay packet addressed to `target_id`
+pub fn wrap_relay_packet(target_id: &str, inner_packet: &[u8]) -> Vec<u8> {
+    let mut pkt = Vec::with_capacity(14 + inner_packet.len());
+    pkt.extend_from_slice(MAGIC_DSKY);
+    pkt.push(PKT_RELAY);
+    let norm = normalize_id(target_id);
+    let mut padded = [b'0'; 9];
+    let b = norm.as_bytes();
+    let copy_len = b.len().min(9);
+    padded[9 - copy_len..].copy_from_slice(&b[..copy_len]);
+    pkt.extend_from_slice(&padded);
+    pkt.extend_from_slice(inner_packet);
+    pkt
 }
 
 pub fn fix_loopback_peer(mut peer: SocketAddr, server: SocketAddr) -> SocketAddr {
