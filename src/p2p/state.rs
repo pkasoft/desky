@@ -284,16 +284,16 @@ pub fn respond_to_pending_approval(approved: bool) {
                 pending.client_id
             );
             crate::platform::ui::append_status_log(&format!(
-                "✅ Approved remote session for ID: {}",
+                "[+] Approved remote session for ID: {}",
                 pending.client_id
             ));
         } else {
             info!(
-                "❌ Host user DECLINED incoming session from {}",
+                "Host user DECLINED incoming session from {}",
                 pending.client_id
             );
             crate::platform::ui::append_status_log(&format!(
-                "🚫 Declined connection request from ID: {}",
+                "[-] Declined connection request from ID: {}",
                 pending.client_id
             ));
         }

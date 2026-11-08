@@ -31,7 +31,7 @@ pub unsafe fn create_segoe_font(height: i32, weight: FONT_WEIGHT) -> HFONT {
     let safe_height = height.max(12);
     unsafe {
         CreateFontW(
-            safe_height,
+            -safe_height,
             0,
             0,
             0,
@@ -42,7 +42,7 @@ pub unsafe fn create_segoe_font(height: i32, weight: FONT_WEIGHT) -> HFONT {
             FONT_CHARSET(1), // DEFAULT_CHARSET
             FONT_OUTPUT_PRECISION(0),
             FONT_CLIP_PRECISION(0),
-            FONT_QUALITY(5), // CLEARTYPE_QUALITY
+            FONT_QUALITY(6), // CLEARTYPE_NATURAL_QUALITY
             0,
             w!("Segoe UI"),
         )
@@ -53,7 +53,7 @@ pub unsafe fn create_mono_font(height: i32, weight: FONT_WEIGHT) -> HFONT {
     let safe_height = height.max(12);
     unsafe {
         CreateFontW(
-            safe_height,
+            -safe_height,
             0,
             0,
             0,
@@ -64,7 +64,7 @@ pub unsafe fn create_mono_font(height: i32, weight: FONT_WEIGHT) -> HFONT {
             FONT_CHARSET(1),
             FONT_OUTPUT_PRECISION(0),
             FONT_CLIP_PRECISION(0),
-            FONT_QUALITY(5),
+            FONT_QUALITY(6), // CLEARTYPE_NATURAL_QUALITY
             0,
             w!("Consolas"),
         )
