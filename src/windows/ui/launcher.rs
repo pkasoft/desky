@@ -741,7 +741,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                                 };
                                 let _ = DrawTextW(mem_dc, &mut id_txt, &mut id_rc, DT_SINGLELINE | DT_VCENTER);
 
-                                let pill_btn_w = 76;
+                                let pill_btn_w = 72;
                                 let pill_btn_h = item_h - 10;
                                 let pill_btn_x = item_x + item_w - pill_btn_w - 6;
                                 let pill_btn_y = item_y + 5;
@@ -750,25 +750,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                                 let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                                 SetTextColor(mem_dc, PK_GREEN);
                                 let mut c_txt: Vec<u16> = "Connect".encode_utf16().collect();
-                                let mut c_sz = SIZE::default();
-                                let _ = GetTextExtentPoint32W(mem_dc, &c_txt, &mut c_sz);
-
-                                let mini_icon_sz = 12;
-                                let mini_gap = 5;
-                                let mini_total_w = c_sz.cx + mini_gap + mini_icon_sz;
-                                let mini_start_x = pill_btn_x + (pill_btn_w - mini_total_w) / 2;
-
                                 let mut c_rc = RECT {
-                                    left: mini_start_x,
+                                    left: pill_btn_x,
                                     top: pill_btn_y,
-                                    right: mini_start_x + c_sz.cx,
+                                    right: pill_btn_x + pill_btn_w,
                                     bottom: pill_btn_y + pill_btn_h,
                                 };
-                                let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
-                                let mini_icon_x = mini_start_x + c_sz.cx + mini_gap;
-                                let mini_icon_y = pill_btn_y + (pill_btn_h - mini_icon_sz) / 2;
-                                crate::ui::draw_arrow_right(mem_dc, mini_icon_x, mini_icon_y, mini_icon_sz, PK_GREEN, 2);
+                                let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
                             }
                         }
 
