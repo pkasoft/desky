@@ -12,19 +12,8 @@ pub struct ClientIdentity {
 }
 
 fn get_identity_path() -> PathBuf {
-    if let Ok(app_data) = std::env::var("APPDATA") {
-        let dir = PathBuf::from(app_data).join("Desky");
-        let _ = fs::create_dir_all(&dir);
-        dir.join("identity.json")
-    } else if let Ok(home) = std::env::var("HOME") {
-        let dir = PathBuf::from(home).join(".config").join("desky");
-        let _ = fs::create_dir_all(&dir);
-        dir.join("identity.json")
-    } else {
-        let dir = PathBuf::from(".desky");
-        let _ = fs::create_dir_all(&dir);
-        dir.join("identity.json")
-    }
+    let dir = crate::platform::get_identity_dir();
+    dir.join("identity.json")
 }
 
 pub fn load_or_create_identity() -> ClientIdentity {
@@ -37,45 +26,8 @@ pub fn load_or_create_identity() -> ClientIdentity {
         }
     }
 
-    // Generate a unique machine GUID
-    #[cfg(target_os = "linux")]
-    let machine_id = if let Ok(mid) = fs::read_to_string("/etc/machine-id") {
-        let trimmed = mid.trim();
-        if !trimmed.is_empty() {
-            format!("{}-deadbeef", trimmed)
-        } else {
-            format!(
-                "{:x}-{:x}-{:x}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos(),
-                std::process::id(),
-                0xDEADBEEFu32
-            )
-        }
-    } else {
-        format!(
-            "{:x}-{:x}-{:x}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            std::process::id(),
-            0xDEADBEEFu32
-        )
-    };
-
-    #[cfg(not(target_os = "linux"))]
-    let machine_id = format!(
-        "{:x}-{:x}-{:x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-        std::process::id(),
-        0xDEADBEEFu32
-    );
+    // Platform-delegated machine GUID
+    let machine_id = crate::platform::get_machine_id();
 
     let ident = ClientIdentity {
         machine_id,

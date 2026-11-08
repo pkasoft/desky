@@ -1,4 +1,4 @@
-use anyhow::Result;
+﻿use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 use x11rb::connection::Connection;
@@ -22,6 +22,21 @@ pub fn set_assigned_desky_id(id: &str) {
 }
 
 /// Spawns a native X11 approval popup dialog when a remote client requests to connect
+
+
+pub fn append_status_log(msg: &str) {
+    info!("[STATUS] {}", msg);
+}
+
+pub fn bring_main_window_to_front() {}
+
+pub fn request_main_redraw() {}
+
+pub fn trigger_transfer_progress_window() {}
+
+pub fn prompt_incoming_request(client_id: &str) {
+    spawn_linux_approval_popup(client_id.to_string());
+}
 pub fn spawn_linux_approval_popup(client_id: String) {
     if POPUP_ACTIVE.swap(true, Ordering::SeqCst) {
         return;

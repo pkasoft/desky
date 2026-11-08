@@ -1,4 +1,4 @@
-use crate::protocol::InputEvent;
+﻿use crate::protocol::InputEvent;
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
@@ -281,8 +281,7 @@ pub fn respond_to_pending_approval(approved: bool) {
                 "✅ Host user APPROVED incoming session from {}",
                 pending.client_id
             );
-            #[cfg(target_os = "windows")]
-            crate::windows::ui::append_status_log(&format!(
+            crate::platform::ui::append_status_log(&format!(
                 "✅ Approved remote session for ID: {}",
                 pending.client_id
             ));
@@ -291,15 +290,13 @@ pub fn respond_to_pending_approval(approved: bool) {
                 "❌ Host user DECLINED incoming session from {}",
                 pending.client_id
             );
-            #[cfg(target_os = "windows")]
-            crate::windows::ui::append_status_log(&format!(
+            crate::platform::ui::append_status_log(&format!(
                 "🚫 Declined connection request from ID: {}",
                 pending.client_id
             ));
         }
     }
-    #[cfg(target_os = "windows")]
-    crate::windows::ui::request_main_redraw();
+    crate::platform::ui::request_main_redraw();
 }
 
 pub fn get_latest_remote_frame() -> Option<Arc<RemoteFrame>> {
@@ -614,8 +611,7 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
             let name_bytes = file_name.as_bytes();
             let total_size = data.len() as u64;
 
-            #[cfg(target_os = "windows")]
-            crate::windows::ui::trigger_transfer_progress_window();
+            crate::platform::ui::trigger_transfer_progress_window();
 
             update_transfer_progress(true, &file_name, 0, total_size, false);
 
@@ -708,21 +704,7 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
         safe_name = "received_file.dat".into();
     }
 
-    let dest_dir = if let Ok(profile) = std::env::var("USERPROFILE") {
-        let desktop = std::path::PathBuf::from(&profile).join("Desktop");
-        if desktop.exists() {
-            desktop
-        } else {
-            let downloads = std::path::PathBuf::from(&profile).join("Downloads");
-            if downloads.exists() {
-                downloads
-            } else {
-                std::path::PathBuf::from(&profile)
-            }
-        }
-    } else {
-        std::path::PathBuf::from(".")
-    };
+    let dest_dir = crate::platform::get_desktop_dir();
     let _ = std::fs::create_dir_all(&dest_dir);
     let target_path = dest_dir.join(&safe_name);
 
@@ -737,8 +719,7 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
                 save_path: target_path.clone(),
             });
         }
-        #[cfg(target_os = "windows")]
-        crate::windows::ui::trigger_transfer_progress_window();
+        crate::platform::ui::trigger_transfer_progress_window();
 
         update_transfer_progress(false, &safe_name, 0, total_size, false);
         info!("📁 Incoming file '{}' ({} KB) starting -> {:?}", safe_name, total_size / 1024, target_path);
@@ -769,169 +750,26 @@ pub fn handle_incoming_file_finish() {
             }
             update_transfer_progress(false, &transfer.file_name, transfer.total_size, transfer.total_size, true);
 
-            #[cfg(windows)]
-            {
-                use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEDIR, SHCNF_PATHW};
-                let dir_str = transfer.save_path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-                if !dir_str.is_empty() {
-                    let wide_dir: Vec<u16> = dir_str.encode_utf16().chain(std::iter::once(0)).collect();
-                    unsafe {
-                        SHChangeNotify(SHCNE_UPDATEDIR, SHCNF_PATHW, Some(wide_dir.as_ptr() as *const _), None);
-                    }
-                }
-                write_clipboard_files(&[transfer.save_path.clone()]);
-            }
+            crate::platform::notify_file_received(&transfer.save_path);
+            write_clipboard_files(&[transfer.save_path.clone()]);
 
             info!("✅ File transfer complete: '{}' ({} KB) saved at {:?}", transfer.file_name, transfer.total_size / 1024, transfer.save_path);
         }
     }
 }
 
-#[cfg(windows)]
 pub fn write_clipboard_files(paths: &[std::path::PathBuf]) {
-    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-    use windows::Win32::UI::Shell::DROPFILES;
-    use windows::Win32::Foundation::POINT;
-
-    if paths.is_empty() {
-        return;
-    }
-    unsafe {
-        if OpenClipboard(None).is_ok() {
-            let _ = EmptyClipboard();
-
-            let mut wide_bytes = Vec::new();
-            for p in paths {
-                let wide: Vec<u16> = p.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
-                for w in wide {
-                    wide_bytes.extend_from_slice(&w.to_le_bytes());
-                }
-            }
-            // Double null-terminated
-            wide_bytes.extend_from_slice(&0u16.to_le_bytes());
-
-            let dropfiles_size = std::mem::size_of::<DROPFILES>();
-            let total_size = dropfiles_size + wide_bytes.len();
-
-            if let Ok(handle) = GlobalAlloc(GHND, total_size) {
-                let ptr = GlobalLock(handle);
-                if !ptr.is_null() {
-                    let df = DROPFILES {
-                        pFiles: dropfiles_size as u32,
-                        pt: POINT { x: 0, y: 0 },
-                        fNC: false.into(),
-                        fWide: true.into(),
-                    };
-                    std::ptr::copy_nonoverlapping(&df as *const _ as *const u8, ptr as *mut u8, dropfiles_size);
-                    std::ptr::copy_nonoverlapping(wide_bytes.as_ptr(), (ptr as *mut u8).add(dropfiles_size), wide_bytes.len());
-                    let _ = GlobalUnlock(handle);
-                    let _ = SetClipboardData(15, Some(windows::Win32::Foundation::HANDLE(handle.0)));
-                }
-            }
-            let _ = CloseClipboard();
-        }
-    }
+    crate::platform::write_clipboard_files(paths);
 }
 
-#[cfg(windows)]
 pub fn write_clipboard_text(text: &str) {
-    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
-    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-    unsafe {
-        if OpenClipboard(None).is_ok() {
-            let _ = EmptyClipboard();
-            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-            let bytes_len = wide.len() * 2;
-            if let Ok(handle) = GlobalAlloc(GHND, bytes_len) {
-                let ptr = GlobalLock(handle);
-                if !ptr.is_null() {
-                    std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes_len);
-                    let _ = GlobalUnlock(handle);
-                    let _ = SetClipboardData(13, Some(windows::Win32::Foundation::HANDLE(handle.0)));
-                }
-            }
-            let _ = CloseClipboard();
-        }
-    }
+    crate::platform::write_clipboard_text(text);
 }
 
-#[cfg(not(windows))]
-pub fn write_clipboard_text(_text: &str) {}
-
-#[cfg(windows)]
 pub fn read_clipboard_text() -> Option<String> {
-    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
-    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
-    unsafe {
-        if OpenClipboard(None).is_ok() {
-            let res = if let Ok(h) = GetClipboardData(13) {
-                if !h.0.is_null() {
-                    let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(h.0)) as *const u16;
-                    if !ptr.is_null() {
-                        let mut len = 0;
-                        while *ptr.add(len) != 0 {
-                            len += 1;
-                        }
-                        let slice = std::slice::from_raw_parts(ptr, len);
-                        let s = String::from_utf16_lossy(slice);
-                        let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(h.0));
-                        Some(s)
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            let _ = CloseClipboard();
-            res
-        } else {
-            None
-        }
-    }
+    crate::platform::read_clipboard_text()
 }
 
-#[cfg(not(windows))]
-pub fn read_clipboard_text() -> Option<String> {
-    None
-}
-
-
-#[cfg(windows)]
 pub fn read_clipboard_files() -> Vec<std::path::PathBuf> {
-    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard};
-    use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
-    const CF_HDROP: u32 = 15;
-    unsafe {
-        let mut files = Vec::new();
-        if IsClipboardFormatAvailable(CF_HDROP).is_ok() {
-            if OpenClipboard(None).is_ok() {
-                if let Ok(h) = GetClipboardData(CF_HDROP) {
-                    if !h.0.is_null() {
-                        let hdrop = HDROP(h.0);
-                        let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
-                        for i in 0..count {
-                            let mut buf = [0u16; 512];
-                            let len = DragQueryFileW(hdrop, i, Some(&mut buf));
-                            if len > 0 {
-                                let path_str = String::from_utf16_lossy(&buf[..len as usize]);
-                                files.push(std::path::PathBuf::from(path_str));
-                            }
-                        }
-                        DragFinish(hdrop);
-                    }
-                }
-                let _ = CloseClipboard();
-            }
-        }
-        files
-    }
-}
-
-#[cfg(not(windows))]
-pub fn read_clipboard_files() -> Vec<std::path::PathBuf> {
-    Vec::new()
+    crate::platform::read_clipboard_files()
 }
