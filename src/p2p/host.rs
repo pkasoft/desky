@@ -1,6 +1,6 @@
 use crate::p2p::state::{
     decode_lan_endpoint, encode_lan_endpoint_port, fix_loopback_peer, format_id_display,
-    host_std_socket_store, host_subscribers_store, is_same_lan_subnet, normalize_id,
+    host_std_socket_store, host_subscribers_store, normalize_id,
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
@@ -249,7 +249,7 @@ impl P2PManager {
                                         cur_pkt[4] = crate::p2p::state::PKT_CURSOR_SHAPE;
                                         cur_pkt[5] = cur_shape;
                                         for sub in &subscribers {
-                                            if sub.is_direct {
+                                            if sub.is_direct || sub.addr != target_server_stream {
                                                 let _ = std_sock_stream_capture.send_to(&cur_pkt, sub.addr);
                                             } else if !sub.relay_id.is_empty() {
                                                 let relay = wrap_relay_packet(&sub.relay_id, &cur_pkt);
@@ -273,7 +273,7 @@ impl P2PManager {
                                                 pkt.push(PKT_CLIPBOARD);
                                                 pkt.extend_from_slice(text_bytes);
                                                 for sub in &subscribers {
-                                                    if sub.is_direct {
+                                                    if sub.is_direct || sub.addr != target_server_stream {
                                                         let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
                                                     } else if !sub.relay_id.is_empty() {
                                                         let relay = wrap_relay_packet(&sub.relay_id, &pkt);
@@ -334,7 +334,7 @@ impl P2PManager {
                                             pkt.extend_from_slice(chunk);
 
                                             for sub in &subscribers {
-                                                if sub.is_direct {
+                                                if sub.is_direct || sub.addr != target_server_stream {
                                                     let _ =
                                                         std_sock_stream_capture.send_to(&pkt, sub.addr);
                                                 } else if !sub.relay_id.is_empty() {
@@ -415,7 +415,7 @@ impl P2PManager {
                                             pkt.extend_from_slice(&pcm_data);
 
                                             for sub in &subscribers {
-                                                if sub.is_direct {
+                                                if sub.is_direct || sub.addr != target_server_audio {
                                                     let _ = sock_audio.send_to(&pkt, sub.addr);
                                                 } else if !sub.relay_id.is_empty() {
                                                     let relay = wrap_relay_packet(&sub.relay_id, &pkt);
@@ -492,7 +492,6 @@ impl P2PManager {
                                     };
                                     let client_lan_addr = if slice.len() >= 38 {
                                         decode_lan_endpoint(&slice[32..38])
-                                            .filter(|a| is_same_lan_subnet(&host_lan_bytes, *a))
                                     } else {
                                         None
                                     };
@@ -543,33 +542,34 @@ impl P2PManager {
                                                     pre_sub.client_id = client_id_disp.clone();
                                                     if !is_from_server {
                                                         pre_sub.addr = from_addr;
+                                                        pre_sub.is_direct = true;
                                                     }
                                                     pre_sub.last_seen = Instant::now();
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
                                             }
 
-                                            let verified_direct = (!is_from_server)
-                                                && (client_confirmed_direct
-                                                    || is_same_lan_subnet(
-                                                        &host_lan_bytes,
-                                                        from_addr,
-                                                    ));
+                                            let verified_direct = !is_from_server;
 
                                             let entry = map
                                                 .entry(client_key.clone())
                                                 .or_insert_with(|| {
+                                                    let initial_addr = if !is_from_server {
+                                                        from_addr
+                                                    } else {
+                                                        client_lan_addr.unwrap_or(from_addr)
+                                                    };
                                                     info!(
                                                         "🔔 [HOST APPROVAL] Incoming connection request from {} ({})",
                                                         client_id_disp,
-                                                        client_lan_addr.unwrap_or(from_addr)
+                                                        initial_addr
                                                     );
                                                     need_ui_prompt = true;
                                                     should_punch_lan = true;
                                                     ClientSubscriber {
                                                         client_id: client_id_disp.clone(),
                                                         relay_id: relay_id.clone(),
-                                                        addr: client_lan_addr.unwrap_or(from_addr),
+                                                        addr: initial_addr,
                                                         lan_addr: client_lan_addr,
                                                         auth_state: AuthState::Pending,
                                                         last_seen: Instant::now(),
@@ -598,10 +598,9 @@ impl P2PManager {
                                             }
                                             if !is_from_server {
                                                 entry.addr = from_addr;
-                                            }
-                                            if verified_direct
-                                                || (client_confirmed_direct
-                                                    && entry.addr != target_server)
+                                                entry.is_direct = true;
+                                            } else if client_confirmed_direct
+                                                && entry.addr != target_server
                                             {
                                                 entry.is_direct = true;
                                             }
@@ -696,6 +695,10 @@ impl P2PManager {
                                                     && sub.auth_state == AuthState::Approved
                                                 {
                                                     sub.last_seen = Instant::now();
+                                                    if from_addr != target_server {
+                                                        sub.addr = from_addr;
+                                                        sub.is_direct = true;
+                                                    }
                                                     approved = true;
                                                 }
                                             }
@@ -940,8 +943,6 @@ impl P2PManager {
                                             from_addr.to_string()
                                         };
                                     let client_id_disp = format_id_display(&from_id);
-                                    let is_lan_peer =
-                                        is_same_lan_subnet(&host_lan_bytes, from_addr);
 
                                     let mut need_ui_prompt = false;
                                     let mut first_direct = false;
@@ -952,6 +953,7 @@ impl P2PManager {
                                                 if let Some(mut pre_sub) = map.remove(&addr_key) {
                                                     pre_sub.client_id = client_id_disp.clone();
                                                     pre_sub.addr = from_addr;
+                                                    pre_sub.is_direct = true;
                                                     pre_sub.last_seen = Instant::now();
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
@@ -973,7 +975,7 @@ impl P2PManager {
                                                         jpeg_quality: 76,
                                                         scale_pct: 100,
                                                         chroma_444: true,
-                                                        is_direct: is_lan_peer,
+                                                        is_direct: true,
                                                     }
                                                 });
                                             if entry.addr != from_addr {
@@ -981,9 +983,7 @@ impl P2PManager {
                                             }
                                             entry.client_id = client_id_disp.clone();
                                             entry.addr = from_addr;
-                                            if is_lan_peer {
-                                                entry.is_direct = true;
-                                            }
+                                            entry.is_direct = true;
                                             entry.last_seen = Instant::now();
 
                                             match entry.auth_state {

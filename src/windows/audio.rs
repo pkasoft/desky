@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use tracing::info;
 
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, waveOutClose, waveOutOpen, waveOutPrepareHeader,
+    eConsole, eRender, waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset,
     waveOutUnprepareHeader, waveOutWrite, HWAVEOUT, IAudioCaptureClient, IAudioClient,
     IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_LOOPBACK, MIDI_WAVE_OPEN_TYPE, WAVEFORMATEX, WAVEHDR,
@@ -99,26 +99,50 @@ impl WasapiLoopbackCapturer {
                 return Ok(None);
             }
 
+            // WASAPI Flag 0x2 = AUDCLNT_BUFFERFLAGS_SILENT
+            if flags & 0x2 != 0 {
+                let _ = self.capture_client.ReleaseBuffer(num_frames_read);
+                return Ok(None);
+            }
+
             let num_samples = num_frames_read as usize * self.channels as usize;
             let mut pcm16_bytes = Vec::with_capacity(num_samples * 2);
+            let mut max_amp: i16 = 0;
 
-            if flags & 1 != 0 {
-                // Silence
-                pcm16_bytes.resize(num_samples * 2, 0);
-            } else if self.is_float {
+            if self.is_float {
                 let float_slice = std::slice::from_raw_parts(data_ptr as *const f32, num_samples);
                 for &s in float_slice {
+                    if s.is_nan() || s.is_infinite() {
+                        pcm16_bytes.extend_from_slice(&0i16.to_le_bytes());
+                        continue;
+                    }
                     let clamped = s.clamp(-1.0, 1.0);
                     let val = (clamped * 32767.0) as i16;
+                    let abs_val = val.saturating_abs();
+                    if abs_val > max_amp {
+                        max_amp = abs_val;
+                    }
                     pcm16_bytes.extend_from_slice(&val.to_le_bytes());
                 }
             } else {
-                let byte_count = num_samples * 2;
-                let slice = std::slice::from_raw_parts(data_ptr, byte_count);
-                pcm16_bytes.extend_from_slice(slice);
+                let i16_slice = std::slice::from_raw_parts(data_ptr as *const i16, num_samples);
+                for &val in i16_slice {
+                    let abs_val = val.saturating_abs();
+                    if abs_val > max_amp {
+                        max_amp = abs_val;
+                    }
+                    pcm16_bytes.extend_from_slice(&val.to_le_bytes());
+                }
             }
 
             let _ = self.capture_client.ReleaseBuffer(num_frames_read);
+
+            // Noise gate: if peak amplitude is below line-noise threshold (160 / -46dB),
+            // treat as complete silence so client speakers produce zero hiss, clicks, or pitch glitches.
+            if max_amp < 160 {
+                return Ok(None);
+            }
+
             Ok(Some(pcm16_bytes))
         }
     }
@@ -133,8 +157,17 @@ impl Drop for WasapiLoopbackCapturer {
     }
 }
 
+struct AudioBlock {
+    header: WAVEHDR,
+    buffer: Vec<u8>,
+    prepared: bool,
+}
+
 pub struct AudioPlayer {
     h_wave_out: HWAVEOUT,
+    blocks: Vec<Box<AudioBlock>>,
+    pub sample_rate: u32,
+    pub channels: u16,
 }
 
 unsafe impl Send for AudioPlayer {}
@@ -167,41 +200,104 @@ impl AudioPlayer {
                 anyhow::bail!("Failed to open waveOut device: {}", res);
             }
 
-            Ok(Self { h_wave_out })
+            // Pre-allocate 16 reusable audio blocks with 16KB buffers
+            let mut blocks = Vec::with_capacity(16);
+            for _ in 0..16 {
+                blocks.push(Box::new(AudioBlock {
+                    header: WAVEHDR::default(),
+                    buffer: vec![0u8; 16384],
+                    prepared: false,
+                }));
+            }
+
+            Ok(Self {
+                h_wave_out,
+                blocks,
+                sample_rate,
+                channels,
+            })
         }
     }
 
-    pub fn play_chunk(&self, pcm_bytes: &[u8]) {
+    pub fn play_chunk(&mut self, pcm_bytes: &[u8]) {
         if pcm_bytes.is_empty() || CLIENT_AUDIO_MUTED.load(Ordering::Relaxed) {
             return;
         }
 
         unsafe {
-            let mut header = Box::new(WAVEHDR {
-                lpData: windows::core::PSTR(pcm_bytes.as_ptr() as *mut u8),
-                dwBufferLength: pcm_bytes.len() as u32,
-                ..Default::default()
-            });
+            // 1. Reclaim any completed blocks
+            for block in &mut self.blocks {
+                if block.prepared && (block.header.dwFlags & 1 != 0) {
+                    // WHDR_DONE
+                    let _ = waveOutUnprepareHeader(
+                        self.h_wave_out,
+                        &mut block.header,
+                        std::mem::size_of::<WAVEHDR>() as u32,
+                    );
+                    block.prepared = false;
+                }
+            }
+
+            // 2. Find an available (unprepared) block or allocate one if pool is not saturated
+            let mut target_idx = None;
+            for (idx, block) in self.blocks.iter().enumerate() {
+                if !block.prepared {
+                    target_idx = Some(idx);
+                    break;
+                }
+            }
+
+            if target_idx.is_none() && self.blocks.len() < 32 {
+                self.blocks.push(Box::new(AudioBlock {
+                    header: WAVEHDR::default(),
+                    buffer: vec![0u8; pcm_bytes.len().max(8192)],
+                    prepared: false,
+                }));
+                target_idx = Some(self.blocks.len() - 1);
+            }
+
+            // If still saturated, reclaim the oldest block to prevent buffer queue buildup
+            let block_idx = match target_idx {
+                Some(i) => i,
+                None => {
+                    let first = &mut self.blocks[0];
+                    if first.prepared {
+                        let _ = waveOutUnprepareHeader(
+                            self.h_wave_out,
+                            &mut first.header,
+                            std::mem::size_of::<WAVEHDR>() as u32,
+                        );
+                        first.prepared = false;
+                    }
+                    0
+                }
+            };
+
+            let block = &mut self.blocks[block_idx];
+            if block.buffer.len() < pcm_bytes.len() {
+                block.buffer.resize(pcm_bytes.len(), 0);
+            }
+            block.buffer[..pcm_bytes.len()].copy_from_slice(pcm_bytes);
+
+            block.header.lpData = windows::core::PSTR(block.buffer.as_mut_ptr());
+            block.header.dwBufferLength = pcm_bytes.len() as u32;
+            block.header.dwBytesRecorded = 0;
+            block.header.dwUser = 0;
+            block.header.dwFlags = 0;
+            block.header.dwLoops = 0;
 
             let prep = waveOutPrepareHeader(
                 self.h_wave_out,
-                header.as_mut(),
+                &mut block.header,
                 std::mem::size_of::<WAVEHDR>() as u32,
             );
             if prep == 0 {
+                block.prepared = true;
                 let _ = waveOutWrite(
                     self.h_wave_out,
-                    header.as_mut(),
+                    &mut block.header,
                     std::mem::size_of::<WAVEHDR>() as u32,
                 );
-                let h_raw = self.h_wave_out.0 as usize;
-                let hdr_ptr = Box::into_raw(header) as usize;
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(60));
-                    let h_out = HWAVEOUT(h_raw as *mut _);
-                    let mut hdr = Box::from_raw(hdr_ptr as *mut WAVEHDR);
-                    let _ = waveOutUnprepareHeader(h_out, hdr.as_mut(), std::mem::size_of::<WAVEHDR>() as u32);
-                });
             }
         }
     }
@@ -210,6 +306,17 @@ impl AudioPlayer {
 impl Drop for AudioPlayer {
     fn drop(&mut self) {
         unsafe {
+            let _ = waveOutReset(self.h_wave_out);
+            for block in &mut self.blocks {
+                if block.prepared {
+                    let _ = waveOutUnprepareHeader(
+                        self.h_wave_out,
+                        &mut block.header,
+                        std::mem::size_of::<WAVEHDR>() as u32,
+                    );
+                    block.prepared = false;
+                }
+            }
             let _ = waveOutClose(self.h_wave_out);
         }
     }
@@ -222,13 +329,19 @@ pub fn play_remote_audio_chunk(sample_rate: u32, channels: u16, pcm_bytes: &[u8]
     }
 
     let mut guard = AUDIO_PLAYER.lock().unwrap();
-    if guard.is_none() {
+    let need_reopen = match guard.as_ref() {
+        Some(p) => p.sample_rate != sample_rate || p.channels != channels,
+        None => true,
+    };
+
+    if need_reopen {
+        *guard = None;
         if let Ok(player) = AudioPlayer::new(sample_rate, channels) {
             *guard = Some(player);
         }
     }
 
-    if let Some(player) = guard.as_ref() {
+    if let Some(player) = guard.as_mut() {
         player.play_chunk(pcm_bytes);
     }
 }
