@@ -376,3 +376,20 @@ pub unsafe fn draw_smooth_rounded_rect(
     let _ = GdipDrawLine(scope.graphics, scope.pen, px, py + ph - pr, px, py + pr);
     let _ = GdipDrawArc(scope.graphics, scope.pen, px, py, d, d, 180.0, 90.0);
 }
+
+
+#[inline]
+pub unsafe fn draw_smooth_arc(
+    scope: &GraphicsScope,
+    ctx: &IconContext,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    start_angle: f32,
+    sweep_angle: f32,
+) {
+    let scale = ctx.size as f32 / 24.0;
+    let (px, py) = ctx.fpt(cx - r, cy - r);
+    let d = r * 2.0 * scale;
+    let _ = GdipDrawArc(scope.graphics, scope.pen, px, py, d, d, start_angle, sweep_angle);
+}

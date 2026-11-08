@@ -1,16 +1,29 @@
-//! Lucide Terminal Icon
-//! Standard 24x24 vector: prompt chevron `>` and cursor line `_`.
+//! Lucide Terminal Console Vector Icon (Official Lucide `terminal.svg`)
+//!
+//! Vector paths:
+//! - `<polyline points="4 17 10 11 4 5" />`
+//! - `<line x1="12" x2="20" y1="19" y2="19" />`
 
-use super::{draw_line, draw_polyline, IconContext, PenScope};
+use super::{
+    draw_line, draw_polyline, draw_smooth_line, draw_smooth_polyline, GraphicsScope, IconContext,
+    PenScope,
+};
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Graphics::Gdi::HDC;
 
 pub unsafe fn draw_terminal(hdc: HDC, x: i32, y: i32, size: i32, color: COLORREF, stroke_width: i32) {
     let ctx = IconContext::new(x, y, size);
-    let _pen = PenScope::new(hdc, color, stroke_width);
+    let sw = stroke_width as f32;
 
-    // Chevron prompt: (4, 17) -> (10, 12) -> (4, 7)
-    draw_polyline(hdc, &ctx, &[(4.0, 7.0), (10.0, 12.0), (4.0, 17.0)]);
-    // Cursor underline: (12, 19) -> (20, 19)
-    draw_line(hdc, &ctx, 12.0, 19.0, 20.0, 19.0);
+    if let Some(scope) = GraphicsScope::new(hdc, color, sw) {
+        // CLI command prompt chevron `>`
+        draw_smooth_polyline(&scope, &ctx, &[(4.0, 5.0), (10.0, 11.0), (4.0, 17.0)]);
+
+        // Underscore cursor `_`
+        draw_smooth_line(&scope, &ctx, 12.0, 19.0, 20.0, 19.0);
+    } else {
+        let _pen = PenScope::new(hdc, color, stroke_width);
+        draw_polyline(hdc, &ctx, &[(4.0, 5.0), (10.0, 11.0), (4.0, 17.0)]);
+        draw_line(hdc, &ctx, 12.0, 19.0, 20.0, 19.0);
+    }
 }
