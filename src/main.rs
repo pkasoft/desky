@@ -1,6 +1,9 @@
 mod identity;
 mod p2p;
 mod protocol;
+pub mod recorder;
+
+#[cfg(target_os = "windows")]
 pub mod ui;
 
 #[cfg(target_os = "windows")]

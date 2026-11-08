@@ -39,6 +39,7 @@ desky/
     │       ├── settings.rs        # Cog profile (settings.svg)
     │       ├── radio.rs           # Signal beacon (radio.svg)
     │       └── [bell, check, copy, cpu, file, folder, home, info, plus, refresh, search, server, trash, wifi, x].rs
+    ├── recorder.rs            # Zero-overhead cross-platform AVI / Motion-JPEG session video recorder
     ├── windows/                   # Windows OS Platform Layer
     │   ├── mod.rs                 # Windows subsystem re-exports
     │   ├── admin.rs               # Silent Admin backend (processes, services, shell, SAS, reboot)
@@ -48,7 +49,6 @@ desky/
     │   ├── cursor.rs              # Hardware cursor capture & shape translation
     │   ├── dxgi_capture.rs        # High-performance Direct3D11 / DXGI Desktop Duplication
     │   ├── input.rs               # Win32 SendInput / mouse_event / keybd_event injector
-    │   ├── recorder.rs            # Zero-overhead AVI / Motion-JPEG session video recorder
     │   ├── system.rs              # Working set trimming, directories, notifications
     │   └── ui/                    # Win32 Native UI & Multi-Window Canvas
     │       ├── mod.rs             # UI module entry
@@ -141,7 +141,7 @@ Used by `get_tab_hit_state()` and window event routing in `src/windows/ui/viewpo
 3. **Controls**: Centered floating pill palette with 4 distinct high-contrast colors and a one-click Clear tool.
 
 ### C. Zero-Overhead AVI Session Recording
-1. **Architecture**: `src/windows/recorder.rs` creates standard RIFF AVI containers containing `MJPG` video streams.
+1. **Architecture**: `src/recorder.rs` creates standard RIFF AVI containers containing `MJPG` video streams (pure Rust cross-platform implementation).
 2. **Zero Transcoding**: Direct muxing of incoming remote JPEG frames straight into the AVI `movi` chunks without decoding or re-encoding. 0% extra CPU load!
 3. **Output**: Stored automatically in `Videos\Desky_Recordings\Desky_Recording_<timestamp>.avi`.
 

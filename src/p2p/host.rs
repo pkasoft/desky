@@ -173,6 +173,7 @@ impl P2PManager {
                         let mut frame_id: u32 = 1;
                         let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
                         let mut last_jpeg_len: usize = 0;
+                        #[cfg(target_os = "windows")]
                         let mut last_cursor_shape: u8 = 0xFF;
 
                         while running_stream.load(Ordering::Relaxed) {

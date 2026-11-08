@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Zero-Config LAN Radar Engine
 //!
 //! Automatically discovers nearby Desky instances across the local Wi-Fi / LAN subnet

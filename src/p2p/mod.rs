@@ -3,9 +3,12 @@ pub mod host;
 pub mod radar;
 pub mod state;
 
+#[allow(unused_imports)]
 pub use client::start_client_session;
 pub use host::P2PManager;
+#[allow(unused_imports)]
 pub use radar::{get_lan_peers, parse_mac_address, send_wake_on_lan, start_lan_radar, trigger_lan_ping};
+#[allow(unused_imports)]
 pub use state::{
     get_active_quality_params, get_active_session_target, get_latest_remote_frame,
     get_pending_approval, get_quality_mode, get_remote_cursor_shape, get_server_ping_ms,

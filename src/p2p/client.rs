@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::p2p::state::{
     apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint_port,
     fix_loopback_peer, frame_store, get_active_quality_params, input_notify, input_store,
@@ -209,8 +210,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         };
 
                         if let Some((f_id, orig_w, orig_h, jpeg_bytes)) = job {
-                            #[cfg(target_os = "windows")]
-                            crate::windows::recorder::push_frame(&jpeg_bytes);
+                            crate::recorder::push_frame(&jpeg_bytes);
 
                             if let Some(decoded) =
                                 decode_jpeg_to_bgra(f_id, orig_w, orig_h, &jpeg_bytes)
@@ -665,11 +665,13 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     }
                                     PKT_AUDIO_CHUNK => {
                                         if slice.len() >= 10 {
-                                            let channels = slice[5] as u16;
-                                            let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
-                                            let pcm = &slice[10..];
                                             #[cfg(target_os = "windows")]
-                                            crate::windows::audio::play_remote_audio_chunk(sample_rate, channels, pcm);
+                                            {
+                                                let channels = slice[5] as u16;
+                                                let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
+                                                let pcm = &slice[10..];
+                                                crate::windows::audio::play_remote_audio_chunk(sample_rate, channels, pcm);
+                                            }
                                         }
                                     }
                                     PKT_CURSOR_SHAPE => {

@@ -15,7 +15,7 @@ pub mod clipboard;
 pub mod cursor;
 pub mod dxgi_capture;
 pub mod input;
-pub mod recorder;
+pub use crate::recorder;
 pub mod server_2012;
 pub mod server_2016_2019;
 pub mod server_2022;

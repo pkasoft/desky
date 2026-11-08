@@ -6,6 +6,7 @@ pub mod system;
 pub mod ui;
 
 pub use capture::capture_screen_frame;
+#[allow(unused_imports)]
 pub use clipboard::{
     is_clipboard_recently_synced, mark_clipboard_synced, read_clipboard_files,
     read_clipboard_text, write_clipboard_files, write_clipboard_text,
