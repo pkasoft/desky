@@ -9,7 +9,7 @@ use windows::Win32::System::DataExchange::{
     SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
-use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, DROPFILES, HDROP};
+use windows::Win32::UI::Shell::{DragQueryFileW, DROPFILES, HDROP};
 
 const CF_UNICODETEXT: u32 = 13;
 const CF_HDROP: u32 = 15;
@@ -149,7 +149,6 @@ pub fn read_clipboard_files() -> Vec<PathBuf> {
                                 files.push(PathBuf::from(path_str));
                             }
                         }
-                        DragFinish(hdrop);
                     }
                 }
                 let _ = CloseClipboard();
