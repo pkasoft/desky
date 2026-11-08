@@ -239,8 +239,8 @@ impl DxgiCapturer {
                 }
                 Err(err) => {
                     if err.code() == DXGI_ERROR_WAIT_TIMEOUT {
-                        // If no GPU frame has arrived yet or screen has been static for >250ms, refresh via GDI
-                        if !self.has_acquired_gpu_frame || self.last_gdi_refresh.elapsed() >= std::time::Duration::from_millis(250) {
+                        // If no GPU frame has arrived yet or screen has been static for >100ms, refresh via GDI
+                        if !self.has_acquired_gpu_frame || self.last_gdi_refresh.elapsed() >= std::time::Duration::from_millis(100) {
                             seed_gdi_frame(&mut self.cached_frame, self.width, self.height, self.screen_x, self.screen_y);
                             self.last_gdi_refresh = Instant::now();
                         }
@@ -501,10 +501,8 @@ pub fn try_dxgi_capture(
                 Ok(Some((orig_w, orig_h, cap_w, cap_h, scaled)))
             }
         }
-        Err(e) => {
-            if e.to_string().contains("DXGI_ERROR_ACCESS_LOST") {
-                *guard = None; // Force re-init on next frame
-            }
+        Err(_e) => {
+            *guard = None; // Reset capturer on ANY DXGI error to self-heal on next frame
             Ok(None)
         }
     }

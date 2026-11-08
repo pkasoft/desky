@@ -99,14 +99,34 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
         };
 
         rt.block_on(async move {
-            let socket = match UdpSocket::bind("0.0.0.0:0").await {
-                Ok(s) => {
-                    let _ = s.set_broadcast(true);
-                    Arc::new(s)
-                }
-                Err(e) => {
-                    set_session_status(SessionStatus::Error(format!("Socket error: {}", e)));
+            let socket = {
+                let builder = match socket2::Socket::new(
+                    socket2::Domain::IPV4,
+                    socket2::Type::DGRAM,
+                    Some(socket2::Protocol::UDP),
+                ) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        set_session_status(SessionStatus::Error(format!("Socket create error: {}", e)));
+                        return;
+                    }
+                };
+                let _ = builder.set_broadcast(true);
+                let _ = builder.set_send_buffer_size(4 * 1024 * 1024);
+                let _ = builder.set_recv_buffer_size(4 * 1024 * 1024);
+                let any_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+                if let Err(e) = builder.bind(&any_addr.into()) {
+                    set_session_status(SessionStatus::Error(format!("Socket bind error: {}", e)));
                     return;
+                }
+                let _ = builder.set_nonblocking(true);
+                let std_sock: std::net::UdpSocket = builder.into();
+                match UdpSocket::from_std(std_sock) {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => {
+                        set_session_status(SessionStatus::Error(format!("Socket wrap error: {}", e)));
+                        return;
+                    }
                 }
             };
 
@@ -203,6 +223,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 if let Ok(mut g) = frame_store().lock() {
                                     *g = Some(Arc::new(decoded));
                                 }
+                                crate::platform::ui::request_main_redraw();
                             }
                         }
                     }
@@ -348,9 +369,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         }
                     }
 
-                    // 2. Direct LAN path (only if on the exact same /24 subnet!)
-                    if !is_direct_peer {
-                        if let Some(l_addr) = peer_lan_addr {
+                    // 2. Direct LAN path (always punch/hello directly if LAN endpoint is known!)
+                    if let Some(l_addr) = peer_lan_addr {
+                        if peer_addr != Some(l_addr) {
                             let _ = socket.send_to(&hello, l_addr).await;
                         }
                     }
@@ -436,6 +457,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     let _ = socket.send_to(&pkt, p_addr).await;
                                 }
                             }
+                            if let Some(l_addr) = peer_lan_addr {
+                                if peer_addr != Some(l_addr) {
+                                    let _ = socket.send_to(&pkt, l_addr).await;
+                                }
+                            }
                             if !is_direct_peer {
                                 let relay_input = wrap_relay_packet(&norm_target, &pkt);
                                 let _ = socket.send_to(&relay_input, server_addr).await;
@@ -478,7 +504,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         }
                                     }
                                     PKT_AUTH_STATUS => {
-                                        if slice.len() >= 12 && !is_direct_peer {
+                                        if slice.len() >= 12 {
                                             if let Some(h_lan) = decode_lan_endpoint(&slice[6..12]) {
                                                 if peer_lan_addr != Some(h_lan) {
                                                     peer_lan_addr = Some(h_lan);
@@ -534,6 +560,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             let orig_height = u16::from_le_bytes([slice[15], slice[16]]);
                                             let payload = &slice[17..];
 
+                                            if frame_id < highest_decoded_frame.saturating_sub(120) {
+                                                highest_decoded_frame = 0;
+                                            }
+
                                             if frame_id <= highest_decoded_frame
                                                 || total_chunks == 0
                                                 || total_chunks > 2048
@@ -549,7 +579,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             {
                                                 idx
                                             } else {
-                                                if partial_frames.len() >= 4 {
+                                                if partial_frames.len() >= 12 {
                                                     let oldest = partial_frames.remove(0);
                                                     if oldest.received_count < oldest.total_chunks {
                                                         abr_frames_dropped += 1;

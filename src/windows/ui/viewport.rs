@@ -1356,6 +1356,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
         let target_hwnd = HWND(hwnd_raw as *mut _);
 
             let mut last_rendered_frame_id: u32 = 0;
+            let mut last_tab_idx: usize = 0;
             let mut last_w: i32 = 0;
             let mut last_h: i32 = 0;
             let mut last_mode: u8 = 255;
@@ -1393,6 +1394,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     let q_mode = crate::p2p::get_quality_mode();
                     let target_fps = TARGET_FPS.load(Ordering::Relaxed).clamp(15, 240);
                     let cap_cur = CAPTURE_CURSOR.load(Ordering::Relaxed);
+                    let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                    let tab_changed = active_idx != last_tab_idx;
 
                     let latest_frame = crate::p2p::get_latest_remote_frame();
                     let cur_frame_id = latest_frame.as_ref().map(|f| f.frame_id).unwrap_or(0);
@@ -1408,6 +1411,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                         && last_frame_change_time.elapsed() >= Duration::from_millis(140);
 
                     let state_changed = frame_changed
+                        || tab_changed
                         || needs_sharp_pass
                         || client_w != last_w
                         || client_h != last_h
@@ -1427,6 +1431,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     }
 
                     last_rendered_frame_id = cur_frame_id;
+                    last_tab_idx = active_idx;
                     last_w = client_w;
                     last_h = client_h;
                     last_mode = mode;
@@ -1471,14 +1476,19 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                             let hp_hover = super::launcher::get_hover_button();
                             super::launcher::draw_homepage_view(mem_dc, client_w, client_h, hp_hover);
                             draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, 0, hover_state);
-                        } else if modal_open {
-                            draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps);
-                            draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
-                        } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
-                            let hover_admin = ADMIN_HOVER_STATE.load(Ordering::Relaxed);
-                            super::admin::draw_admin_view(mem_dc, client_w, client_h, hover_admin);
-                            draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
                         } else {
+                            if tab_changed {
+                                let full_rc = RECT { left: 0, top: 0, right: client_w, bottom: client_h };
+                                FillRect(mem_dc, &full_rc, VIEWPORT_BRUSH);
+                            }
+                            if modal_open {
+                                draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps);
+                                draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
+                            } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                                let hover_admin = ADMIN_HOVER_STATE.load(Ordering::Relaxed);
+                                super::admin::draw_admin_view(mem_dc, client_w, client_h, hover_admin);
+                                draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
+                            } else {
                             // Fast hardware-friendly COLORONCOLOR during motion (60 FPS smooth),
                             // then a single HALFTONE pass once static for 140 ms for razor-sharp text.
                             if needs_sharp_pass {
@@ -1648,6 +1658,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                             let hover_state = TAB_HOVER_STATE.load(Ordering::Relaxed);
                             draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
                             draw_file_transfer_hud(mem_dc, client_w, client_h);
+                        }
                     }
 
                         let _ = BitBlt(hdc_window, 0, 0, client_w, client_h, Some(mem_dc), 0, 0, SRCCOPY);

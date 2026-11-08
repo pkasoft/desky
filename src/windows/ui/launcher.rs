@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WM_SETFONT,
-    WNDCLASSEXW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    WNDCLASSEXW, WS_CLIPCHILDREN, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
 use super::theme::{
@@ -375,7 +375,7 @@ impl NativeWin32App {
                 WINDOW_EX_STYLE::default(),
                 viewport_class_name,
                 w!("Desky | pkasoft.com"),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 1024,
