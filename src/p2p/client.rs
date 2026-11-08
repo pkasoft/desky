@@ -1,13 +1,13 @@
 use crate::p2p::state::{
-    apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint,
+    apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint_port,
     fix_loopback_peer, frame_store, get_active_quality_params, input_notify, input_store,
-    lan_broadcast_addrs, normalize_id, resolve_server_addr, set_session_status,
-    update_client_preferences, wrap_relay_packet, SessionStatus, ACTIVE_CHROMA_444,
-    ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING,
-    CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN, CLIENT_TARGET_FPS,
-    MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK,
-    PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE, SESSION_BITRATE_KBPS,
-    SESSION_RTT_MS,
+    is_same_lan_subnet, lan_broadcast_addrs, normalize_id, resolve_server_addr,
+    set_session_status, update_client_preferences, wrap_relay_packet, SessionStatus,
+    ACTIVE_CHROMA_444, ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED,
+    AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
+    CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
+    PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
+    SESSION_BITRATE_KBPS, SESSION_RTT_MS,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -106,7 +106,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
             let server_addr = resolve_server_addr();
             let lan_bcast_targets = lan_broadcast_addrs(server_addr, 21117);
-            let my_lan_bytes = encode_lan_endpoint(&socket, server_addr);
+            let local_port = socket.local_addr().ok().map(|a| a.port()).unwrap_or(0);
+            let my_lan_bytes = encode_lan_endpoint_port(local_port, server_addr);
 
             // 0. Register this client socket's session relay ID on VDS for instant Host -> Client return routing
             let relay_hb = SignalMsg::Heartbeat {
@@ -142,7 +143,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut logged_direct_peer = false;
             let mut host_contacted = false;
             let mut buf = vec![0u8; 65536];
-            let mut partial_frame: Option<PartialFrame> = None;
+            let mut partial_frames: Vec<PartialFrame> = Vec::with_capacity(4);
             let mut highest_decoded_frame: u32 = 0;
 
             let session_start = Instant::now();
@@ -222,7 +223,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                     if QUALITY_MODE.load(Ordering::Relaxed) == 0 {
                         let rtt = SESSION_RTT_MS.load(Ordering::Relaxed);
-                        if abr_frames_dropped >= 2 || rtt > 220 {
+                        if abr_frames_dropped >= 2
+                            || (abr_frames_dropped >= 1 && abr_frames_completed == 0)
+                            || rtt > 220
+                        {
                             abr_tier = (abr_tier - 1).max(0);
                         } else if received_any_frame
                             && abr_frames_dropped == 0
@@ -232,12 +236,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             abr_tier = (abr_tier + 1).min(3);
                         }
 
-                        // Keep 100% 1:1 native capture on Tiers 1..3 so Host never wastes CPU downscaling!
                         let (q, sc, c444) = match abr_tier {
-                            3 => (82u8, 100u8, true),
-                            2 => (75u8, 100u8, true),
-                            1 => (68u8, 100u8, true),
-                            _ => (58u8, 80u8, false),
+                            3 => (82u8, 100u8, is_direct_peer),
+                            2 => (74u8, 100u8, is_direct_peer),
+                            1 => (66u8, 90u8, false),
+                            _ => (56u8, 75u8, false),
                         };
                         ACTIVE_JPEG_QUALITY.store(q, Ordering::Relaxed);
                         ACTIVE_SCALE_PCT.store(sc, Ordering::Relaxed);
@@ -251,7 +254,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 }
 
                 // Keep VDS relay return route alive if direct P2P hasn't been established yet
-                if !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(8) {
+                if !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(6) {
                     if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
                         let _ = socket.send_to(&hb_bytes, server_addr).await;
                     }
@@ -286,7 +289,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_matchmaker_retry = Instant::now();
                 }
 
-                // Periodically send ClientHello with ABR quality parameters, relay_id, and LAN endpoint
+                // Periodically send ClientHello with ABR quality parameters, relay_id, LAN endpoint, and direct confirmation flag
                 let hello_interval = if received_any_frame {
                     Duration::from_millis(350)
                 } else {
@@ -301,9 +304,15 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         0u8
                     };
                     let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
-                    let (q_val, sc_val, c444) = get_active_quality_params();
 
-                    let mut hello = Vec::with_capacity(38);
+                    // Request a compact initial keyframe until the very first frame arrives so screen loads in <50ms!
+                    let (q_val, sc_val, c444) = if !received_any_frame {
+                        (64u8, 75u8, false)
+                    } else {
+                        get_active_quality_params()
+                    };
+
+                    let mut hello = Vec::with_capacity(39);
                     hello.extend_from_slice(MAGIC_DSKY);
                     hello.push(PKT_CLIENT_HELLO);
                     hello.push(fps);
@@ -315,6 +324,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     hello.extend_from_slice(my_id_padded.as_bytes());
                     hello.extend_from_slice(my_relay_id.as_bytes());
                     hello.extend_from_slice(&my_lan_bytes);
+                    hello.push(if is_direct_peer { 1u8 } else { 0u8 });
 
                     // 1. Direct WAN / Active Peer path
                     if let Some(p_addr) = peer_addr {
@@ -334,14 +344,14 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         }
                     }
 
-                    // 2. Direct LAN path (learned from Host's PKT_AUTH_STATUS on same router!)
+                    // 2. Direct LAN path (only if on the exact same /24 subnet!)
                     if !is_direct_peer {
                         if let Some(l_addr) = peer_lan_addr {
                             let _ = socket.send_to(&hello, l_addr).await;
                         }
                     }
 
-                    // 3. VDS Relay fallback (used only while direct UDP hole-punching is not yet active)
+                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified)
                     if !is_direct_peer {
                         let relay_hello = wrap_relay_packet(&norm_target, &hello);
                         let _ = socket.send_to(&relay_hello, server_addr).await;
@@ -372,9 +382,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 }
                             }
                             if !is_direct_peer {
-                                if let Some(l_addr) = peer_lan_addr {
-                                    let _ = socket.send_to(&pkt, l_addr).await;
-                                }
                                 let relay_input = wrap_relay_packet(&norm_target, &pkt);
                                 let _ = socket.send_to(&relay_input, server_addr).await;
                             }
@@ -418,7 +425,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     PKT_AUTH_STATUS => {
                                         if slice.len() >= 12 && !is_direct_peer {
                                             if let Some(h_lan) = decode_lan_endpoint(&slice[6..12]) {
-                                                if peer_lan_addr != Some(h_lan) {
+                                                if is_same_lan_subnet(&my_lan_bytes, h_lan)
+                                                    && peer_lan_addr != Some(h_lan)
+                                                {
                                                     peer_lan_addr = Some(h_lan);
                                                     let punch = SignalMsg::Punch {
                                                         from_id: my_id_padded.clone(),
@@ -481,41 +490,35 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 continue;
                                             }
 
-                                            let pf = match &mut partial_frame {
-                                                Some(existing) if existing.frame_id == frame_id => existing,
-                                                Some(old_incomplete) => {
-                                                    if frame_id < old_incomplete.frame_id {
-                                                        continue;
-                                                    }
-                                                    if old_incomplete.received_count < old_incomplete.total_chunks {
+                                            // Multi-frame reassembly buffer (tolerates out-of-order chunks across frame boundaries!)
+                                            let pos = if let Some(idx) = partial_frames
+                                                .iter()
+                                                .position(|pf| pf.frame_id == frame_id)
+                                            {
+                                                idx
+                                            } else {
+                                                if partial_frames.len() >= 4 {
+                                                    let oldest = partial_frames.remove(0);
+                                                    if oldest.received_count < oldest.total_chunks {
                                                         abr_frames_dropped += 1;
                                                     }
-                                                    partial_frame = Some(PartialFrame {
-                                                        frame_id,
-                                                        total_chunks,
-                                                        orig_width,
-                                                        orig_height,
-                                                        chunks: vec![None; total_chunks as usize],
-                                                        received_count: 0,
-                                                        created_at: Instant::now(),
-                                                    });
-                                                    partial_frame.as_mut().unwrap()
                                                 }
-                                                None => {
-                                                    partial_frame = Some(PartialFrame {
-                                                        frame_id,
-                                                        total_chunks,
-                                                        orig_width,
-                                                        orig_height,
-                                                        chunks: vec![None; total_chunks as usize],
-                                                        received_count: 0,
-                                                        created_at: Instant::now(),
-                                                    });
-                                                    partial_frame.as_mut().unwrap()
-                                                }
+                                                partial_frames.push(PartialFrame {
+                                                    frame_id,
+                                                    total_chunks,
+                                                    orig_width,
+                                                    orig_height,
+                                                    chunks: vec![None; total_chunks as usize],
+                                                    received_count: 0,
+                                                    created_at: Instant::now(),
+                                                });
+                                                partial_frames.len() - 1
                                             };
 
-                                            if pf.chunks[chunk_idx as usize].is_none() {
+                                            let pf = &mut partial_frames[pos];
+                                            if (chunk_idx as usize) < pf.chunks.len()
+                                                && pf.chunks[chunk_idx as usize].is_none()
+                                            {
                                                 pf.chunks[chunk_idx as usize] = Some(payload.to_vec());
                                                 pf.received_count += 1;
                                             }
@@ -530,7 +533,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 let orig_w = pf.orig_width as u32;
                                                 let orig_h = pf.orig_height as u32;
                                                 highest_decoded_frame = frame_id;
-                                                partial_frame = None;
+                                                partial_frames.retain(|f| f.frame_id > frame_id);
                                                 abr_frames_completed += 1;
                                                 received_any_frame = true;
 
@@ -574,7 +577,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                     if let Ok(pbytes) = serde_json::to_vec(&punch) {
                                                         let base_ip = resolved.ip();
                                                         let base_port = resolved.port();
-                                                        for _ in 0..40 {
+                                                        for _ in 0..35 {
                                                             let _ = sock_punch.send_to(&pbytes, resolved).await;
                                                             for offset in -6i32..=6i32 {
                                                                 let target_p = (base_port as i32 + offset) as u16;
@@ -632,12 +635,14 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     _ = tokio::time::sleep(Duration::from_millis(20)) => {}
                 }
 
-                if let Some(pf) = &partial_frame {
-                    if pf.created_at.elapsed() > Duration::from_millis(450) {
+                partial_frames.retain(|pf| {
+                    if pf.created_at.elapsed() > Duration::from_millis(550) {
                         abr_frames_dropped += 1;
-                        partial_frame = None;
+                        false
+                    } else {
+                        true
                     }
-                }
+                });
             }
 
             let mut disc = Vec::with_capacity(5);

@@ -1,9 +1,10 @@
 use crate::p2p::state::{
-    decode_lan_endpoint, encode_lan_endpoint, fix_loopback_peer, format_id_display,
-    host_socket_store, host_subscribers_store, normalize_id, pending_approval_store,
-    wrap_relay_packet, AuthState, ClientSubscriber, PendingApprovalRequest, AUTH_APPROVED,
-    AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
-    PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG,
+    decode_lan_endpoint, encode_lan_endpoint_port, fix_loopback_peer, format_id_display,
+    host_std_socket_store, host_subscribers_store, is_same_lan_subnet, normalize_id,
+    pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
+    PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
+    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
+    PKT_LAN_DISCOVERY, PKT_PONG,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -56,17 +57,33 @@ impl P2PManager {
             };
 
             rt.block_on(async move {
-                let socket = match UdpSocket::bind("0.0.0.0:0").await {
+                let std_sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
                     Ok(s) => {
                         let _ = s.set_broadcast(true);
-                        let arc_s = Arc::new(s);
-                        if let Ok(mut g) = host_socket_store().lock() {
-                            *g = Some(Arc::clone(&arc_s));
-                        }
-                        arc_s
+                        s
                     }
                     Err(e) => {
                         error!("Failed to bind local UDP socket for P2P: {:?}", e);
+                        return;
+                    }
+                };
+
+                let std_sock_stream = match std_sock.try_clone() {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => {
+                        error!("Failed to clone Host UDP socket: {:?}", e);
+                        return;
+                    }
+                };
+                if let Ok(mut g) = host_std_socket_store().lock() {
+                    *g = Some(Arc::clone(&std_sock_stream));
+                }
+
+                let _ = std_sock.set_nonblocking(true);
+                let socket = match UdpSocket::from_std(std_sock) {
+                    Ok(s) => Arc::new(s),
+                    Err(e) => {
+                        error!("Failed to wrap Tokio UdpSocket: {:?}", e);
                         return;
                     }
                 };
@@ -108,7 +125,11 @@ impl P2PManager {
                     tokio::spawn(async move {
                         if let Ok(lan_sock) = UdpSocket::bind("0.0.0.0:21117").await {
                             let mut lbuf = vec![0u8; 512];
-                            while let Ok((len, src)) = lan_sock.recv_from(&mut lbuf).await {
+                            loop {
+                                let (len, src) = match lan_sock.recv_from(&mut lbuf).await {
+                                    Ok(v) => v,
+                                    Err(_) => continue,
+                                };
                                 if len >= 14
                                     && &lbuf[0..4] == MAGIC_DSKY
                                     && lbuf[4] == PKT_LAN_DISCOVERY
@@ -131,187 +152,172 @@ impl P2PManager {
                     });
                 }
 
-                // Dedicated Host Screen Capture & Direct P2P / Relay Streamer Thread
+                // Dedicated Host Screen Capture & Direct P2P / Relay Streamer OS Thread
                 {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
-                    let socket_stream = Arc::clone(&socket);
                     let target_server_stream = target_server;
 
                     std::thread::spawn(move || {
-                        let stream_rt = match tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                        {
-                            Ok(r) => r,
-                            Err(e) => {
-                                error!("Failed to build streamer Tokio runtime: {:?}", e);
-                                return;
-                            }
-                        };
+                        let mut frame_id: u32 = 1;
+                        let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
+                        let mut last_jpeg_len: usize = 0;
 
-                        stream_rt.block_on(async move {
-                            let mut frame_id: u32 = 1;
-                            let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
-                            let mut last_jpeg_len: usize = 0;
+                        while running_stream.load(Ordering::Relaxed) {
+                            let loop_start = Instant::now();
 
-                            while running_stream.load(Ordering::Relaxed) {
-                                let loop_start = Instant::now();
-
-                                // Only stream to APPROVED subscribers!
-                                let subscribers: Vec<ClientSubscriber> = {
-                                    if let Ok(mut map) = clients_stream.lock() {
-                                        map.retain(|_, sub| {
-                                            sub.last_seen.elapsed() < Duration::from_secs(20)
-                                        });
-                                        map.values()
-                                            .filter(|s| s.auth_state == AuthState::Approved)
-                                            .cloned()
-                                            .collect()
-                                    } else {
-                                        Vec::new()
-                                    }
-                                };
-
-                                if subscribers.is_empty() {
-                                    std::thread::sleep(Duration::from_millis(12));
-                                    continue;
-                                }
-
-                                let max_fps = subscribers
-                                    .iter()
-                                    .map(|s| s.target_fps)
-                                    .max()
-                                    .unwrap_or(60)
-                                    .clamp(15, 60);
-                                let cap_cursor = subscribers.iter().any(|s| s.capture_cursor);
-                                let req_quality = subscribers
-                                    .iter()
-                                    .map(|s| s.jpeg_quality)
-                                    .max()
-                                    .unwrap_or(75)
-                                    .clamp(40, 92);
-                                let scale_pct = subscribers
-                                    .iter()
-                                    .map(|s| s.scale_pct)
-                                    .max()
-                                    .unwrap_or(100)
-                                    .clamp(50, 100);
-                                let req_chroma_444 = subscribers.iter().any(|s| s.chroma_444);
-
-                                // Single-pass adaptive sizing based on previous frame size (zero double-encoding!)
-                                let (jpeg_quality, use_chroma_444) = if last_jpeg_len > 72_000 {
-                                    ((req_quality.saturating_sub(10)).max(55), false)
-                                } else if last_jpeg_len > 55_000 {
-                                    ((req_quality.saturating_sub(5)).max(62), req_chroma_444)
-                                } else {
-                                    (req_quality, req_chroma_444)
-                                };
-
-                                #[cfg(target_os = "windows")]
-                                let cap_res = crate::windows::capture::capture_screen_frame(
-                                    cap_cursor, scale_pct,
-                                );
-                                #[cfg(target_os = "linux")]
-                                let cap_res = crate::linux::capture::capture_screen_frame(
-                                    cap_cursor, scale_pct,
-                                );
-
-                                if let Ok((orig_w, orig_h, cap_w, cap_h, bgra)) = cap_res {
-                                    jpeg_buf.clear();
-                                    let mut encoder =
-                                        jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality);
-                                    encoder.set_sampling_factor(if use_chroma_444 {
-                                        jpeg_encoder::SamplingFactor::R_4_4_4
-                                    } else {
-                                        jpeg_encoder::SamplingFactor::R_4_2_0
+                            // Only stream to APPROVED subscribers!
+                            let subscribers: Vec<ClientSubscriber> = {
+                                if let Ok(mut map) = clients_stream.lock() {
+                                    map.retain(|_, sub| {
+                                        sub.last_seen.elapsed() < Duration::from_secs(20)
                                     });
+                                    map.values()
+                                        .filter(|s| s.auth_state == AuthState::Approved)
+                                        .cloned()
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                }
+                            };
 
-                                    if encoder
-                                        .encode(
-                                            &bgra,
-                                            cap_w as u16,
-                                            cap_h as u16,
-                                            jpeg_encoder::ColorType::Bgra,
-                                        )
-                                        .is_ok()
-                                    {
-                                        last_jpeg_len = jpeg_buf.len();
-                                        let chunk_size = 1280usize;
-                                        let total_chunks =
-                                            ((jpeg_buf.len() + chunk_size - 1) / chunk_size)
-                                                .max(1);
+                            if subscribers.is_empty() {
+                                std::thread::sleep(Duration::from_millis(12));
+                                continue;
+                            }
 
-                                        if total_chunks <= 2048 {
-                                            for (idx, chunk) in
-                                                jpeg_buf.chunks(chunk_size).enumerate()
-                                            {
-                                                let mut pkt =
-                                                    Vec::with_capacity(17 + chunk.len());
-                                                pkt.extend_from_slice(MAGIC_DSKY);
-                                                pkt.push(PKT_FRAME_CHUNK);
-                                                pkt.extend_from_slice(&frame_id.to_le_bytes());
-                                                pkt.extend_from_slice(&(idx as u16).to_le_bytes());
-                                                pkt.extend_from_slice(
-                                                    &(total_chunks as u16).to_le_bytes(),
-                                                );
-                                                pkt.extend_from_slice(
-                                                    &(orig_w as u16).to_le_bytes(),
-                                                );
-                                                pkt.extend_from_slice(
-                                                    &(orig_h as u16).to_le_bytes(),
-                                                );
-                                                pkt.extend_from_slice(chunk);
+                            let any_relay = subscribers.iter().any(|s| !s.is_direct);
+                            let max_fps = subscribers
+                                .iter()
+                                .map(|s| s.target_fps)
+                                .max()
+                                .unwrap_or(60)
+                                .clamp(15, if any_relay { 35 } else { 60 });
+                            let cap_cursor = subscribers.iter().any(|s| s.capture_cursor);
+                            let req_quality = subscribers
+                                .iter()
+                                .map(|s| s.jpeg_quality)
+                                .max()
+                                .unwrap_or(72)
+                                .clamp(40, 92);
+                            let scale_pct = subscribers
+                                .iter()
+                                .map(|s| s.scale_pct)
+                                .max()
+                                .unwrap_or(100)
+                                .clamp(50, 100);
+                            let req_chroma_444 =
+                                !any_relay && subscribers.iter().any(|s| s.chroma_444);
 
-                                                for sub in &subscribers {
-                                                    if sub.is_direct {
-                                                        let _ = socket_stream
-                                                            .send_to(&pkt, sub.addr)
-                                                            .await;
-                                                    } else {
-                                                        if let Some(l_addr) = sub.lan_addr {
-                                                            let _ = socket_stream
-                                                                .send_to(&pkt, l_addr)
-                                                                .await;
-                                                        }
-                                                        if !sub.relay_id.is_empty() {
-                                                            let relay_pkt = wrap_relay_packet(
-                                                                &sub.relay_id,
-                                                                &pkt,
-                                                            );
-                                                            let _ = socket_stream
-                                                                .send_to(
-                                                                    &relay_pkt,
-                                                                    target_server_stream,
-                                                                )
-                                                                .await;
-                                                        }
-                                                    }
+                            // Keep frames compact over WAN/Relay so CGNAT/home routers never tail-drop UDP bursts
+                            let (jpeg_quality, use_chroma_444) = if any_relay {
+                                if last_jpeg_len > 28_000 {
+                                    ((req_quality.saturating_sub(12)).max(50), false)
+                                } else if last_jpeg_len > 20_000 {
+                                    ((req_quality.saturating_sub(6)).max(56), false)
+                                } else {
+                                    (req_quality.min(72), false)
+                                }
+                            } else if last_jpeg_len > 68_000 {
+                                ((req_quality.saturating_sub(10)).max(55), false)
+                            } else if last_jpeg_len > 52_000 {
+                                ((req_quality.saturating_sub(5)).max(62), req_chroma_444)
+                            } else {
+                                (req_quality, req_chroma_444)
+                            };
+
+                            #[cfg(target_os = "windows")]
+                            let cap_res = crate::windows::capture::capture_screen_frame(
+                                cap_cursor, scale_pct,
+                            );
+                            #[cfg(target_os = "linux")]
+                            let cap_res = crate::linux::capture::capture_screen_frame(
+                                cap_cursor, scale_pct,
+                            );
+
+                            if let Ok((orig_w, orig_h, cap_w, cap_h, bgra)) = cap_res {
+                                jpeg_buf.clear();
+                                let mut encoder =
+                                    jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality);
+                                encoder.set_sampling_factor(if use_chroma_444 {
+                                    jpeg_encoder::SamplingFactor::R_4_4_4
+                                } else {
+                                    jpeg_encoder::SamplingFactor::R_4_2_0
+                                });
+
+                                if encoder
+                                    .encode(
+                                        &bgra,
+                                        cap_w as u16,
+                                        cap_h as u16,
+                                        jpeg_encoder::ColorType::Bgra,
+                                    )
+                                    .is_ok()
+                                {
+                                    last_jpeg_len = jpeg_buf.len();
+                                    let chunk_size = 1280usize;
+                                    let total_chunks =
+                                        ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
+
+                                    if total_chunks <= 2048 {
+                                        for (idx, chunk) in
+                                            jpeg_buf.chunks(chunk_size).enumerate()
+                                        {
+                                            let mut pkt = Vec::with_capacity(17 + chunk.len());
+                                            pkt.extend_from_slice(MAGIC_DSKY);
+                                            pkt.push(PKT_FRAME_CHUNK);
+                                            pkt.extend_from_slice(&frame_id.to_le_bytes());
+                                            pkt.extend_from_slice(&(idx as u16).to_le_bytes());
+                                            pkt.extend_from_slice(
+                                                &(total_chunks as u16).to_le_bytes(),
+                                            );
+                                            pkt.extend_from_slice(&(orig_w as u16).to_le_bytes());
+                                            pkt.extend_from_slice(&(orig_h as u16).to_le_bytes());
+                                            pkt.extend_from_slice(chunk);
+
+                                            for sub in &subscribers {
+                                                if sub.is_direct {
+                                                    let _ =
+                                                        std_sock_stream.send_to(&pkt, sub.addr);
+                                                } else if !sub.relay_id.is_empty() {
+                                                    let relay_pkt =
+                                                        wrap_relay_packet(&sub.relay_id, &pkt);
+                                                    let _ = std_sock_stream
+                                                        .send_to(&relay_pkt, target_server_stream);
                                                 }
+                                            }
 
-                                                // Fast micro-pacing (140µs every 6 chunks = ~1ms total per frame)
-                                                if (idx + 1) % 6 == 0 {
+                                            // Smooth micro-pacing so home ISP upload buffers never overflow
+                                            if any_relay {
+                                                if (idx + 1) % 2 == 0 {
                                                     let t_pace = Instant::now();
                                                     while t_pace.elapsed()
-                                                        < Duration::from_micros(140)
+                                                        < Duration::from_micros(200)
                                                     {
                                                         std::hint::spin_loop();
                                                     }
                                                 }
+                                            } else if (idx + 1) % 5 == 0 {
+                                                let t_pace = Instant::now();
+                                                while t_pace.elapsed()
+                                                    < Duration::from_micros(120)
+                                                {
+                                                    std::hint::spin_loop();
+                                                }
                                             }
-                                            frame_id = frame_id.wrapping_add(1).max(1);
                                         }
+                                        frame_id = frame_id.wrapping_add(1).max(1);
                                     }
                                 }
-
-                                let target_frame_time =
-                                    Duration::from_micros(1_000_000 / max_fps as u64);
-                                let elapsed = loop_start.elapsed();
-                                if elapsed < target_frame_time {
-                                    std::thread::sleep(target_frame_time - elapsed);
-                                }
                             }
-                        });
+
+                            let target_frame_time =
+                                Duration::from_micros(1_000_000 / max_fps as u64);
+                            let elapsed = loop_start.elapsed();
+                            if elapsed < target_frame_time {
+                                std::thread::sleep(target_frame_time - elapsed);
+                            }
+                        }
                     });
                 }
 
@@ -326,11 +332,19 @@ impl P2PManager {
                     #[cfg(target_os = "linux")]
                     let injector = crate::linux::input::InputInjector::new();
 
-                    let host_lan_bytes = encode_lan_endpoint(&socket_recv, target_server);
+                    let local_port = socket_recv.local_addr().ok().map(|a| a.port()).unwrap_or(0);
+                    let host_lan_bytes = encode_lan_endpoint_port(local_port, target_server);
                     let mut last_incoming_punch: Option<(SocketAddr, Instant)> = None;
                     let mut buf = vec![0u8; 8192];
 
-                    while let Ok((len, from_addr)) = socket_recv.recv_from(&mut buf).await {
+                    loop {
+                        let (len, from_addr) = match socket_recv.recv_from(&mut buf).await {
+                            Ok(v) => v,
+                            Err(_) => {
+                                // Ignore Windows WSAECONNRESET (10054) from ICMP Port Unreachable during hole-punching
+                                continue;
+                            }
+                        };
                         let slice = &buf[..len];
 
                         if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
@@ -366,9 +380,12 @@ impl P2PManager {
                                     };
                                     let client_lan_addr = if slice.len() >= 38 {
                                         decode_lan_endpoint(&slice[32..38])
+                                            .filter(|a| is_same_lan_subnet(&host_lan_bytes, *a))
                                     } else {
                                         None
                                     };
+                                    let client_confirmed_direct =
+                                        slice.len() >= 39 && slice[38] != 0;
 
                                     let norm_cid = normalize_id(&raw_cid);
                                     let my_own_id = normalize_id(&current_id_clone.read().await);
@@ -414,12 +431,18 @@ impl P2PManager {
                                                     pre_sub.client_id = client_id_disp.clone();
                                                     if !is_from_server {
                                                         pre_sub.addr = from_addr;
-                                                        pre_sub.is_direct = true;
                                                     }
                                                     pre_sub.last_seen = Instant::now();
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
                                             }
+
+                                            let verified_direct = (!is_from_server)
+                                                && (client_confirmed_direct
+                                                    || is_same_lan_subnet(
+                                                        &host_lan_bytes,
+                                                        from_addr,
+                                                    ));
 
                                             let entry = map
                                                 .entry(client_key.clone())
@@ -443,11 +466,16 @@ impl P2PManager {
                                                         jpeg_quality: q_val,
                                                         scale_pct: sc_val,
                                                         chroma_444: c444,
-                                                        is_direct: !is_from_server,
+                                                        is_direct: verified_direct,
                                                     }
                                                 });
                                             entry.client_id = client_id_disp.clone();
                                             if !relay_id.is_empty() {
+                                                if entry.relay_id != relay_id
+                                                    && entry.auth_state == AuthState::Pending
+                                                {
+                                                    need_ui_prompt = true;
+                                                }
                                                 entry.relay_id = relay_id.clone();
                                             }
                                             if let Some(l_addr) = client_lan_addr {
@@ -457,8 +485,13 @@ impl P2PManager {
                                                 }
                                             }
                                             if !is_from_server {
-                                                entry.is_direct = true;
                                                 entry.addr = from_addr;
+                                            }
+                                            if verified_direct
+                                                || (client_confirmed_direct
+                                                    && entry.addr != target_server)
+                                            {
+                                                entry.is_direct = true;
                                             }
                                             entry.last_seen = Instant::now();
                                             entry.target_fps = fps;
@@ -477,13 +510,21 @@ impl P2PManager {
                                         }
                                     };
 
-                                    if need_ui_prompt {
+                                    // Guarantee that if a subscriber is Pending and pending_approval_store is empty,
+                                    // the Host UI approval banner is immediately populated and brought to front!
+                                    if auth_status_byte == AUTH_PENDING {
                                         if let Ok(mut pg) = pending_approval_store().lock() {
-                                            *pg = Some(PendingApprovalRequest {
-                                                client_key: client_key.clone(),
-                                                client_id: client_id_disp.clone(),
-                                            });
+                                            if pg.is_none() || need_ui_prompt {
+                                                *pg = Some(PendingApprovalRequest {
+                                                    client_key: client_key.clone(),
+                                                    client_id: client_id_disp.clone(),
+                                                });
+                                                need_ui_prompt = true;
+                                            }
                                         }
+                                    }
+
+                                    if need_ui_prompt {
                                         #[cfg(target_os = "windows")]
                                         {
                                             crate::windows::ui::append_status_log(&format!(
@@ -498,7 +539,7 @@ impl P2PManager {
                                         }
                                     }
 
-                                    // If client advertised a local LAN address, punch directly to it on the LAN!
+                                    // If client advertised a same-subnet LAN address, punch directly to it on the LAN!
                                     if let Some(l_addr) = client_lan_addr {
                                         if should_punch_lan || is_from_server {
                                             let punch = SignalMsg::Punch {
@@ -536,7 +577,8 @@ impl P2PManager {
                                         pong.extend_from_slice(&slice[7..11]);
                                         if !is_from_server {
                                             let _ = socket_recv.send_to(&pong, from_addr).await;
-                                        } else if !relay_id.is_empty() {
+                                        }
+                                        if !relay_id.is_empty() {
                                             let relay_pong = wrap_relay_packet(&relay_id, &pong);
                                             let _ = socket_recv.send_to(&relay_pong, target_server).await;
                                         }
@@ -681,6 +723,8 @@ impl P2PManager {
                                             from_addr.to_string()
                                         };
                                     let client_id_disp = format_id_display(&from_id);
+                                    let is_lan_peer =
+                                        is_same_lan_subnet(&host_lan_bytes, from_addr);
 
                                     let mut need_ui_prompt = false;
                                     let mut first_direct = false;
@@ -691,7 +735,6 @@ impl P2PManager {
                                                 if let Some(mut pre_sub) = map.remove(&addr_key) {
                                                     pre_sub.client_id = client_id_disp.clone();
                                                     pre_sub.addr = from_addr;
-                                                    pre_sub.is_direct = true;
                                                     pre_sub.last_seen = Instant::now();
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
@@ -713,15 +756,17 @@ impl P2PManager {
                                                         jpeg_quality: 76,
                                                         scale_pct: 100,
                                                         chroma_444: true,
-                                                        is_direct: true,
+                                                        is_direct: is_lan_peer,
                                                     }
                                                 });
-                                            if !entry.is_direct || entry.addr != from_addr {
+                                            if entry.addr != from_addr {
                                                 first_direct = true;
                                             }
                                             entry.client_id = client_id_disp.clone();
-                                            entry.is_direct = true;
                                             entry.addr = from_addr;
+                                            if is_lan_peer {
+                                                entry.is_direct = true;
+                                            }
                                             entry.last_seen = Instant::now();
 
                                             match entry.auth_state {
@@ -735,18 +780,24 @@ impl P2PManager {
 
                                     if first_direct {
                                         info!(
-                                            "🎉 [DIRECT P2P ESTABLISHED] Direct UDP link active with peer '{}' ({})!",
+                                            "🎉 [DIRECT P2P PROBE] Received direct punch from peer '{}' ({})! Verifying return path...",
                                             client_id_disp, from_addr
                                         );
                                     }
 
-                                    if need_ui_prompt {
+                                    if auth_status_byte == AUTH_PENDING {
                                         if let Ok(mut pg) = pending_approval_store().lock() {
-                                            *pg = Some(PendingApprovalRequest {
-                                                client_key: client_key.clone(),
-                                                client_id: client_id_disp.clone(),
-                                            });
+                                            if pg.is_none() || need_ui_prompt {
+                                                *pg = Some(PendingApprovalRequest {
+                                                    client_key: client_key.clone(),
+                                                    client_id: client_id_disp.clone(),
+                                                });
+                                                need_ui_prompt = true;
+                                            }
                                         }
+                                    }
+
+                                    if need_ui_prompt {
                                         #[cfg(target_os = "windows")]
                                         {
                                             crate::windows::ui::append_status_log(&format!(
@@ -786,7 +837,7 @@ impl P2PManager {
                                             }
                                         }
                                         info!(
-                                            "🎉 [DIRECT P2P VERIFIED] Received punch acknowledgement from peer at {}!",
+                                            "🎉 [DIRECT P2P VERIFIED] Bidirectional direct P2P verified with {}!",
                                             from_addr
                                         );
                                     }
