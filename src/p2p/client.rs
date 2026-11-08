@@ -193,8 +193,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     set_session_status(SessionStatus::Connected(
                                         disp_worker.clone(),
                                     ));
-                                    #[cfg(target_os = "windows")]
-                                    crate::windows::ui::append_status_log(&format!(
+                                    crate::platform::ui::append_status_log(&format!(
                                         "🎉 Connected to Remote Desk {} ({}x{})!",
                                         disp_worker, decoded.orig_width, decoded.orig_height
                                     ));
@@ -275,8 +274,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             display_target
                         );
                         set_session_status(SessionStatus::Error(msg.clone()));
-                        #[cfg(target_os = "windows")]
-                        crate::windows::ui::append_status_log(&format!("❌ {}", msg));
+                        crate::platform::ui::append_status_log(&format!("❌ {}", msg));
                         break;
                     }
                     if !lan_pkt.is_empty() {
@@ -505,8 +503,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                         display_target
                                                     );
                                                     set_session_status(SessionStatus::Error(msg.clone()));
-                                                    #[cfg(target_os = "windows")]
-                                                    crate::windows::ui::append_status_log(&format!("🚫 {}", msg));
+                                                    crate::platform::ui::append_status_log(&format!("🚫 {}", msg));
                                                     break;
                                                 }
                                                 _ => {}
@@ -676,8 +673,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         );
                                         warn!("{}", msg);
                                         set_session_status(SessionStatus::Error(msg.clone()));
-                                        #[cfg(target_os = "windows")]
-                                        crate::windows::ui::append_status_log(&format!("❌ {}", msg));
+                                        crate::platform::ui::append_status_log(&format!("❌ {}", msg));
                                         break;
                                     }
                                     SignalMsg::Punch { .. } | SignalMsg::PunchAck => {

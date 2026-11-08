@@ -1,4 +1,4 @@
-use crate::p2p::state::{
+﻿use crate::p2p::state::{
     decode_lan_endpoint, encode_lan_endpoint_port, fix_loopback_peer, format_id_display,
     host_std_socket_store, host_subscribers_store, is_same_lan_subnet, normalize_id,
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
@@ -14,10 +14,7 @@ use std::time::{Duration, Instant};
 use tokio::net::UdpSocket;
 use tracing::{error, info, warn};
 
-#[cfg(target_os = "linux")]
-fn trigger_linux_approval_dialog(client_id: String) {
-    crate::linux::ui::spawn_linux_approval_popup(client_id);
-}
+
 
 pub struct P2PManager {
     machine_id: String,
@@ -226,12 +223,7 @@ impl P2PManager {
                                 (req_quality, req_chroma_444)
                             };
 
-                            #[cfg(target_os = "windows")]
-                            let cap_res = crate::windows::capture::capture_screen_frame(
-                                cap_cursor, scale_pct,
-                            );
-                            #[cfg(target_os = "linux")]
-                            let cap_res = crate::linux::capture::capture_screen_frame(
+                            let cap_res = crate::platform::capture_screen_frame(
                                 cap_cursor, scale_pct,
                             );
 
@@ -376,10 +368,7 @@ impl P2PManager {
 
                 // Receiver task: listens for VDS matchmaking acks, peer hole-punching, and direct client packets
                 tokio::spawn(async move {
-                    #[cfg(target_os = "windows")]
-                    let injector = crate::windows::input::InputInjector::new();
-                    #[cfg(target_os = "linux")]
-                    let injector = crate::linux::input::InputInjector::new();
+                    let injector = crate::platform::InputInjector::new();
 
                     let local_port = socket_recv.local_addr().ok().map(|a| a.port()).unwrap_or(0);
                     let host_lan_bytes = encode_lan_endpoint_port(local_port, target_server);
@@ -574,18 +563,7 @@ impl P2PManager {
                                     }
 
                                     if need_ui_prompt {
-                                        #[cfg(target_os = "windows")]
-                                        {
-                                            crate::windows::ui::append_status_log(&format!(
-                                                "🔔 Incoming request from ID: {} — Click Accept or Decline!",
-                                                client_id_disp
-                                            ));
-                                            crate::windows::ui::bring_main_window_to_front();
-                                        }
-                                        #[cfg(target_os = "linux")]
-                                        {
-                                            trigger_linux_approval_dialog(client_id_disp.clone());
-                                        }
+                                        crate::platform::ui::prompt_incoming_request(&client_id_disp);
                                     }
 
                                     // If client advertised a same-subnet LAN address, punch directly to it on the LAN!
@@ -674,8 +652,7 @@ impl P2PManager {
                                     if let Ok(mut pg) = pending_approval_store().lock() {
                                         *pg = None;
                                     }
-                                    #[cfg(target_os = "windows")]
-                                    crate::windows::ui::request_main_redraw();
+                                    crate::platform::ui::request_main_redraw();
                                     info!("Client {} disconnected from host stream.", from_addr);
                                 }
                                 PKT_CLIPBOARD => {
@@ -755,10 +732,7 @@ impl P2PManager {
                                         desky_id, your_public_addr
                                     );
                                     crate::identity::save_assigned_desky_id(&desky_id);
-                                    #[cfg(target_os = "windows")]
-                                    crate::windows::set_assigned_desky_id(&desky_id);
-                                    #[cfg(target_os = "linux")]
-                                    crate::linux::set_assigned_desky_id(&desky_id);
+                                    crate::platform::set_assigned_desky_id(&desky_id);
 
                                     let mut id_w = current_id_clone.write().await;
                                     *id_w = desky_id;
@@ -918,18 +892,7 @@ impl P2PManager {
                                     }
 
                                     if need_ui_prompt {
-                                        #[cfg(target_os = "windows")]
-                                        {
-                                            crate::windows::ui::append_status_log(&format!(
-                                                "🔔 Incoming request from ID: {} — Click Accept or Decline!",
-                                                client_id_disp
-                                            ));
-                                            crate::windows::ui::bring_main_window_to_front();
-                                        }
-                                        #[cfg(target_os = "linux")]
-                                        {
-                                            trigger_linux_approval_dialog(client_id_disp);
-                                        }
+                                        crate::platform::ui::prompt_incoming_request(&client_id_disp);
                                     }
 
                                     let ack = SignalMsg::PunchAck;

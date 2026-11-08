@@ -1,4 +1,4 @@
-//! Main Win32 Launcher Window & Application Lifecycle
+﻿//! Main Win32 Launcher Window & Application Lifecycle
 
 #![allow(unsafe_op_in_unsafe_fn)]
 use anyhow::Result;
@@ -89,6 +89,15 @@ pub fn append_status_log(msg: &str) {
     request_main_redraw();
 }
 
+
+
+pub fn prompt_incoming_request(client_id: &str) {
+    append_status_log(&format!(
+        "ğŸ”” Incoming request from ID: {} â€” Click Accept or Decline!",
+        client_id
+    ));
+    bring_main_window_to_front();
+}
 pub fn set_assigned_desky_id(id: &str) {
     if let Ok(mut guard) = LOCAL_DESKY_ID.lock() {
         *guard = id.to_string();

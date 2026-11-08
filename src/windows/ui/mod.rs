@@ -6,7 +6,7 @@ pub mod theme;
 pub mod viewport;
 
 pub use launcher::{
-    append_status_log, bring_main_window_to_front, request_main_redraw, set_assigned_desky_id,
+    append_status_log, prompt_incoming_request, request_main_redraw, set_assigned_desky_id,
     NativeWin32App,
 };
 pub use progress::trigger_transfer_progress_window;

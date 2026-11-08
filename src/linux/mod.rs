@@ -1,7 +1,13 @@
 pub mod capture;
+pub mod clipboard;
 pub mod input;
+pub mod system;
 pub mod ui;
 
+pub use capture::capture_screen_frame;
+pub use clipboard::{read_clipboard_files, read_clipboard_text, write_clipboard_files, write_clipboard_text};
+pub use input::InputInjector;
+pub use system::{get_desktop_dir, get_identity_dir, get_machine_id, notify_file_received};
 pub use ui::set_assigned_desky_id;
 
 pub fn run() -> anyhow::Result<()> {

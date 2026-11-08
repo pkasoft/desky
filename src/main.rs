@@ -3,10 +3,14 @@ mod p2p;
 mod protocol;
 
 #[cfg(target_os = "windows")]
-mod windows;
+pub(crate) mod windows;
+#[cfg(target_os = "windows")]
+pub(crate) use windows as platform;
 
 #[cfg(target_os = "linux")]
-mod linux;
+pub(crate) mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux as platform;
 
 use tracing::info;
 
