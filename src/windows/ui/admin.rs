@@ -50,10 +50,9 @@ impl Default for AdminState {
             filter_active: false,
             scroll_y: 0,
             terminal_lines: vec![
-                "⚡ Desky Silent Admin Console — PowerShell Background Engine".into(),
+                "[Admin] Desky Silent Remote Management Console - PowerShell Engine".into(),
                 "Commands execute with zero remote screen or mouse interruption.".into(),
                 "Type any PowerShell/CMD command below and press Enter (e.g. dir, ipconfig, Get-Service):".into(),
-                "".into(),
             ],
             terminal_input: String::new(),
             terminal_scroll_y: 0,
@@ -434,11 +433,17 @@ unsafe fn draw_terminal_view(hdc: HDC, width: i32, height: i32) {
         if cy + line_h > prompt_y {
             break;
         }
-        let is_prompt = line.starts_with("PS >") || line.starts_with("⚡");
+        if line.is_empty() {
+            cy += line_h;
+            continue;
+        }
+        let is_prompt = line.starts_with("PS >") || line.starts_with("[Admin]");
         SetTextColor(hdc, if is_prompt { COLORREF(0x0099D334) } else { COLORREF(0x00F6F4F3) });
         let mut t: Vec<u16> = line.encode_utf16().collect();
-        let mut rc = RECT { left: term_x + 14, top: cy, right: term_x + term_w - 14, bottom: cy + line_h };
-        let _ = DrawTextW(hdc, &mut t, &mut rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        if !t.is_empty() {
+            let mut rc = RECT { left: term_x + 14, top: cy, right: term_x + term_w - 14, bottom: cy + line_h };
+            let _ = DrawTextW(hdc, &mut t, &mut rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        }
         cy += line_h;
     }
 
@@ -458,8 +463,10 @@ unsafe fn draw_terminal_view(hdc: HDC, width: i32, height: i32) {
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
     let typed = format!("{}_", input);
     let mut in_txt: Vec<u16> = typed.encode_utf16().collect();
-    let mut in_rc = RECT { left: term_x + 86, top: prompt_y, right: term_x + term_w - 14, bottom: prompt_y + 20 };
-    let _ = DrawTextW(hdc, &mut in_txt, &mut in_rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    if !in_txt.is_empty() {
+        let mut in_rc = RECT { left: term_x + 86, top: prompt_y, right: term_x + term_w - 14, bottom: prompt_y + 20 };
+        let _ = DrawTextW(hdc, &mut in_txt, &mut in_rc, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    }
 
     let _ = SelectObject(hdc, old_font);
     let _ = DeleteObject(HGDIOBJ(font_term.0));
