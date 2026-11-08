@@ -566,8 +566,6 @@ pub fn clipboard_notify() -> &'static Arc<Notify> {
 
 #[derive(Clone, Debug, Default)]
 pub struct TransferProgress {
-    #[allow(dead_code)]
-    pub is_active: bool,
     pub is_sending: bool,
     pub file_name: String,
     pub current_bytes: u64,
@@ -596,7 +594,6 @@ pub fn update_transfer_progress(is_sending: bool, file_name: &str, current: u64,
     let store = ACTIVE_TRANSFER_PROGRESS.get_or_init(|| Mutex::new(TransferProgress::default()));
     if let Ok(mut guard) = store.lock() {
         *guard = TransferProgress {
-            is_active: !is_complete || current > 0,
             is_sending,
             file_name: file_name.to_string(),
             current_bytes: current,
