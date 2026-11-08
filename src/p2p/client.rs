@@ -275,7 +275,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             display_target
                         );
                         set_session_status(SessionStatus::Error(msg.clone()));
-                        crate::platform::ui::append_status_log(&format!("❌ {}", msg));
+                        crate::platform::ui::append_status_log(&format!("[x] {}", msg));
                         break;
                     }
                     if !lan_pkt.is_empty() {
@@ -517,7 +517,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                         display_target
                                                     );
                                                     set_session_status(SessionStatus::Error(msg.clone()));
-                                                    crate::platform::ui::append_status_log(&format!("🚫 {}", msg));
+                                                    crate::platform::ui::append_status_log(&format!("[-] {}", msg));
                                                     break;
                                                 }
                                                 _ => {}
@@ -698,7 +698,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         );
                                         warn!("{}", msg);
                                         set_session_status(SessionStatus::Error(msg.clone()));
-                                        crate::platform::ui::append_status_log(&format!("❌ {}", msg));
+                                        crate::platform::ui::append_status_log(&format!("[x] {}", msg));
                                         break;
                                     }
                                     SignalMsg::Punch { .. } | SignalMsg::PunchAck => {

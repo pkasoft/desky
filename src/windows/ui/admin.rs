@@ -634,7 +634,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
                 state.last_req_time = Some(Instant::now());
                 match state.sub_tab {
                     AdminSubTab::Processes => crate::p2p::send_admin_request(AdminReq::GetProcesses),
-                    AdminSubTab::Terminal => state.terminal_lines.push("⚡ Console ready.".into()),
+                    AdminSubTab::Terminal => state.terminal_lines.push(">> Console ready.".into()),
                     AdminSubTab::SystemInfo => crate::p2p::send_admin_request(AdminReq::GetSystemInfo),
                 }
             }
