@@ -101,6 +101,12 @@ pub fn poll_admin_responses() {
                     state.system_stats = Some(stats);
                     state.status_msg = Some(("System telemetry updated".into(), Instant::now()));
                 }
+                AdminResp::MonitorSwitched { monitor_index, count } => {
+                    state.status_msg = Some((format!("Switched to Monitor #{} (Total: {})", monitor_index + 1, count), Instant::now()));
+                }
+                AdminResp::RebootScheduled { safe_mode } => {
+                    state.status_msg = Some((format!("Host reboot scheduled (Safe Mode: {}). Desky will reconnect automatically...", safe_mode), Instant::now()));
+                }
             }
         }
     }
@@ -190,14 +196,37 @@ unsafe fn draw_sub_tab_bar(hdc: HDC, width: i32, current_tab: AdminSubTab, hover
         cur_x += tab_w + 12;
     }
 
-    // Refresh Button on the far right (Lucide Refresh-Cw vector)
-    let ref_w = 110;
+    // Power Actions & Refresh on the far right
+    let ref_w = 92;
     let ref_x = width - 24 - ref_w - 6;
     let is_ref_hover = hover_state == 2999;
     let ref_bg = if is_ref_hover { PK_GREEN_TINT } else { PK_CARD };
     draw_rounded_box(hdc, ref_x, bar_y + 4, ref_w, 28, ref_bg, PK_GREEN, 4);
-    crate::ui::draw_refresh(hdc, ref_x + 10, bar_y + 10, 16, PK_GREEN_DARK, 2);
+    crate::ui::draw_refresh(hdc, ref_x + 8, bar_y + 10, 16, PK_GREEN_DARK, 2);
     SetTextColor(hdc, PK_GREEN_DARK);
+    let mut ref_txt: Vec<u16> = "Refresh".encode_utf16().collect();
+    let mut ref_rc = RECT { left: ref_x + 22, top: bar_y + 4, right: ref_x + ref_w, bottom: bar_y + 32 };
+    let _ = DrawTextW(hdc, &mut ref_txt, &mut ref_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    let reboot_w = 92;
+    let reboot_x = ref_x - reboot_w - 8;
+    let is_reboot_hover = hover_state == 2998;
+    let reboot_bg = if is_reboot_hover { PK_BTN_HOVER } else { PK_CARD };
+    draw_rounded_box(hdc, reboot_x, bar_y + 4, reboot_w, 28, reboot_bg, PK_CARD_BORDER, 4);
+    SetTextColor(hdc, PK_TEXT);
+    let mut reb_txt: Vec<u16> = "Restart".encode_utf16().collect();
+    let mut reb_rc = RECT { left: reboot_x, top: bar_y + 4, right: reboot_x + reboot_w, bottom: bar_y + 32 };
+    let _ = DrawTextW(hdc, &mut reb_txt, &mut reb_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    let safe_w = 98;
+    let safe_x = reboot_x - safe_w - 8;
+    let is_safe_hover = hover_state == 2997;
+    let safe_bg = if is_safe_hover { PK_BTN_HOVER } else { PK_CARD };
+    draw_rounded_box(hdc, safe_x, bar_y + 4, safe_w, 28, safe_bg, PK_CARD_BORDER, 4);
+    SetTextColor(hdc, PK_MUTED);
+    let mut safe_txt: Vec<u16> = "Safe Mode".encode_utf16().collect();
+    let mut safe_rc = RECT { left: safe_x, top: bar_y + 4, right: safe_x + safe_w, bottom: bar_y + 32 };
+    let _ = DrawTextW(hdc, &mut safe_txt, &mut safe_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
     let last_time = {
         let state = get_admin_state().lock().unwrap();
@@ -626,7 +655,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         }
 
         // Refresh button
-        let ref_w = 110;
+        let ref_w = 92;
         let ref_x = width - 24 - ref_w - 6;
         if x >= ref_x && x < ref_x + ref_w {
             if let Ok(mut state) = get_admin_state().lock() {
@@ -637,6 +666,26 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
                     AdminSubTab::Terminal => state.terminal_lines.push(">> Console ready.".into()),
                     AdminSubTab::SystemInfo => crate::p2p::send_admin_request(AdminReq::GetSystemInfo),
                 }
+            }
+            return true;
+        }
+
+        let reboot_w = 92;
+        let reboot_x = ref_x - reboot_w - 8;
+        if x >= reboot_x && x < reboot_x + reboot_w {
+            crate::p2p::send_admin_request(AdminReq::RebootHost { safe_mode: false });
+            if let Ok(mut state) = get_admin_state().lock() {
+                state.status_msg = Some(("Initiating remote reboot...".into(), Instant::now()));
+            }
+            return true;
+        }
+
+        let safe_w = 98;
+        let safe_x = reboot_x - safe_w - 8;
+        if x >= safe_x && x < safe_x + safe_w {
+            crate::p2p::send_admin_request(AdminReq::RebootHost { safe_mode: true });
+            if let Ok(mut state) = get_admin_state().lock() {
+                state.status_msg = Some(("Initiating remote Safe Mode reboot...".into(), Instant::now()));
             }
             return true;
         }
@@ -781,10 +830,20 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
             }
             cur_x += tab_w + 12;
         }
-        let ref_w = 110;
+        let ref_w = 92;
         let ref_x = width - 24 - ref_w - 6;
         if x >= ref_x && x < ref_x + ref_w {
             return 2999;
+        }
+        let reboot_w = 92;
+        let reboot_x = ref_x - reboot_w - 8;
+        if x >= reboot_x && x < reboot_x + reboot_w {
+            return 2998;
+        }
+        let safe_w = 98;
+        let safe_x = reboot_x - safe_w - 8;
+        if x >= safe_x && x < safe_x + safe_w {
+            return 2997;
         }
     }
 

@@ -8,6 +8,7 @@
 //! - `win7_8`: Windows 7, Windows 8 & 8.1
 
 pub mod admin;
+pub mod audio;
 pub mod capture;
 pub mod clipboard;
 pub mod dxgi_capture;

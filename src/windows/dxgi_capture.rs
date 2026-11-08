@@ -43,12 +43,59 @@ pub struct DxgiCapturer {
     height: u32,
     cached_frame: Vec<u8>,
     last_capture_time: Instant,
+    pub monitor_index: u32,
 }
 
 static DXGI_ENGINE: Mutex<Option<DxgiCapturer>> = Mutex::new(None);
+static TARGET_MONITOR_INDEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn count_available_monitors() -> u32 {
+    unsafe {
+        let mut device: Option<ID3D11Device> = None;
+        let mut context: Option<ID3D11DeviceContext> = None;
+        let mut feature_level: D3D_FEATURE_LEVEL = D3D_FEATURE_LEVEL_11_0;
+        let feature_levels = [D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0];
+        if D3D11CreateDevice(
+            None,
+            D3D_DRIVER_TYPE_HARDWARE,
+            HMODULE::default(),
+            D3D11_CREATE_DEVICE_FLAG(0),
+            Some(&feature_levels),
+            D3D11_SDK_VERSION,
+            Some(&mut device),
+            Some(&mut feature_level),
+            Some(&mut context),
+        ).is_err() {
+            return 1;
+        }
+        if let Some(device) = device {
+            if let Ok(dxgi_device) = device.cast::<IDXGIDevice>() {
+                if let Ok(adapter) = dxgi_device.GetAdapter() {
+                    let mut count = 0;
+                    while adapter.EnumOutputs(count).is_ok() {
+                        count += 1;
+                    }
+                    return count.max(1);
+                }
+            }
+        }
+        1
+    }
+}
+
+pub fn set_target_monitor(index: u32) {
+    TARGET_MONITOR_INDEX.store(index, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut guard) = DXGI_ENGINE.lock() {
+        *guard = None; // Reset so next capture frame initializes the selected monitor!
+    }
+}
+
+pub fn get_target_monitor() -> u32 {
+    TARGET_MONITOR_INDEX.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 impl DxgiCapturer {
-    pub fn new() -> Result<Self> {
+    pub fn new(monitor_index: u32) -> Result<Self> {
         unsafe {
             let mut device: Option<ID3D11Device> = None;
             let mut context: Option<ID3D11DeviceContext> = None;
@@ -73,7 +120,10 @@ impl DxgiCapturer {
 
             let dxgi_device: IDXGIDevice = device.cast()?;
             let adapter: IDXGIAdapter = dxgi_device.GetAdapter()?;
-            let output: IDXGIOutput = adapter.EnumOutputs(0)?;
+            let output: IDXGIOutput = match adapter.EnumOutputs(monitor_index) {
+                Ok(o) => o,
+                Err(_) => adapter.EnumOutputs(0)?,
+            };
             let output1: IDXGIOutput1 = output.cast()?;
 
             let duplication: IDXGIOutputDuplication = output1.DuplicateOutput(&device)?;
@@ -82,7 +132,7 @@ impl DxgiCapturer {
             let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).abs() as u32;
             let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).abs() as u32;
 
-            info!("DXGI GPU Desktop Duplication initialized: {}x{} @ Feature Level {:?}", width, height, feature_level);
+            info!("DXGI GPU Desktop Duplication initialized: Output #{} ({}x{}) @ Feature Level {:?}", monitor_index, width, height, feature_level);
 
             Ok(Self {
                 device,
@@ -93,6 +143,7 @@ impl DxgiCapturer {
                 height,
                 cached_frame: vec![0u8; (width * height * 4) as usize],
                 last_capture_time: Instant::now(),
+                monitor_index,
             })
         }
     }
@@ -287,8 +338,15 @@ pub fn try_dxgi_capture(
         Err(_) => return Ok(None),
     };
 
+    let target_mon = get_target_monitor();
+    if let Some(capturer) = guard.as_ref() {
+        if capturer.monitor_index != target_mon {
+            *guard = None;
+        }
+    }
+
     if guard.is_none() {
-        match DxgiCapturer::new() {
+        match DxgiCapturer::new(target_mon) {
             Ok(capturer) => *guard = Some(capturer),
             Err(e) => {
                 debug!("DXGI GPU capture unavailable (fallback to GDI): {}", e);

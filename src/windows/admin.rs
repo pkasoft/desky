@@ -29,7 +29,47 @@ pub fn handle_admin_request(req: AdminReq) -> AdminResp {
             AdminResp::CommandOutput { output, exit_code }
         }
         AdminReq::GetSystemInfo => AdminResp::SystemInfo(get_system_info()),
+        AdminReq::SwitchMonitor { monitor_index } => {
+            super::dxgi_capture::set_target_monitor(monitor_index);
+            let count = super::dxgi_capture::count_available_monitors();
+            info!("Host switched active monitor to #{} of {}", monitor_index, count);
+            AdminResp::MonitorSwitched { monitor_index, count }
+        }
+        AdminReq::RebootHost { safe_mode } => {
+            schedule_remote_reboot(safe_mode);
+            AdminResp::RebootScheduled { safe_mode }
+        }
     }
+}
+
+pub fn schedule_remote_reboot(safe_mode: bool) {
+    std::thread::spawn(move || {
+        info!("Host Remote Reboot triggered (Safe Mode: {}). Scheduling auto-reconnect...", safe_mode);
+
+        if let Ok(exe_path) = std::env::current_exe() {
+            let cmd = format!(
+                "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce /v DeskyAutoReconnect /t REG_SZ /d \"\\\"{}\\\"\" /f",
+                exe_path.display()
+            );
+            let _ = Command::new("cmd")
+                .args(["/C", &cmd])
+                .creation_flags(0x08000000)
+                .output();
+        }
+
+        if safe_mode {
+            let _ = Command::new("cmd")
+                .args(["/C", "bcdedit /set {current} safeboot network"])
+                .creation_flags(0x08000000)
+                .output();
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let _ = Command::new("shutdown")
+            .args(["/r", "/t", "3", "/f", "/c", "Desky Remote Restart"])
+            .creation_flags(0x08000000)
+            .output();
+    });
 }
 
 pub fn get_process_list() -> Vec<ProcessItem> {
