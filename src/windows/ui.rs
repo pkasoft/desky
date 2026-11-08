@@ -576,6 +576,9 @@ unsafe fn draw_toolbar(
 /// Renders an AnyDesk + Decky-Dashboard inspired Full-Screen Settings Page in the signature
 /// White & Emerald Green (`pkasoft.com`) theme, with 0px sharp edges, flush integrated sidebar tabs,
 /// segmented control strips, and distinct per-category views.
+/// Renders a clean, responsive Settings Dashboard in the signature
+/// White & Emerald Green (`pkasoft.com`) theme, with sharp edges, flush integrated sidebar tabs,
+/// segmented control strips, and adaptive font sizing.
 unsafe fn draw_fullscreen_settings_view(
     hdc: HDC,
     client_w: i32,
@@ -583,7 +586,11 @@ unsafe fn draw_fullscreen_settings_view(
     mode: u8,
     fps: u32,
 ) {
-    // 1. Opaque Full-Screen Soft Sage-White Canvas (PK_BG)
+    let scale_w = client_w as f32 / 1024.0;
+    let scale_h = client_h as f32 / 640.0;
+    let s = (scale_w.min(scale_h)).clamp(0.80, 1.40);
+
+    // 1. Full-Screen Canvas (PK_BG)
     let full_rect = RECT {
         left: 0,
         top: 0,
@@ -598,8 +605,10 @@ unsafe fn draw_fullscreen_settings_view(
     let tint_brush = CreateSolidBrush(PK_GREEN_TINT);
     let input_brush = CreateSolidBrush(PK_INPUT_BG);
 
-    // 2. Integrated Top Dashboard Bar (Height: 52px, flush sharp border)
-    let hdr_h = 52;
+    // 2. Integrated Top Header Bar (Adaptive)
+    let hdr_h = (46.0 * s) as i32;
+    let side_w = (210.0 * s) as i32;
+
     let hdr_rect = RECT {
         left: 0,
         top: 0,
@@ -615,17 +624,21 @@ unsafe fn draw_fullscreen_settings_view(
     };
     FillRect(hdc, &hdr_line, line_brush);
 
-    let font_brand = create_segoe_font(18, FW_BOLD);
-    let font_title = create_segoe_font(20, FW_BOLD);
-    let font_sec = create_segoe_font(12, FW_BOLD);
-    let font_btn = create_segoe_font(14, FW_SEMIBOLD);
-    let font_info = create_segoe_font(13, FW_NORMAL);
+    let f_brand = (16.0 * s) as i32;
+    let f_title = (17.0 * s) as i32;
+    let f_sec = (11.0 * s) as i32;
+    let f_btn = (12.0 * s) as i32;
+    let f_info = (12.0 * s) as i32;
+
+    let font_brand = create_segoe_font(f_brand, FW_BOLD);
+    let font_title = create_segoe_font(f_title, FW_BOLD);
+    let font_sec = create_segoe_font(f_sec, FW_BOLD);
+    let font_btn = create_segoe_font(f_btn, FW_SEMIBOLD);
+    let font_info = create_segoe_font(f_info, FW_NORMAL);
 
     SetBkMode(hdc, TRANSPARENT);
 
-    let side_w = 250;
-
-    // Top-left Brand Cell (0..side_w) aligned flush with the Left Sidebar
+    // Brand Label
     let brand_cell_div = RECT {
         left: side_w - 1,
         top: 0,
@@ -638,34 +651,33 @@ unsafe fn draw_fullscreen_settings_view(
     SetTextColor(hdc, PK_GREEN_DARK);
     let mut brand_txt: Vec<u16> = "DESKY".encode_utf16().collect();
     let mut brand_rc = RECT {
-        left: 20,
+        left: (18.0 * s) as i32,
         top: 0,
         right: side_w - 10,
         bottom: hdr_h,
     };
     let _ = DrawTextW(hdc, &mut brand_txt, &mut brand_rc, DT_SINGLELINE | DT_VCENTER);
 
-    // Top-bar Breadcrumb label
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed);
+    // Breadcrumb
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
     let crumb_label = match active_cat {
-        0 => "SETTINGS  /  DISPLAY & IMAGE QUALITY",
-        1 => "SETTINGS  /  DYNAMIC ADAPTIVE BITRATE (ABR)",
-        2 => "SETTINGS  /  INPUT & STREAM FRAMERATE",
-        _ => "SETTINGS  /  DIRECT P2P CONNECTION TELEMETRY",
+        0 => "SETTINGS  /  DISPLAY & QUALITY",
+        1 => "SETTINGS  /  FRAMERATE & INPUT",
+        _ => "SETTINGS  /  CONNECTION & REGION",
     };
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
     SetTextColor(hdc, PK_MUTED);
     let mut crumb_txt: Vec<u16> = crumb_label.encode_utf16().collect();
     let mut crumb_rc = RECT {
-        left: side_w + 24,
+        left: side_w + (20.0 * s) as i32,
         top: 0,
-        right: client_w - 250,
+        right: client_w - (180.0 * s) as i32,
         bottom: hdr_h,
     };
     let _ = DrawTextW(hdc, &mut crumb_txt, &mut crumb_rc, DT_SINGLELINE | DT_VCENTER);
 
-    // Top-right Flush Integrated [ ← BACK TO STREAM ] Button (0px radius, docked into top bar)
-    let back_w = 220;
+    // Back to stream button
+    let back_w = (160.0 * s) as i32;
     let back_x = (client_w - back_w).max(side_w + 20);
     let back_rc = RECT {
         left: back_x,
@@ -676,7 +688,7 @@ unsafe fn draw_fullscreen_settings_view(
     FillRect(hdc, &back_rc, green_brush);
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let mut back_txt: Vec<u16> = "←  BACK TO STREAM".encode_utf16().collect();
+    let mut back_txt: Vec<u16> = "< BACK TO STREAM".encode_utf16().collect();
     let mut back_txt_rc = back_rc;
     let _ = DrawTextW(
         hdc,
@@ -685,9 +697,7 @@ unsafe fn draw_fullscreen_settings_view(
         DT_SINGLELINE | DT_CENTER | DT_VCENTER,
     );
 
-    // =========================================================================
-    // LEFT INTEGRATED NAVIGATION DOCK (0..side_w, hdr_h..client_h)
-    // =========================================================================
+    // Left Navigation Dock
     let side_rc = RECT {
         left: 0,
         top: hdr_h,
@@ -703,42 +713,41 @@ unsafe fn draw_fullscreen_settings_view(
     };
     FillRect(hdc, &side_border, line_brush);
 
-    // Section Header in Dock
+    let nav_hdr_h = (32.0 * s) as i32;
     let nav_hdr_bg = RECT {
         left: 0,
         top: hdr_h,
         right: side_w - 1,
-        bottom: hdr_h + 36,
+        bottom: hdr_h + nav_hdr_h,
     };
     FillRect(hdc, &nav_hdr_bg, input_brush);
     let nav_hdr_line = RECT {
         left: 0,
-        top: hdr_h + 35,
+        top: hdr_h + nav_hdr_h - 1,
         right: side_w,
-        bottom: hdr_h + 36,
+        bottom: hdr_h + nav_hdr_h,
     };
     FillRect(hdc, &nav_hdr_line, line_brush);
 
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
     SetTextColor(hdc, PK_MUTED);
-    let mut nav_hdr: Vec<u16> = "CONFIGURATION MODULES".encode_utf16().collect();
+    let mut nav_hdr: Vec<u16> = "CATEGORIES".encode_utf16().collect();
     let mut nav_hdr_rc = RECT {
-        left: 20,
+        left: (18.0 * s) as i32,
         top: hdr_h,
         right: side_w - 12,
-        bottom: hdr_h + 36,
+        bottom: hdr_h + nav_hdr_h,
     };
     let _ = DrawTextW(hdc, &mut nav_hdr, &mut nav_hdr_rc, DT_SINGLELINE | DT_VCENTER);
 
     let categories = [
         ("01", "DISPLAY & QUALITY"),
-        ("02", "ADAPTIVE BITRATE"),
-        ("03", "INPUT & FRAMERATE"),
-        ("04", "CONNECTION STATUS"),
+        ("02", "FRAMERATE & INPUT"),
+        ("03", "CONNECTION & REGION"),
     ];
 
-    let tab_start_y = hdr_h + 36;
-    let tab_h = 52;
+    let tab_start_y = hdr_h + nav_hdr_h;
+    let tab_h = (44.0 * s) as i32;
 
     for (i, (num, label)) in categories.iter().enumerate() {
         let item_y = tab_start_y + (i as i32) * tab_h;
@@ -752,11 +761,10 @@ unsafe fn draw_fullscreen_settings_view(
 
         if is_sel {
             FillRect(hdc, &item_rc, tint_brush);
-            // Sharp 5px Emerald Indicator Strip on left edge
             let bar_rc = RECT {
                 left: 0,
                 top: item_y,
-                right: 5,
+                right: 4,
                 bottom: item_y + tab_h,
             };
             FillRect(hdc, &bar_rc, green_brush);
@@ -764,7 +772,6 @@ unsafe fn draw_fullscreen_settings_view(
             FillRect(hdc, &item_rc, CARD_BRUSH);
         }
 
-        // Sharp 1px bottom divider per tab row
         let row_div = RECT {
             left: 0,
             top: item_y + tab_h - 1,
@@ -777,9 +784,9 @@ unsafe fn draw_fullscreen_settings_view(
         SetTextColor(hdc, if is_sel { PK_GREEN } else { PK_MUTED });
         let mut num_wide: Vec<u16> = num.encode_utf16().collect();
         let mut num_rc = RECT {
-            left: 20,
+            left: (16.0 * s) as i32,
             top: item_y,
-            right: 48,
+            right: (38.0 * s) as i32,
             bottom: item_y + tab_h,
         };
         let _ = DrawTextW(hdc, &mut num_wide, &mut num_rc, DT_SINGLELINE | DT_VCENTER);
@@ -788,29 +795,28 @@ unsafe fn draw_fullscreen_settings_view(
         SetTextColor(hdc, if is_sel { PK_GREEN_DARK } else { PK_TEXT });
         let mut lbl_wide: Vec<u16> = label.encode_utf16().collect();
         let mut lbl_rc = RECT {
-            left: 50,
+            left: (42.0 * s) as i32,
             top: item_y,
-            right: side_w - 12,
+            right: side_w - 8,
             bottom: item_y + tab_h,
         };
         let _ = DrawTextW(hdc, &mut lbl_wide, &mut lbl_rc, DT_SINGLELINE | DT_VCENTER);
     }
 
-    // Integrated Bottom Dock Telemetry Panel (Flush with bottom of sidebar)
-    let (active_q, active_scale, active_c444) = crate::p2p::get_active_quality_params();
+    // Telemetry Dock (Sidebar bottom)
+    let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
     let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
     let rtt_ms = crate::p2p::get_session_rtt_ms();
     let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
     let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
     let res_str = if orig_w > 0 && orig_h > 0 {
-        format!("{}×{} ({}%)", orig_w, orig_h, active_scale)
+        format!("{}Ã—{} ({}%)", orig_w, orig_h, active_scale)
     } else {
         format!("{}% Native", active_scale)
     };
-    let chroma_str = if active_c444 { "4:4:4 Subpixel" } else { "4:2:0 Fast" };
 
-    let tele_h = 180;
-    let tele_y = (client_h - tele_h).max(tab_start_y + 4 * tab_h + 12);
+    let tele_h = (150.0 * s) as i32;
+    let tele_y = (client_h - tele_h).max(tab_start_y + 3 * tab_h + 10);
     let tele_top_line = RECT {
         left: 0,
         top: tele_y,
@@ -819,93 +825,92 @@ unsafe fn draw_fullscreen_settings_view(
     };
     FillRect(hdc, &tele_top_line, line_brush);
 
+    let tele_hdr_h = (30.0 * s) as i32;
     let tele_hdr_bg = RECT {
         left: 0,
         top: tele_y + 1,
         right: side_w - 1,
-        bottom: tele_y + 34,
+        bottom: tele_y + tele_hdr_h,
     };
     FillRect(hdc, &tele_hdr_bg, tint_brush);
     let tele_hdr_line = RECT {
         left: 0,
-        top: tele_y + 34,
+        top: tele_y + tele_hdr_h,
         right: side_w,
-        bottom: tele_y + 35,
+        bottom: tele_y + tele_hdr_h + 1,
     };
     FillRect(hdc, &tele_hdr_line, line_brush);
 
     let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
     SetTextColor(hdc, PK_GREEN_DARK);
-    let mut tele_hdr: Vec<u16> = "● DIRECT P2P TELEMETRY".encode_utf16().collect();
+    let mut tele_hdr: Vec<u16> = "LIVE STATUS".encode_utf16().collect();
     let mut tele_hdr_rc = RECT {
-        left: 20,
+        left: (16.0 * s) as i32,
         top: tele_y + 1,
         right: side_w - 12,
-        bottom: tele_y + 34,
+        bottom: tele_y + tele_hdr_h,
     };
     let _ = DrawTextW(hdc, &mut tele_hdr, &mut tele_hdr_rc, DT_SINGLELINE | DT_VCENTER);
 
     let stats_rows = [
-        ("BITRATE", bitrate_str.as_str()),
+        ("REGION", "Istanbul (TR)"),
         ("LATENCY", &format!("{} ms RTT", rtt_ms)),
-        ("ENCODER", &format!("Q{} • {}", active_q, chroma_str)),
+        ("BITRATE", bitrate_str.as_str()),
         ("STREAM", res_str.as_str()),
-        ("TUNNEL", "100% Direct UDP"),
     ];
     let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
+    let row_step = (24.0 * s) as i32;
     for (idx, (k, v)) in stats_rows.iter().enumerate() {
-        let ry = tele_y + 42 + (idx as i32) * 26;
+        let ry = tele_y + tele_hdr_h + 6 + (idx as i32) * row_step;
         SetTextColor(hdc, PK_MUTED);
         let mut kw: Vec<u16> = k.encode_utf16().collect();
-        let mut krc = RECT { left: 20, top: ry, right: 96, bottom: ry + 24 };
+        let mut krc = RECT { left: (16.0 * s) as i32, top: ry, right: (82.0 * s) as i32, bottom: ry + row_step };
         let _ = DrawTextW(hdc, &mut kw, &mut krc, DT_SINGLELINE | DT_VCENTER);
 
         SetTextColor(hdc, PK_TEXT);
         let mut vw: Vec<u16> = v.encode_utf16().collect();
-        let mut vrc = RECT { left: 98, top: ry, right: side_w - 12, bottom: ry + 24 };
+        let mut vrc = RECT { left: (84.0 * s) as i32, top: ry, right: side_w - 8, bottom: ry + row_step };
         let _ = DrawTextW(hdc, &mut vw, &mut vrc, DT_SINGLELINE | DT_VCENTER);
     }
 
-    // =========================================================================
-    // RIGHT WORKSPACE AREA: DECKY-STYLE INTEGRATED SHARP MODULES
-    // =========================================================================
-    let work_x = side_w + 28;
-    let work_w = (client_w - work_x - 28).clamp(420, 960);
-    let work_y = hdr_h + 24;
+    // Right Workspace Area
+    let work_x = side_w + (24.0 * s) as i32;
+    let work_w = (client_w - work_x - (24.0 * s) as i32).clamp(360, 960);
+    let work_y = hdr_h + (20.0 * s) as i32;
 
-    // Helper: Draws a sharp-edged integrated Decky module container with header bar
+    let mod_hdr_h = (32.0 * s) as i32;
+    let badge_w = (84.0 * s) as i32;
+
+    // Helper: Draws module panel
     let draw_module_panel = |top: i32, height: i32, badge: &str, title: &str| {
-        // Outer 0px rectangle card
         draw_rounded_box(hdc, work_x, top, work_w, height, PK_CARD, PK_CARD_BORDER, 0);
-        // Integrated Header Strip (height 36px)
         let h_bg = RECT {
             left: work_x + 1,
             top: top + 1,
             right: work_x + work_w - 1,
-            bottom: top + 37,
+            bottom: top + mod_hdr_h,
         };
         FillRect(hdc, &h_bg, input_brush);
         let h_line = RECT {
             left: work_x,
-            top: top + 37,
+            top: top + mod_hdr_h,
             right: work_x + work_w,
-            bottom: top + 38,
+            bottom: top + mod_hdr_h + 1,
         };
         FillRect(hdc, &h_line, line_brush);
 
-        // Left Emerald Badge cell inside module header
         let b_rc = RECT {
             left: work_x + 1,
             top: top + 1,
-            right: work_x + 92,
-            bottom: top + 37,
+            right: work_x + badge_w,
+            bottom: top + mod_hdr_h,
         };
         FillRect(hdc, &b_rc, tint_brush);
         let b_div = RECT {
-            left: work_x + 92,
+            left: work_x + badge_w,
             top: top + 1,
-            right: work_x + 93,
-            bottom: top + 37,
+            right: work_x + badge_w + 1,
+            bottom: top + mod_hdr_h,
         };
         FillRect(hdc, &b_div, line_brush);
 
@@ -918,20 +923,19 @@ unsafe fn draw_fullscreen_settings_view(
         SetTextColor(hdc, PK_TEXT);
         let mut tw: Vec<u16> = title.encode_utf16().collect();
         let mut t_rc = RECT {
-            left: work_x + 106,
+            left: work_x + badge_w + 12,
             top: top + 1,
-            right: work_x + work_w - 16,
-            bottom: top + 37,
+            right: work_x + work_w - 12,
+            bottom: top + mod_hdr_h,
         };
         let _ = DrawTextW(hdc, &mut tw, &mut t_rc, DT_SINGLELINE | DT_VCENTER);
     };
 
-    // Helper: Draws a flush, sharp-edged segmented button bar (0px radius, shared 1px dividers)
+    // Helper: Draws segmented button strip
     let draw_segmented_strip = |x: i32, y: i32, w: i32, h: i32, labels: &[&str], active_idx: usize| {
         let count = labels.len().max(1) as i32;
         let seg_w = w / count;
 
-        // Outer border frame
         draw_rounded_box(hdc, x, y, w, h, PK_INPUT_BG, PK_CARD_BORDER, 0);
 
         let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
@@ -948,12 +952,11 @@ unsafe fn draw_fullscreen_settings_view(
             };
             if is_active {
                 FillRect(hdc, &cell_rc, green_brush);
-                // Top 3px dark-emerald highlight bar inside active segment
                 let top_accent = RECT {
                     left: sx + 1,
                     top: y + 1,
                     right: sr - 1,
-                    bottom: y + 4,
+                    bottom: y + 3,
                 };
                 FillRect(hdc, &top_accent, green_dark_brush);
                 SetTextColor(hdc, COLORREF(0x00FFFFFF));
@@ -978,318 +981,87 @@ unsafe fn draw_fullscreen_settings_view(
         }
     };
 
-    // Category Title Banner at top of right workspace
-    let (cat_heading, cat_desc) = match active_cat {
-        0 => (
-            "DISPLAY & IMAGE QUALITY",
-            "Configure viewport aspect scaling, 1:1 pixel mapping, and subpixel text clarity presets.",
-        ),
-        1 => (
-            "DYNAMIC ADAPTIVE BITRATE (ABR)",
-            "Control how Desky automatically tunes JPEG quantization and 4:4:4 chroma based on real-time link speed.",
-        ),
-        2 => (
-            "INPUT & STREAM FRAMERATE",
-            "Adjust target capture framerate (FPS) and remote host cursor rendering synchronization.",
-        ),
-        _ => (
-            "DIRECT P2P CONNECTION STATUS",
-            "Live end-to-end UDP hole-punching diagnostics. Zero video or input traffic ever touches the VDS.",
-        ),
-    };
+    let content_y = work_y + (44.0 * s) as i32;
+    let strip_x = work_x + (16.0 * s) as i32;
+    let strip_w = work_w - (32.0 * s) as i32;
+    let strip_h = (38.0 * s) as i32;
 
-    let _ = SelectObject(hdc, HGDIOBJ(font_title.0));
-    SetTextColor(hdc, PK_TEXT);
-    let mut ch_wide: Vec<u16> = cat_heading.encode_utf16().collect();
-    let mut ch_rc = RECT {
-        left: work_x,
-        top: work_y,
-        right: work_x + work_w,
-        bottom: work_y + 28,
-    };
-    let _ = DrawTextW(hdc, &mut ch_wide, &mut ch_rc, DT_SINGLELINE | DT_VCENTER);
+    let m1_y = content_y;
+    let m1_h = (94.0 * s) as i32;
+    let m2_y = m1_y + m1_h + (16.0 * s) as i32;
+    let m2_h = (94.0 * s) as i32;
 
-    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-    SetTextColor(hdc, PK_MUTED);
-    let mut cd_wide: Vec<u16> = cat_desc.encode_utf16().collect();
-    let mut cd_rc = RECT {
-        left: work_x,
-        top: work_y + 28,
-        right: work_x + work_w,
-        bottom: work_y + 50,
-    };
-    let _ = DrawTextW(hdc, &mut cd_wide, &mut cd_rc, DT_SINGLELINE | DT_VCENTER);
-
-    let content_y = work_y + 62;
-    let strip_x = work_x + 20;
-    let strip_w = work_w - 40;
     let q_mode = crate::p2p::get_quality_mode() as usize;
 
     match active_cat {
         0 => {
-            // =================================================================
-            // CATEGORY 0: DISPLAY & QUALITY
-            // =================================================================
-            // Module 1: Viewport Scaling Mode (3 integrated segments)
-            let m1_y = content_y;
-            let m1_h = 132;
-            draw_module_panel(m1_y, m1_h, "SCALING", "VIEWPORT ASPECT & SCALING MODE");
+            // Module 1: Scaling Mode
+            draw_module_panel(m1_y, m1_h, "SCALING", "VIEWPORT SCALING MODE");
+            let scale_labels = ["AUTO FIT", "STRETCH", "ORIGINAL 1:1"];
+            let strip1_y = m1_y + mod_hdr_h + (12.0 * s) as i32;
+            draw_segmented_strip(strip_x, strip1_y, strip_w, strip_h, &scale_labels, (mode as usize).min(2));
 
-            let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-            SetTextColor(hdc, PK_MUTED);
-            let mut m1_hint: Vec<u16> =
-                "Select how the remote desktop image is mapped inside your local viewport window:"
-                    .encode_utf16()
-                    .collect();
-            let mut m1_hint_rc = RECT {
-                left: strip_x,
-                top: m1_y + 46,
-                right: strip_x + strip_w,
-                bottom: m1_y + 68,
+            // Module 2: Image Quality
+            draw_module_panel(m2_y, m2_h, "QUALITY", "STREAM QUALITY PRESET");
+            let q_labels = ["AUTO (ABR)", "HIGH (4:4:4)", "BALANCED", "LOW DATA"];
+            let q_idx = match q_mode {
+                0 => 0,
+                1 | 2 => 1,
+                3 => 2,
+                _ => 3,
             };
-            let _ = DrawTextW(hdc, &mut m1_hint, &mut m1_hint_rc, DT_SINGLELINE | DT_VCENTER);
-
-            let scale_labels = [
-                "⛶  AUTO FIT (ASPECT RATIO)",
-                "↔  STRETCH TO WINDOW",
-                "1:1  ORIGINAL PIXELS",
-            ];
-            draw_segmented_strip(strip_x, m1_y + 74, strip_w, 42, &scale_labels, mode as usize);
-
-            // Module 2: Text Clarity & Quality Preset (5 integrated segments)
-            let m2_y = m1_y + m1_h + 16;
-            let m2_h = 132;
-            draw_module_panel(m2_y, m2_h, "CLARITY", "IMAGE QUALITY & SUBPIXEL TEXT PRESET");
-
-            let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-            SetTextColor(hdc, PK_MUTED);
-            let mut m2_hint: Vec<u16> =
-                "4:4:4 Chroma preserves razor-sharp ClearType text edges; Auto ABR adapts dynamically:"
-                    .encode_utf16()
-                    .collect();
-            let mut m2_hint_rc = RECT {
-                left: strip_x,
-                top: m2_y + 46,
-                right: strip_x + strip_w,
-                bottom: m2_y + 68,
-            };
-            let _ = DrawTextW(hdc, &mut m2_hint, &mut m2_hint_rc, DT_SINGLELINE | DT_VCENTER);
-
-            let q_labels = [
-                "AUTO ABR",
-                "💎 ULTRA TEXT",
-                "🎯 HIGH 4:4:4",
-                "⚖ BALANCED",
-                "🚀 FAST 4:2:0",
-            ];
-            draw_segmented_strip(strip_x, m2_y + 74, strip_w, 42, &q_labels, q_mode);
-
-            // Module 3: Active Rendering Pipeline Info
-            let m3_y = m2_y + m2_h + 16;
-            let m3_h = 96;
-            draw_module_panel(m3_y, m3_h, "ENGINE", "HYBRID GDI VIEWPORT RENDERER");
-            let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-            SetTextColor(hdc, PK_TEXT);
-            let mut m3_txt: Vec<u16> =
-                "• Motion Pass: Hardware COLORONCOLOR (60 FPS zero-lag mouse tracking)\n• Idle Sharpening Pass: Automatic HALFTONE box-filter after 140ms static frame"
-                    .encode_utf16()
-                    .collect();
-            let mut m3_rc = RECT {
-                left: strip_x,
-                top: m3_y + 46,
-                right: strip_x + strip_w,
-                bottom: m3_y + m3_h - 8,
-            };
-            let _ = DrawTextW(hdc, &mut m3_txt, &mut m3_rc, Default::default());
+            let strip2_y = m2_y + mod_hdr_h + (12.0 * s) as i32;
+            draw_segmented_strip(strip_x, strip2_y, strip_w, strip_h, &q_labels, q_idx);
         }
 
         1 => {
-            // =================================================================
-            // CATEGORY 1: ADAPTIVE BITRATE (ABR)
-            // =================================================================
-            let m1_y = content_y;
-            let m1_h = 132;
-            draw_module_panel(m1_y, m1_h, "ABR MODE", "DYNAMIC BITRATE CONTROLLER PROFILE");
-
-            let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-            SetTextColor(hdc, PK_MUTED);
-            let mut m1_hint: Vec<u16> =
-                "Choose 'AUTO ABR' for automatic network speed adaptation or lock a fixed encoder tier:"
-                    .encode_utf16()
-                    .collect();
-            let mut m1_hint_rc = RECT {
-                left: strip_x,
-                top: m1_y + 46,
-                right: strip_x + strip_w,
-                bottom: m1_y + 68,
-            };
-            let _ = DrawTextW(hdc, &mut m1_hint, &mut m1_hint_rc, DT_SINGLELINE | DT_VCENTER);
-
-            let q_labels = [
-                "AUTO ABR",
-                "💎 ULTRA (Q88)",
-                "🎯 HIGH (Q78)",
-                "⚖ BALANCED (Q72)",
-                "🚀 LOW DATA (Q60)",
-            ];
-            draw_segmented_strip(strip_x, m1_y + 74, strip_w, 42, &q_labels, q_mode);
-
-            // Module 2: Live ABR Telemetry Matrix (4 sharp integrated metric cells)
-            let m2_y = m1_y + m1_h + 16;
-            let m2_h = 148;
-            draw_module_panel(m2_y, m2_h, "METRICS", "REAL-TIME NETWORK & ENCODER TELEMETRY");
-
-            let cell_w = strip_w / 4;
-            let cell_y = m2_y + 50;
-            let cell_h = 82;
-            let metrics = [
-                ("LIVE THROUGHPUT", bitrate_str.clone()),
-                ("ROUND-TRIP PING", format!("{} ms", rtt_ms)),
-                ("ACTIVE QUANTIZER", format!("JPEG Q{}", active_q)),
-                ("CHROMA SAMPLING", chroma_str.to_string()),
-            ];
-
-            for (i, (m_lbl, m_val)) in metrics.iter().enumerate() {
-                let cx = strip_x + (i as i32) * cell_w;
-                let cw = if i == 3 { strip_x + strip_w - cx } else { cell_w };
-                draw_rounded_box(hdc, cx, cell_y, cw, cell_h, PK_INPUT_BG, PK_CARD_BORDER, 0);
-
-                let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-                SetTextColor(hdc, PK_MUTED);
-                let mut mlw: Vec<u16> = m_lbl.encode_utf16().collect();
-                let mut ml_rc = RECT {
-                    left: cx + 12,
-                    top: cell_y + 10,
-                    right: cx + cw - 8,
-                    bottom: cell_y + 32,
-                };
-                let _ = DrawTextW(hdc, &mut mlw, &mut ml_rc, DT_SINGLELINE | DT_VCENTER);
-
-                let _ = SelectObject(hdc, HGDIOBJ(font_title.0));
-                SetTextColor(hdc, PK_GREEN_DARK);
-                let mut mvw: Vec<u16> = m_val.encode_utf16().collect();
-                let mut mv_rc = RECT {
-                    left: cx + 12,
-                    top: cell_y + 36,
-                    right: cx + cw - 8,
-                    bottom: cell_y + 72,
-                };
-                let _ = DrawTextW(hdc, &mut mvw, &mut mv_rc, DT_SINGLELINE | DT_VCENTER);
-            }
-        }
-
-        2 => {
-            // =================================================================
-            // CATEGORY 2: INPUT & FRAMERATE
-            // =================================================================
-            let m1_y = content_y;
-            let m1_h = 132;
-            draw_module_panel(m1_y, m1_h, "FRAMERATE", "TARGET STREAM CAPTURE RATE (FPS)");
-
-            let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-            SetTextColor(hdc, PK_MUTED);
-            let mut m1_hint: Vec<u16> =
-                "Higher framerate delivers smoother remote mouse feedback on fast connections:"
-                    .encode_utf16()
-                    .collect();
-            let mut m1_hint_rc = RECT {
-                left: strip_x,
-                top: m1_y + 46,
-                right: strip_x + strip_w,
-                bottom: m1_y + 68,
-            };
-            let _ = DrawTextW(hdc, &mut m1_hint, &mut m1_hint_rc, DT_SINGLELINE | DT_VCENTER);
-
+            // Module 1: Framerate
+            draw_module_panel(m1_y, m1_h, "FRAMERATE", "TARGET STREAM FRAMERATE");
+            let fps_labels = ["30 FPS", "60 FPS", "120 FPS"];
             let fps_idx = match fps {
                 30 => 0,
                 120 => 2,
                 _ => 1,
             };
-            let fps_labels = [
-                "30 FPS  (POWER SAVER)",
-                "60 FPS  (SMOOTH DEFAULT)",
-                "120 FPS  (ULTRA LOW LATENCY)",
-            ];
-            draw_segmented_strip(strip_x, m1_y + 74, strip_w, 42, &fps_labels, fps_idx);
+            let strip1_y = m1_y + mod_hdr_h + (12.0 * s) as i32;
+            draw_segmented_strip(strip_x, strip1_y, strip_w, strip_h, &fps_labels, fps_idx);
 
-            // Module 2: Remote Cursor Synchronization (2-segment ON/OFF switch)
-            let m2_y = m1_y + m1_h + 16;
-            let m2_h = 132;
-            draw_module_panel(m2_y, m2_h, "CURSOR", "REMOTE HOST CURSOR OVERLAY");
-
-            let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-            SetTextColor(hdc, PK_MUTED);
-            let mut m2_hint: Vec<u16> =
-                "Control whether the remote computer's cursor is rendered inside the video stream:"
-                    .encode_utf16()
-                    .collect();
-            let mut m2_hint_rc = RECT {
-                left: strip_x,
-                top: m2_y + 46,
-                right: strip_x + strip_w,
-                bottom: m2_y + 68,
-            };
-            let _ = DrawTextW(hdc, &mut m2_hint, &mut m2_hint_rc, DT_SINGLELINE | DT_VCENTER);
-
+            // Module 2: Remote Cursor
+            draw_module_panel(m2_y, m2_h, "CURSOR", "REMOTE CURSOR DISPLAY");
+            let cur_labels = ["SHOW CURSOR", "HIDE CURSOR"];
             let cursor_on = CAPTURE_CURSOR.load(Ordering::Relaxed);
-            let cur_labels = [
-                "☑  SHOW REMOTE CURSOR (ENABLED)",
-                "☐  HIDE REMOTE CURSOR (DISABLED)",
-            ];
-            draw_segmented_strip(
-                strip_x,
-                m2_y + 74,
-                strip_w,
-                42,
-                &cur_labels,
-                if cursor_on { 0 } else { 1 },
-            );
+            let strip2_y = m2_y + mod_hdr_h + (12.0 * s) as i32;
+            draw_segmented_strip(strip_x, strip2_y, strip_w, strip_h, &cur_labels, if cursor_on { 0 } else { 1 });
         }
 
         _ => {
-            // =================================================================
-            // CATEGORY 3: CONNECTION STATUS (Direct P2P Architecture & Diagnostics)
-            // =================================================================
-            let m1_y = content_y;
-            let m1_h = 260;
-            draw_module_panel(
-                m1_y,
-                m1_h,
-                "NETWORK",
-                "END-TO-END DIRECT P2P UDP TRANSPORT DIAGNOSTICS",
-            );
-
-            let local_id = {
-                let guard = LOCAL_DESKY_ID.lock().unwrap();
-                if !guard.is_empty() {
-                    guard.clone()
-                } else {
-                    "Assigned on Host".to_string()
-                }
-            };
+            // Module 1: Connection & Region Information
+            let conn_h = (220.0 * s) as i32;
+            draw_module_panel(m1_y, conn_h, "CONNECTION", "SESSION & REGION DETAILS");
 
             let rows = [
-                ("TRANSPORT ARCHITECTURE", "100% Direct Peer-to-Peer UDP (Zero VDS Relay)"),
-                ("VDS MATCHMAKER ROLE", "Lightweight ID Lookup & NAT Hole-Punching Only"),
-                ("LOCAL DESKY ID", local_id.as_str()),
-                ("REMOTE DESKTOP RESOLUTION", res_str.as_str()),
-                ("LIVE STREAM BITRATE", bitrate_str.as_str()),
-                ("MEASURED ROUND-TRIP PING", &format!("{} ms", rtt_ms)),
+                ("SERVER REGION", "Istanbul (TR)"),
+                ("LATENCY (RTT)", &format!("{} ms", rtt_ms)),
+                ("STREAM BITRATE", bitrate_str.as_str()),
+                ("REMOTE RESOLUTION", res_str.as_str()),
+                ("CONNECTION TYPE", "Direct P2P UDP"),
+                ("ENCRYPTION", "ChaCha20-Poly1305 E2EE"),
             ];
 
+            let row_h = (26.0 * s) as i32;
             for (i, (k, v)) in rows.iter().enumerate() {
-                let ry = m1_y + 46 + (i as i32) * 34;
+                let ry = m1_y + mod_hdr_h + 8 + (i as i32) * (row_h + 3);
                 let row_bg = if i % 2 == 0 { PK_INPUT_BG } else { PK_CARD };
-                draw_rounded_box(hdc, strip_x, ry, strip_w, 34, row_bg, PK_CARD_BORDER, 0);
+                draw_rounded_box(hdc, strip_x, ry, strip_w, row_h, row_bg, PK_CARD_BORDER, 0);
 
                 let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
                 SetTextColor(hdc, PK_MUTED);
                 let mut kw: Vec<u16> = k.encode_utf16().collect();
                 let mut k_rc = RECT {
-                    left: strip_x + 14,
+                    left: strip_x + 12,
                     top: ry,
-                    right: strip_x + 250,
-                    bottom: ry + 34,
+                    right: strip_x + (180.0 * s) as i32,
+                    bottom: ry + row_h,
                 };
                 let _ = DrawTextW(hdc, &mut kw, &mut k_rc, DT_SINGLELINE | DT_VCENTER);
 
@@ -1297,24 +1069,22 @@ unsafe fn draw_fullscreen_settings_view(
                 SetTextColor(hdc, PK_GREEN_DARK);
                 let mut vw: Vec<u16> = v.encode_utf16().collect();
                 let mut v_rc = RECT {
-                    left: strip_x + 260,
+                    left: strip_x + (190.0 * s) as i32,
                     top: ry,
-                    right: strip_x + strip_w - 14,
-                    bottom: ry + 34,
+                    right: strip_x + strip_w - 12,
+                    bottom: ry + row_h,
                 };
                 let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_SINGLELINE | DT_VCENTER);
             }
         }
     }
 
-    // =========================================================================
-    // BOTTOM INTEGRATED STATUS & ACTION BAR (Docked at bottom of workspace)
-    // =========================================================================
-    let footer_h = 46;
-    let footer_y = (client_h - footer_h - 20).max(content_y + 390);
+    // Bottom Action Bar
+    let footer_h = (40.0 * s) as i32;
+    let footer_y = (client_h - footer_h - (16.0 * s) as i32).max(m2_y + m2_h + (16.0 * s) as i32);
     draw_rounded_box(hdc, work_x, footer_y, work_w, footer_h, PK_CARD, PK_CARD_BORDER, 0);
 
-    let apply_w = 270;
+    let apply_w = (220.0 * s) as i32;
     let apply_x = work_x + work_w - apply_w;
     let apply_rc = RECT {
         left: apply_x,
@@ -1326,20 +1096,17 @@ unsafe fn draw_fullscreen_settings_view(
 
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let mut done_txt: Vec<u16> = "✓  APPLY & RETURN TO STREAM".encode_utf16().collect();
+    let mut done_txt: Vec<u16> = "APPLY & CLOSE".encode_utf16().collect();
     let mut done_rc = apply_rc;
     let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
     SetTextColor(hdc, PK_MUTED);
-    let mut hint_txt: Vec<u16> =
-        "SHORTCUT: Press [Tab] or [Esc] anytime to toggle this Decky Settings Dashboard"
-            .encode_utf16()
-            .collect();
+    let mut hint_txt: Vec<u16> = "Press [Tab] or [Esc] to return to stream".encode_utf16().collect();
     let mut hint_rc = RECT {
-        left: work_x + 16,
+        left: work_x + 14,
         top: footer_y,
-        right: apply_x - 12,
+        right: apply_x - 10,
         bottom: footer_y + footer_h,
     };
     let _ = DrawTextW(hdc, &mut hint_txt, &mut hint_rc, DT_SINGLELINE | DT_VCENTER);
@@ -2157,15 +1924,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                             }
                         }
 
-                        // 4. Card 4: SYSTEM & NETWORK (Bottom Right)
+                        // 4. Card 4: SECURITY & SERVER (Bottom Right)
                         draw_rounded_box(mem_dc, col2_x, col_y, col_w, col_h, PK_CARD, PK_CARD_BORDER, 12);
 
-                        let tag4_w = (142.0 * l.font_scale) as i32;
+                        let tag4_w = (146.0 * l.font_scale) as i32;
                         let tag4_h = (22.0 * l.font_scale) as i32;
                         draw_rounded_box(mem_dc, col2_x + 18, col_y + 14, tag4_w, tag4_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                         SetTextColor(mem_dc, PK_MUTED);
-                        let mut tag4: Vec<u16> = "SYSTEM & NETWORK".encode_utf16().collect();
+                        let mut tag4: Vec<u16> = "SECURITY & SERVER".encode_utf16().collect();
                         let mut tag4_rect = RECT { left: col2_x + 18, top: col_y + 14, right: col2_x + 18 + tag4_w, bottom: col_y + 14 + tag4_h };
                         let _ = DrawTextW(mem_dc, &mut tag4, &mut tag4_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
@@ -2177,21 +1944,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
 
-                        let net_status = if is_online {
+                        let srv_status = if is_online {
                             if ping > 0 {
-                                format!("131.222.194.92:21116  •  {}ms", ping)
+                                format!("Istanbul (TR)  •  {}ms", ping)
                             } else {
-                                "131.222.194.92:21116  •  Online".to_string()
+                                "Istanbul (TR)  •  Online".to_string()
                             }
                         } else {
-                            "131.222.194.92:21116  •  Offline".to_string()
+                            "Istanbul (TR)  •  Offline".to_string()
                         };
 
+                        let host_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows PC".into());
+
                         let diag_lines = [
-                            ("Matchmaker:", net_status),
-                            ("P2P Traversal:", "Direct UDP P2P + Relay Ready".to_string()),
-                            ("Render Pipeline:", "DirectX DXGI (GPU Duplication)".to_string()),
-                            ("Audio & Input:", "WASAPI Loopback • 60 FPS Engine".to_string()),
+                            ("Server Region:", srv_status),
+                            ("Security Mode:", "End-to-End Encrypted".to_string()),
+                            ("This Machine:", host_name),
+                            ("Access Control:", "Interactive User Approval".to_string()),
                         ];
 
                         let line_h = (diag_box_h - 8) / 4;
@@ -2509,25 +2278,29 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             let client_w = rect.right - rect.left;
             let client_h = rect.bottom - rect.top;
 
-            // 1. If Full-Screen Settings Page is open, handle all Decky/AnyDesk settings controls!
+                        // 1. If Full-Screen Settings Page is open, handle settings controls
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                let hdr_h = 52;
-                let side_w = 250;
-                let back_w = 220;
+                let scale_w = client_w as f32 / 1024.0;
+                let scale_h = client_h as f32 / 640.0;
+                let s = (scale_w.min(scale_h)).clamp(0.80, 1.40);
+
+                let hdr_h = (46.0 * s) as i32;
+                let side_w = (210.0 * s) as i32;
+                let back_w = (160.0 * s) as i32;
                 let back_x = (client_w - back_w).max(side_w + 20);
 
-                // Top-right Flush Integrated [ ← BACK TO STREAM ] button
-                if client_x >= back_x && client_x <= client_w && client_y >= 0 && client_y <= hdr_h
-                {
+                // Top-right [ < BACK TO STREAM ] button
+                if client_x >= back_x && client_x <= client_w && client_y >= 0 && client_y <= hdr_h {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                     return LRESULT(0);
                 }
 
-                // Left Integrated Navigation Dock Tabs (0..4)
-                let tab_start_y = hdr_h + 36;
-                let tab_h = 52;
+                // Left Navigation Dock Tabs (0..3)
+                let nav_hdr_h = (32.0 * s) as i32;
+                let tab_start_y = hdr_h + nav_hdr_h;
+                let tab_h = (44.0 * s) as i32;
                 if client_x >= 0 && client_x < side_w {
-                    for i in 0..4 {
+                    for i in 0..3 {
                         let item_y = tab_start_y + (i as i32) * tab_h;
                         if client_y >= item_y && client_y < item_y + tab_h {
                             SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
@@ -2537,21 +2310,22 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 }
 
                 // Right Workspace Geometry
-                let work_x = side_w + 28;
-                let work_w = (client_w - work_x - 28).clamp(420, 960);
-                let work_y = hdr_h + 24;
-                let content_y = work_y + 62;
-                let strip_x = work_x + 20;
-                let strip_w = work_w - 40;
+                let work_x = side_w + (24.0 * s) as i32;
+                let work_w = (client_w - work_x - (24.0 * s) as i32).clamp(360, 960);
+                let work_y = hdr_h + (20.0 * s) as i32;
+                let content_y = work_y + (44.0 * s) as i32;
+                let strip_x = work_x + (16.0 * s) as i32;
+                let strip_w = work_w - (32.0 * s) as i32;
+                let strip_h = (38.0 * s) as i32;
+                let mod_hdr_h = (32.0 * s) as i32;
 
-                let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed);
+                let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
 
-                // Helper to hit-test a segmented strip at (strip_x, strip_y, strip_w, 42)
                 let hit_segment = |strip_y: i32, count: i32| -> Option<usize> {
                     if client_x >= strip_x
                         && client_x <= strip_x + strip_w
                         && client_y >= strip_y
-                        && client_y <= strip_y + 42
+                        && client_y <= strip_y + strip_h
                     {
                         let seg_w = (strip_w / count.max(1)).max(1);
                         let idx = ((client_x - strip_x) / seg_w).clamp(0, count - 1) as usize;
@@ -2562,37 +2336,35 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                 };
 
                 let m1_y = content_y;
-                let m1_h = 132;
-                let m2_y = m1_y + m1_h + 16;
+                let m1_h = (94.0 * s) as i32;
+                let m2_y = m1_y + m1_h + (16.0 * s) as i32;
+                let m2_h = (94.0 * s) as i32;
+
+                let strip1_y = m1_y + mod_hdr_h + (12.0 * s) as i32;
+                let strip2_y = m2_y + mod_hdr_h + (12.0 * s) as i32;
 
                 match active_cat {
                     0 => {
                         // Category 0: Display & Quality
-                        // Strip 1 (m1_y + 74): 3 Viewport Scaling segments
-                        if let Some(idx) = hit_segment(m1_y + 74, 3) {
+                        if let Some(idx) = hit_segment(strip1_y, 3) {
                             DISPLAY_MODE.store(idx as u8, Ordering::Relaxed);
                             return LRESULT(0);
                         }
-                        // Strip 2 (m2_y + 74): 5 Quality / ABR segments
-                        if let Some(idx) = hit_segment(m2_y + 74, 5) {
-                            crate::p2p::set_quality_mode(idx as u8);
-                            info!("Settings: Quality / ABR mode set to {}", idx);
+                        if let Some(idx) = hit_segment(strip2_y, 4) {
+                            let target_mode = match idx {
+                                0 => 0,
+                                1 => 2,
+                                2 => 3,
+                                _ => 4,
+                            };
+                            crate::p2p::set_quality_mode(target_mode);
+                            info!("Settings: Quality preset set to mode {}", target_mode);
                             return LRESULT(0);
                         }
                     }
                     1 => {
-                        // Category 1: Adaptive Bitrate (ABR)
-                        // Strip 1 (m1_y + 74): 5 ABR Profile segments
-                        if let Some(idx) = hit_segment(m1_y + 74, 5) {
-                            crate::p2p::set_quality_mode(idx as u8);
-                            info!("Settings: Quality / ABR mode set to {}", idx);
-                            return LRESULT(0);
-                        }
-                    }
-                    2 => {
-                        // Category 2: Input & Framerate
-                        // Strip 1 (m1_y + 74): 3 Target FPS segments (30 / 60 / 120)
-                        if let Some(idx) = hit_segment(m1_y + 74, 3) {
+                        // Category 1: Framerate & Input
+                        if let Some(idx) = hit_segment(strip1_y, 3) {
                             let new_fps = match idx {
                                 0 => 30,
                                 2 => 120,
@@ -2605,8 +2377,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                             );
                             return LRESULT(0);
                         }
-                        // Strip 2 (m2_y + 74): 2 Remote Cursor segments (0 = Enabled, 1 = Disabled)
-                        if let Some(idx) = hit_segment(m2_y + 74, 2) {
+                        if let Some(idx) = hit_segment(strip2_y, 2) {
                             let enabled = idx == 0;
                             CAPTURE_CURSOR.store(enabled, Ordering::Relaxed);
                             crate::p2p::update_client_preferences(
@@ -2619,10 +2390,10 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
                     _ => {}
                 }
 
-                // Bottom Integrated [ ✓ APPLY & RETURN TO STREAM ] button
-                let footer_h = 46;
-                let footer_y = (client_h - footer_h - 20).max(content_y + 390);
-                let apply_w = 270;
+                // Bottom [ APPLY & CLOSE ] button
+                let footer_h = (40.0 * s) as i32;
+                let footer_y = (client_h - footer_h - (16.0 * s) as i32).max(m2_y + m2_h + (16.0 * s) as i32);
+                let apply_w = (220.0 * s) as i32;
                 let apply_x = work_x + work_w - apply_w;
                 if client_x >= apply_x
                     && client_x <= work_x + work_w
