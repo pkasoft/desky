@@ -1,10 +1,14 @@
 pub mod capture;
 pub mod input;
+pub mod server2022;
 pub mod ui;
 
 pub use ui::set_assigned_desky_id;
 
 pub fn run() -> anyhow::Result<()> {
+    // Initialize Windows Server & High-DPI platform compatibility
+    server2022::init_server_compatibility();
+
     let ident = crate::identity::load_or_create_identity();
     tracing::info!(
         "Loaded Client Identity: Machine GUID = {}, Cached ID = {:?}",
