@@ -1,8 +1,9 @@
 use crate::p2p::state::{
     fix_loopback_peer, format_id_display, host_socket_store, host_subscribers_store,
-    normalize_id, pending_approval_store, AuthState, ClientSubscriber, PendingApprovalRequest,
-    AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO,
-    PKT_DISCONNECT, PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG,
+    normalize_id, pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
+    PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
+    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
+    PKT_LAN_DISCOVERY, PKT_PONG,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -127,11 +128,13 @@ impl P2PManager {
                     });
                 }
 
-                // Dedicated Host Screen Capture & Direct P2P Streamer Thread
+                // Dedicated Host Screen Capture & Direct P2P / Relay Streamer Thread
                 {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
                     let socket_stream = Arc::clone(&socket);
+                    let current_id_stream = Arc::clone(&current_id);
+                    let target_server_stream = target_server;
 
                     std::thread::spawn(move || {
                         let stream_rt = match tokio::runtime::Builder::new_current_thread()
@@ -259,9 +262,17 @@ impl P2PManager {
                                                 pkt.extend_from_slice(chunk);
 
                                                 for sub in &subscribers {
-                                                    let _ = socket_stream
-                                                        .send_to(&pkt, sub.addr)
-                                                        .await;
+                                                    if sub.is_direct {
+                                                        let _ = socket_stream
+                                                            .send_to(&pkt, sub.addr)
+                                                            .await;
+                                                    } else {
+                                                        let my_id = current_id_stream.read().await;
+                                                        let relay_pkt = wrap_relay_packet(&my_id, &pkt);
+                                                        let _ = socket_stream
+                                                            .send_to(&relay_pkt, target_server_stream)
+                                                            .await;
+                                                    }
                                                 }
 
                                                 // Fast micro-pacing (140µs every 6 chunks = ~1ms total per frame)
@@ -363,6 +374,7 @@ impl P2PManager {
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
                                             }
+                                            let is_from_server = from_addr == target_server;
                                             let entry = map
                                                 .entry(client_key.clone())
                                                 .or_insert_with(|| {
@@ -381,10 +393,14 @@ impl P2PManager {
                                                         jpeg_quality: q_val,
                                                         scale_pct: sc_val,
                                                         chroma_444: c444,
+                                                        is_direct: !is_from_server,
                                                     }
                                                 });
                                             entry.client_id = client_id_disp.clone();
-                                            entry.addr = from_addr;
+                                            if !is_from_server {
+                                                entry.is_direct = true;
+                                                entry.addr = from_addr;
+                                            }
                                             entry.last_seen = Instant::now();
                                             entry.target_fps = fps;
                                             entry.capture_cursor = cur;
@@ -423,12 +439,16 @@ impl P2PManager {
                                         }
                                     }
 
-                                    // Send Auth Status packet directly back to Client
+                                    // Send Auth Status packet back to Client (directly and via relay fallback)
                                     let mut auth_pkt = Vec::with_capacity(6);
                                     auth_pkt.extend_from_slice(MAGIC_DSKY);
                                     auth_pkt.push(PKT_AUTH_STATUS);
                                     auth_pkt.push(auth_status_byte);
                                     let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
+
+                                    let my_id = current_id_clone.read().await.clone();
+                                    let relay_auth = wrap_relay_packet(&my_id, &auth_pkt);
+                                    let _ = socket_recv.send_to(&relay_auth, target_server).await;
 
                                     // Reply with Pong if timestamp included
                                     if slice.len() >= 11 {
@@ -437,6 +457,10 @@ impl P2PManager {
                                         pong.push(PKT_PONG);
                                         pong.extend_from_slice(&slice[7..11]);
                                         let _ = socket_recv.send_to(&pong, from_addr).await;
+                                        if from_addr == target_server {
+                                            let relay_pong = wrap_relay_packet(&my_id, &pong);
+                                            let _ = socket_recv.send_to(&relay_pong, target_server).await;
+                                        }
                                     }
                                 }
                                 PKT_INPUT_EVENT => {
@@ -514,14 +538,23 @@ impl P2PManager {
                                         // Immediately register incoming peer & show Accept/Decline dialog on Host!
                                         // (Even before direct UDP hole-punch completes across symmetric/same-IP NATs)
                                         let mut need_ui_prompt = false;
+                                        let mut is_already_approved = false;
                                         if let Ok(mut map) = clients_recv.lock() {
+                                            for sub in map.values_mut() {
+                                                if sub.auth_state == AuthState::Approved {
+                                                    is_already_approved = true;
+                                                    sub.addr = client_addr;
+                                                    sub.last_seen = Instant::now();
+                                                }
+                                            }
+
                                             let already_active = map.values().any(|sub| {
                                                 sub.addr == client_addr
                                                     || (sub.auth_state == AuthState::Pending
                                                         && sub.last_seen.elapsed()
                                                             < Duration::from_secs(12))
                                             });
-                                            if !already_active {
+                                            if !already_active && !is_already_approved {
                                                 need_ui_prompt = true;
                                                 map.insert(
                                                     client_key.clone(),
@@ -538,8 +571,26 @@ impl P2PManager {
                                                         jpeg_quality: 76,
                                                         scale_pct: 100,
                                                         chroma_444: true,
+                                                        is_direct: true,
                                                     },
                                                 );
+                                            }
+                                        }
+
+                                        let my_id = current_id_clone.read().await.clone();
+
+                                        // If already approved, immediately resend approval to new endpoint and via relay!
+                                        if is_already_approved {
+                                            let mut auth_pkt = Vec::with_capacity(6);
+                                            auth_pkt.extend_from_slice(MAGIC_DSKY);
+                                            auth_pkt.push(PKT_AUTH_STATUS);
+                                            auth_pkt.push(AUTH_APPROVED);
+                                            for _ in 0..3 {
+                                                let _ = socket_recv.send_to(&auth_pkt, client_addr).await;
+                                            }
+                                            let relay_auth = wrap_relay_packet(&my_id, &auth_pkt);
+                                            for _ in 0..3 {
+                                                let _ = socket_recv.send_to(&relay_auth, target_server).await;
                                             }
                                         }
 
@@ -566,22 +617,19 @@ impl P2PManager {
                                             }
                                         }
 
-                                        let my_id = current_id_clone.read().await.clone();
-                                        let punch = SignalMsg::Punch { from_id: my_id };
+                                        let punch = SignalMsg::Punch { from_id: my_id.clone() };
                                         if let Ok(pbytes) = serde_json::to_vec(&punch) {
                                             let sock_punch = Arc::clone(&socket_recv);
                                             tokio::spawn(async move {
-                                                // Probe the reported port + neighboring ports (+0..+12) to pierce Symmetric NATs!
                                                 let base_ip = client_addr.ip();
                                                 let base_port = client_addr.port();
-                                                for _ in 0..8 {
+                                                for _ in 0..50 {
                                                     let _ = sock_punch
                                                         .send_to(&pbytes, client_addr)
                                                         .await;
-                                                    for offset in 1..=12u16 {
-                                                        if let Some(p) =
-                                                            base_port.checked_add(offset)
-                                                        {
+                                                    for offset in -6i32..=6i32 {
+                                                        let p = (base_port as i32 + offset) as u16;
+                                                        if p > 1024 {
                                                             let _ = sock_punch
                                                                 .send_to(
                                                                     &pbytes,
@@ -590,7 +638,7 @@ impl P2PManager {
                                                                 .await;
                                                         }
                                                     }
-                                                    tokio::time::sleep(Duration::from_millis(25))
+                                                    tokio::time::sleep(Duration::from_millis(50))
                                                         .await;
                                                 }
                                             });
@@ -638,9 +686,11 @@ impl P2PManager {
                                                         jpeg_quality: 76,
                                                         scale_pct: 100,
                                                         chroma_444: true,
+                                                        is_direct: true,
                                                     }
                                                 });
                                             entry.client_id = client_id_disp.clone();
+                                            entry.is_direct = true;
                                             entry.addr = from_addr;
                                             entry.last_seen = Instant::now();
 

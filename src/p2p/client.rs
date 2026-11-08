@@ -1,12 +1,12 @@
 use crate::p2p::state::{
     apply_preset_for_mode, decode_jpeg_to_bgra, fix_loopback_peer, frame_store,
     get_active_quality_params, input_notify, input_store, normalize_id, resolve_server_addr,
-    set_session_status, update_client_preferences, SessionStatus, ACTIVE_CHROMA_444,
-    ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING,
-    CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN, CLIENT_TARGET_FPS,
-    MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK,
-    PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE, SESSION_BITRATE_KBPS,
-    SESSION_RTT_MS,
+    set_session_status, update_client_preferences, wrap_relay_packet, SessionStatus,
+    ACTIVE_CHROMA_444, ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED,
+    AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
+    CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
+    PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
+    SESSION_BITRATE_KBPS, SESSION_RTT_MS,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -118,6 +118,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             }
 
             let mut peer_addr: Option<SocketAddr> = None;
+            let mut is_direct_peer = false;
             let mut host_contacted = false;
             let mut buf = vec![0u8; 65536];
             let mut partial_frame: Option<PartialFrame> = None;
@@ -231,7 +232,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 if !host_contacted
                     && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200)
                 {
-                    if session_start.elapsed() > Duration::from_secs(15) {
+                    // Generous 90s connection window giving remote user ample time to click Accept
+                    if session_start.elapsed() > Duration::from_secs(90) {
                         let msg = format!(
                             "Timed out connecting to Desky ID '{}'",
                             display_target
@@ -261,7 +263,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_matchmaker_retry = Instant::now();
                 }
 
-                // Periodically send ClientHello / KeepAlive with ABR quality parameters & client ID directly to peer
+                // Periodically send ClientHello with ABR quality parameters (Dual-Path: Direct P2P + VDS Relay)
                 let hello_interval = if received_any_frame {
                     Duration::from_millis(350)
                 } else {
@@ -269,33 +271,33 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 };
 
                 if last_hello.elapsed() >= hello_interval {
+                    let fps = CLIENT_TARGET_FPS.load(Ordering::Relaxed).clamp(10, 60) as u8;
+                    let cur = if CLIENT_CAPTURE_CURSOR.load(Ordering::Relaxed) {
+                        1u8
+                    } else {
+                        0u8
+                    };
+                    let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
+                    let (q_val, sc_val, c444) = get_active_quality_params();
+
+                    let mut hello = Vec::with_capacity(23);
+                    hello.extend_from_slice(MAGIC_DSKY);
+                    hello.push(PKT_CLIENT_HELLO);
+                    hello.push(fps);
+                    hello.push(cur);
+                    hello.extend_from_slice(&ts_ms.to_le_bytes());
+                    hello.push(q_val);
+                    hello.push(sc_val);
+                    hello.push(if c444 { 1u8 } else { 0u8 });
+                    hello.extend_from_slice(my_id_padded.as_bytes());
+
+                    // 1. Direct path
                     if let Some(p_addr) = peer_addr {
-                        let fps = CLIENT_TARGET_FPS.load(Ordering::Relaxed).clamp(10, 60) as u8;
-                        let cur = if CLIENT_CAPTURE_CURSOR.load(Ordering::Relaxed) {
-                            1u8
-                        } else {
-                            0u8
-                        };
-                        let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
-                        let (q_val, sc_val, c444) = get_active_quality_params();
-
-                        let mut hello = Vec::with_capacity(23);
-                        hello.extend_from_slice(MAGIC_DSKY);
-                        hello.push(PKT_CLIENT_HELLO);
-                        hello.push(fps);
-                        hello.push(cur);
-                        hello.extend_from_slice(&ts_ms.to_le_bytes());
-                        hello.push(q_val);
-                        hello.push(sc_val);
-                        hello.push(if c444 { 1u8 } else { 0u8 });
-                        hello.extend_from_slice(my_id_padded.as_bytes());
-
                         let _ = socket.send_to(&hello, p_addr).await;
-                        if !host_contacted {
-                            // Also probe neighboring ports (+1..+8) in case the Host's router uses Symmetric NAT
+                        if !is_direct_peer {
                             let base_ip = p_addr.ip();
                             let base_port = p_addr.port();
-                            for offset in 1..=8u16 {
+                            for offset in 1..=6u16 {
                                 if let Some(p) = base_port.checked_add(offset) {
                                     let _ = socket
                                         .send_to(&hello, SocketAddr::new(base_ip, p))
@@ -304,10 +306,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             }
                         }
                     }
+
+                    // 2. Relay fallback (Always works across Symmetric CGNAT / Restricted NAT)
+                    if !is_direct_peer {
+                        let relay_hello = wrap_relay_packet(&norm_target, &hello);
+                        let _ = socket.send_to(&relay_hello, server_addr).await;
+                    }
+
                     last_hello = Instant::now();
                 }
 
-                // Flush queued remote input events immediately over direct P2P UDP
+                // Flush queued remote input events immediately over direct P2P or Relay
                 let queued_inputs: Vec<InputEvent> = {
                     if let Ok(mut q) = input_store().lock() {
                         std::mem::take(&mut *q)
@@ -316,14 +325,19 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 };
                 if !queued_inputs.is_empty() && received_any_frame {
-                    if let Some(p_addr) = peer_addr {
-                        for ev in queued_inputs {
-                            if let Ok(ev_bytes) = serde_json::to_vec(&ev) {
-                                let mut pkt = Vec::with_capacity(5 + ev_bytes.len());
-                                pkt.extend_from_slice(MAGIC_DSKY);
-                                pkt.push(PKT_INPUT_EVENT);
-                                pkt.extend_from_slice(&ev_bytes);
+                    for ev in queued_inputs {
+                        if let Ok(ev_bytes) = serde_json::to_vec(&ev) {
+                            let mut pkt = Vec::with_capacity(5 + ev_bytes.len());
+                            pkt.extend_from_slice(MAGIC_DSKY);
+                            pkt.push(PKT_INPUT_EVENT);
+                            pkt.extend_from_slice(&ev_bytes);
+
+                            if let Some(p_addr) = peer_addr {
                                 let _ = socket.send_to(&pkt, p_addr).await;
+                            }
+                            if !is_direct_peer {
+                                let relay_input = wrap_relay_packet(&norm_target, &pkt);
+                                let _ = socket.send_to(&relay_input, server_addr).await;
                             }
                         }
                     }
@@ -340,7 +354,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
                                 let pkt_type = slice[4];
                                 host_contacted = true;
-                                peer_addr = Some(from_addr);
+                                if from_addr != server_addr {
+                                    is_direct_peer = true;
+                                    peer_addr = Some(from_addr);
+                                } else if peer_addr.is_none() {
+                                    peer_addr = Some(server_addr);
+                                }
 
                                 match pkt_type {
                                     PKT_PONG => {
@@ -479,20 +498,38 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         if let Ok(parsed) = peer_public_addr.parse::<SocketAddr>() {
                                             let resolved = fix_loopback_peer(parsed, server_addr);
                                             info!(
-                                                "⚡ Peer '{}' resolved at {}. Punching Direct UDP tunnel...",
+                                                "⚡ Peer '{}' resolved at {}. Starting Direct UDP Hole-Punching & Relay fallback...",
                                                 display_target, resolved
                                             );
                                             if peer_addr.is_none() {
                                                 peer_addr = Some(resolved);
                                             }
-                                            let punch = SignalMsg::Punch {
-                                                from_id: my_id_padded.clone(),
-                                            };
-                                            if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                                for _ in 0..4 {
-                                                    let _ = socket.send_to(&pbytes, resolved).await;
+
+                                            // Continuous hole-puncher probe task
+                                            let sock_punch = Arc::clone(&socket);
+                                            let my_punch_id = my_id_padded.clone();
+                                            tokio::spawn(async move {
+                                                let punch = SignalMsg::Punch {
+                                                    from_id: my_punch_id,
+                                                };
+                                                if let Ok(pbytes) = serde_json::to_vec(&punch) {
+                                                    let base_ip = resolved.ip();
+                                                    let base_port = resolved.port();
+                                                    for _ in 0..50 {
+                                                        let _ = sock_punch.send_to(&pbytes, resolved).await;
+                                                        for offset in -6i32..=6i32 {
+                                                            let target_p = (base_port as i32 + offset) as u16;
+                                                            if target_p > 1024 {
+                                                                let _ = sock_punch
+                                                                    .send_to(&pbytes, SocketAddr::new(base_ip, target_p))
+                                                                    .await;
+                                                            }
+                                                        }
+                                                        tokio::time::sleep(Duration::from_millis(50)).await;
+                                                    }
                                                 }
-                                            }
+                                            });
+
                                             // Also immediately fire a ClientHello so the host sees the request right away
                                             last_hello = Instant::now() - Duration::from_secs(10);
                                         }

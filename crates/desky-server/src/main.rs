@@ -45,6 +45,9 @@ pub enum SignalMsg {
     PunchAck,
 }
 
+pub const MAGIC_DSKY: &[u8; 4] = b"DSKY";
+pub const PKT_RELAY: u8 = 0x08;
+
 struct HostEntry {
     addr: SocketAddr,
     last_seen: Instant,
@@ -210,18 +213,20 @@ async fn main() -> Result<()> {
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
 
     info!("========================================================");
-    info!(" ⚡ DESKY P2P MATCHMAKER SERVER (AnyDesk ID & SQLite)");
+    info!(" ⚡ DESKY P2P MATCHMAKER & RELAY SERVER");
     info!(" Listening on: UDP {}", bind_addr);
     info!(" Database: SQLite '{}'", db_path);
-    info!(" Mode: Direct UDP Hole-Punching (STUN/ICE Rendezvous)");
-    info!(" Bandwidth Cost: ~0 (All video & audio bypass this VDS)");
-    info!(" Ready for peer matchmaking!");
+    info!(" Mode: Direct UDP Hole-Punching + Instant Zero-Copy Relay");
+    info!(" Ready for peer matchmaking and high-speed data forwarding!");
     info!("========================================================");
 
     let hosts: Arc<RwLock<HashMap<String, HostEntry>>> = Arc::new(RwLock::new(HashMap::new()));
+    let client_sessions: Arc<RwLock<HashMap<String, SocketAddr>>> =
+        Arc::new(RwLock::new(HashMap::new()));
 
     // Background task: Purge expired host routing entries that missed heartbeats (> 60 seconds)
     let cleaner_hosts = Arc::clone(&hosts);
+    let cleaner_sessions = Arc::clone(&client_sessions);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
@@ -238,11 +243,13 @@ async fn main() -> Result<()> {
             });
             if table.len() != before_count {
                 info!("[STATE] Active online hosts: {}", table.len());
+                let mut s_table = cleaner_sessions.write().await;
+                s_table.retain(|k, _| table.contains_key(k));
             }
         }
     });
 
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; 65536];
 
     loop {
         let (len, src_addr) = match socket.recv_from(&mut buf).await {
@@ -253,6 +260,45 @@ async fn main() -> Result<()> {
             }
         };
 
+        // Instant Zero-Copy UDP Relay (Pierces Symmetric CGNAT / Restricted Firewall seamlessly)
+        if len >= 14 && &buf[0..4] == MAGIC_DSKY && buf[4] == PKT_RELAY {
+            let target_raw = String::from_utf8_lossy(&buf[5..14]);
+            let norm_target = normalize_id(&target_raw);
+            let payload = buf[14..len].to_vec();
+
+            let socket_relay = Arc::clone(&socket);
+            let hosts_relay = Arc::clone(&hosts);
+            let sessions_relay = Arc::clone(&client_sessions);
+
+            tokio::spawn(async move {
+                // 1. Is target a registered Host? (Client -> Host relay)
+                let host_target = {
+                    let table = hosts_relay.read().await;
+                    table.get(&norm_target).map(|e| e.addr)
+                };
+
+                if let Some(h_addr) = host_target {
+                    {
+                        let mut s_table = sessions_relay.write().await;
+                        s_table.insert(norm_target, src_addr);
+                    }
+                    let _ = socket_relay.send_to(&payload, h_addr).await;
+                    return;
+                }
+
+                // 2. Is target from Host replying to Client? (Host -> Client relay)
+                let client_target = {
+                    let s_table = sessions_relay.read().await;
+                    s_table.get(&norm_target).copied()
+                };
+
+                if let Some(c_addr) = client_target {
+                    let _ = socket_relay.send_to(&payload, c_addr).await;
+                    return;
+                }
+            });
+            continue;
+        }
 
         let msg: SignalMsg = match serde_json::from_slice(&buf[..len]) {
             Ok(m) => m,
@@ -264,6 +310,7 @@ async fn main() -> Result<()> {
 
         let socket_clone = Arc::clone(&socket);
         let hosts_clone = Arc::clone(&hosts);
+        let sessions_clone = Arc::clone(&client_sessions);
         let db_clone = Arc::clone(&db);
 
         tokio::spawn(async move {
@@ -352,6 +399,12 @@ async fn main() -> Result<()> {
                         "[CONNECT-REQ] Client {} requesting connection to Desky ID '{}'",
                         src_addr, display_id
                     );
+
+                    // Map this client address to the target host for immediate relay availability
+                    {
+                        let mut s_table = sessions_clone.write().await;
+                        s_table.insert(norm_id.clone(), src_addr);
+                    }
 
                     let host_target = {
                         let table = hosts_clone.read().await;
