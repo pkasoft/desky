@@ -67,7 +67,7 @@ pub fn spawn_progress_window() {
         let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST,
             class_name,
-            w!("Desky • File Transfer"),
+            w!("Desky | File Transfer"),
             windows::Win32::UI::WindowsAndMessaging::WS_POPUP
                 | windows::Win32::UI::WindowsAndMessaging::WS_CAPTION
                 | windows::Win32::UI::WindowsAndMessaging::WS_SYSMENU
@@ -135,11 +135,11 @@ pub(crate) unsafe extern "system" fn progress_wndproc(
 
                 // Top Badge (Sending vs Receiving)
                 let (badge_txt, badge_bg, badge_fg) = if prog.is_complete {
-                    ("✓ COMPLETED", PK_GREEN_TINT, PK_GREEN)
+                    ("COMPLETED", PK_GREEN_TINT, PK_GREEN)
                 } else if prog.is_sending {
-                    ("⬆ SENDING FILE", PK_GREEN_TINT, PK_GREEN)
+                    ("SENDING FILE", PK_GREEN_TINT, PK_GREEN)
                 } else {
-                    ("⬇ RECEIVING FILE", COLORREF(0x00FFF4EB), COLORREF(0x00DF772B))
+                    ("RECEIVING FILE", COLORREF(0x00FFF4EB), COLORREF(0x00DF772B))
                 };
 
                 let font_badge = create_segoe_font(11, FW_BOLD);
@@ -222,7 +222,7 @@ pub(crate) unsafe extern "system" fn progress_wndproc(
 
                 let cur_mb = prog.current_bytes as f64 / 1_048_576.0;
                 let tot_mb = prog.total_bytes as f64 / 1_048_576.0;
-                let stats_str = format!("{}%  •  {:.1} MB / {:.1} MB", fill_pct, cur_mb, tot_mb);
+                let stats_str = format!("{}% | {:.1} MB / {:.1} MB", fill_pct, cur_mb, tot_mb);
                 let mut s_wide: Vec<u16> = stats_str.encode_utf16().collect();
                 let mut s_rc = RECT {
                     left: 24,
@@ -233,12 +233,15 @@ pub(crate) unsafe extern "system" fn progress_wndproc(
                 let _ = DrawTextW(mem_dc, &mut s_wide, &mut s_rc, DT_SINGLELINE | DT_VCENTER);
 
                 let status_str = if prog.is_complete {
-                    "✓ Transfer Complete"
+                    "Transfer Complete"
                 } else if prog.is_sending {
                     "Uploading..."
                 } else {
                     "Downloading..."
                 };
+                if prog.is_complete {
+                    crate::ui::draw_check(mem_dc, w - 146, 100, 14, PK_GREEN, 2);
+                }
                 let mut st_wide: Vec<u16> = status_str.encode_utf16().collect();
                 let mut st_rc = RECT {
                     left: w / 2,

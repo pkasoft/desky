@@ -26,7 +26,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, IsWindow,
     LoadCursorW, SetCursor, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowTextW,
     ShowWindow, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, MINMAXINFO, SW_RESTORE, SW_SHOW,
-    WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_DROPFILES,
+    WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CHAR, WM_CLIPBOARDUPDATE, WM_DESTROY, WM_DROPFILES,
     WM_ERASEBKGND, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
     WM_RBUTTONUP, WM_SETCURSOR, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
@@ -89,6 +89,10 @@ static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
 
 // Remote cursor capture toggle (renders live host cursor on stream)
 pub(crate) static CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
+
+// Silent Admin Mode toggle: false = normal desktop stream, true = background admin manager
+pub static VIEWPORT_IS_ADMIN_MODE: AtomicBool = AtomicBool::new(false);
+static ADMIN_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
 
 
 fn map_client_to_screen(
@@ -198,7 +202,6 @@ pub unsafe fn draw_tab_bar(
     let _ = DrawTextW(hdc, &mut brand_txt, &mut brand_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     let font_tab = create_segoe_font(12, FW_SEMIBOLD);
-    let font_sym = create_segoe_font(11, FW_BOLD);
     let font_plus = create_segoe_font(16, FW_BOLD);
 
     let start_x = brand_w + 8;
@@ -237,21 +240,24 @@ pub unsafe fn draw_tab_bar(
             let _ = DeleteObject(HGDIOBJ(accent_brush.0));
         }
 
-        // Status Dot
-        let _ = SelectObject(hdc, HGDIOBJ(font_sym.0));
-        SetTextColor(hdc, if is_active { PK_GREEN } else { PK_MUTED });
-        let mut dot_txt: Vec<u16> = "●".encode_utf16().collect();
-        let mut dot_rc = RECT { left: tx + 8, top: tab_y, right: tx + 20, bottom: tab_y + tab_h };
-        let _ = DrawTextW(hdc, &mut dot_txt, &mut dot_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        // Status Dot (Vector Lucide Radio/Dot)
+        crate::ui::draw_radio(
+            hdc,
+            tx + 8,
+            tab_y + (tab_h - 12) / 2,
+            12,
+            if is_active { PK_GREEN } else { PK_MUTED },
+            2,
+        );
 
         // Tab Title Text
         let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
         SetTextColor(hdc, if is_active { PK_TEXT } else { PK_MUTED });
         let mut title_txt: Vec<u16> = tab.title.encode_utf16().collect();
-        let mut title_rc = RECT { left: tx + 22, top: tab_y, right: tx + tab_w - 24, bottom: tab_y + tab_h };
+        let mut title_rc = RECT { left: tx + 24, top: tab_y, right: tx + tab_w - 24, bottom: tab_y + tab_h };
         let _ = DrawTextW(hdc, &mut title_txt, &mut title_rc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
-        // Close button '✕'
+        // Close button (Lucide X vector)
         let close_x = tx + tab_w - 22;
         let close_y = tab_y + 6;
         let close_sz = 18;
@@ -261,31 +267,63 @@ pub unsafe fn draw_tab_bar(
             FillRect(hdc, &ch_rc, ch_brush);
             let _ = DeleteObject(HGDIOBJ(ch_brush.0));
         }
-        let _ = SelectObject(hdc, HGDIOBJ(font_sym.0));
-        SetTextColor(hdc, if is_close_hover { PK_RED } else { PK_MUTED });
-        let mut close_txt: Vec<u16> = "✕".encode_utf16().collect();
-        let mut close_rc = RECT { left: close_x, top: close_y, right: close_x + close_sz, bottom: close_y + close_sz };
-        let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        let close_fg = if is_close_hover { PK_RED } else { PK_MUTED };
+        crate::ui::draw_x(hdc, close_x + 3, close_y + 3, 12, close_fg, 2);
     }
 
-    // 4. New Tab '+' Button
+    // 4. New Tab '+' Button (Lucide Plus vector)
     let plus_x = start_x + (tabs.len() as i32) * (tab_w + 4);
     let plus_hover = hover_state == 999;
     let plus_bg = if plus_hover { PK_BTN_HOVER } else { PK_INPUT_BG };
     let plus_border = if plus_hover { PK_GREEN } else { PK_CARD_BORDER };
+    let plus_fg = if plus_hover { PK_GREEN_DARK } else { PK_MUTED };
     draw_rounded_box(hdc, plus_x, tab_y, 30, tab_h, plus_bg, plus_border, 6);
+    crate::ui::draw_plus(hdc, plus_x + 8, tab_y + 8, 14, plus_fg, 2);
 
-    let _ = SelectObject(hdc, HGDIOBJ(font_plus.0));
-    SetTextColor(hdc, if plus_hover { PK_GREEN_DARK } else { PK_MUTED });
-    let mut plus_txt: Vec<u16> = "+".encode_utf16().collect();
-    let mut plus_rc = RECT { left: plus_x, top: tab_y - 1, right: plus_x + 30, bottom: tab_y + tab_h - 1 };
-    let _ = DrawTextW(hdc, &mut plus_txt, &mut plus_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    // 5. Mode Switchers: [ 🖥️ Desktop ] and [ ⚡ Admin ] (Lucide Monitor & Terminal vectors)
+    let mode_w = 98;
+    let mode_y = 5;
+    let is_admin = VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed);
+
+    let desk_x = client_w - (mode_w * 2 + 16);
+    let admin_x = client_w - (mode_w + 10);
+
+    let desk_hover = hover_state == 9001;
+    let admin_hover = hover_state == 9002;
+
+    let (d_bg, d_border, d_fg) = if !is_admin {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else if desk_hover {
+        (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+    } else {
+        (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, desk_x, mode_y, mode_w, tab_h, d_bg, d_border, 6);
+    crate::ui::draw_monitor(hdc, desk_x + 8, mode_y + 7, 16, d_fg, 2);
+    let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
+    SetTextColor(hdc, d_fg);
+    let mut d_txt: Vec<u16> = "Desktop".encode_utf16().collect();
+    let mut d_rc = RECT { left: desk_x + 24, top: mode_y, right: desk_x + mode_w, bottom: mode_y + tab_h };
+    let _ = DrawTextW(hdc, &mut d_txt, &mut d_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    let (a_bg, a_border, a_fg) = if is_admin {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else if admin_hover {
+        (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+    } else {
+        (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, admin_x, mode_y, mode_w, tab_h, a_bg, a_border, 6);
+    crate::ui::draw_terminal(hdc, admin_x + 8, mode_y + 7, 16, a_fg, 2);
+    SetTextColor(hdc, a_fg);
+    let mut a_txt: Vec<u16> = "Admin".encode_utf16().collect();
+    let mut a_rc = RECT { left: admin_x + 22, top: mode_y, right: admin_x + mode_w, bottom: mode_y + tab_h };
+    let _ = DrawTextW(hdc, &mut a_txt, &mut a_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     let _ = SelectObject(hdc, old_font);
     let _ = DeleteObject(HGDIOBJ(border_brush.0));
     let _ = DeleteObject(HGDIOBJ(font_brand.0));
     let _ = DeleteObject(HGDIOBJ(font_tab.0));
-    let _ = DeleteObject(HGDIOBJ(font_sym.0));
     let _ = DeleteObject(HGDIOBJ(font_plus.0));
 }
 
@@ -318,6 +356,19 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
     let plus_x = start_x + (tabs.len() as i32) * (tab_w + 4);
     if client_x >= plus_x && client_x < plus_x + 30 && client_y >= tab_y && client_y < tab_y + tab_h {
         return 999;
+    }
+
+    // Mode Switchers Hit Testing: [ 🖥️ Desktop ] and [ ⚡ Admin ]
+    let mode_w = 98;
+    let desk_x = client_w - (mode_w * 2 + 16);
+    let admin_x = client_w - (mode_w + 10);
+    if client_y >= tab_y && client_y < tab_y + tab_h {
+        if client_x >= desk_x && client_x < desk_x + mode_w {
+            return 9001;
+        }
+        if client_x >= admin_x && client_x < admin_x + mode_w {
+            return 9002;
+        }
     }
 
     -1
@@ -408,7 +459,7 @@ pub fn spawn_or_add_tab_viewport(target: &str) {
             }
         }
         ACTIVE_TAB_INDEX.store(idx, Ordering::Relaxed);
-        let window_title = format!("Desky • [{}]", target);
+        let window_title = format!("Desky | [{}]", target);
         let wide_title: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
             let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
@@ -436,7 +487,7 @@ unsafe fn spawn_detached_viewport_window(target: &str, screen_x: i32, screen_y: 
     let h_module = GetModuleHandleW(None).unwrap_or_default();
     let h_instance: HINSTANCE = h_module.into();
 
-    let window_title = format!("Desky • [{}]", target);
+    let window_title = format!("Desky | [{}]", target);
     let wide_title: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
 
     let viewport_hwnd = CreateWindowExW(
@@ -711,7 +762,7 @@ unsafe fn draw_fullscreen_settings_view(
     let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
     let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
     let res_str = if orig_w > 0 && orig_h > 0 {
-        format!("{}×{} ({}%)", orig_w, orig_h, active_scale)
+        format!("{}x{} ({}%)", orig_w, orig_h, active_scale)
     } else {
         format!("{}% Native", active_scale)
     };
@@ -1160,6 +1211,13 @@ unsafe fn spawn_viewport_window(target: &str) {
 
                         if modal_open {
                             draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps);
+                        } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                            let hover_admin = ADMIN_HOVER_STATE.load(Ordering::Relaxed);
+                            super::admin::draw_admin_view(mem_dc, client_w, client_h, hover_admin);
+                            let tabs = get_session_tabs();
+                            let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                            let hover_state = TAB_HOVER_STATE.load(Ordering::Relaxed);
+                            draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
                         } else {
                             // Fast hardware-friendly COLORONCOLOR during motion (60 FPS smooth),
                             // then a single HALFTONE pass once static for 140 ms for razor-sharp text.
@@ -1291,11 +1349,11 @@ unsafe fn spawn_viewport_window(target: &str) {
                                         COLORREF(0x00EDB363),
                                     ),
                                     SessionStatus::WaitingApproval(id) => (
-                                        format!("🔔 Waiting for Remote Desk {} to accept your connection request...", id),
+                                        format!("Waiting for Remote Desk {} to accept your connection request...", id),
                                         COLORREF(0x0078BB48),
                                     ),
                                     SessionStatus::Error(err) => (
-                                        format!("❌ {}  (Press Esc to close)", err),
+                                        format!("{} (Press Esc to close)", err),
                                         COLORREF(0x006060FF),
                                     ),
                                     _ => (
@@ -1630,7 +1688,17 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
 
             // 2. Tab Bar Interaction
             let hit = get_tab_hit_state(hwnd, client_x, client_y);
-            if hit >= 1000 {
+            if hit == 9001 {
+                VIEWPORT_IS_ADMIN_MODE.store(false, Ordering::Relaxed);
+                return LRESULT(0);
+            } else if hit == 9002 {
+                VIEWPORT_IS_ADMIN_MODE.store(true, Ordering::Relaxed);
+                let state = super::admin::get_admin_state().lock().unwrap();
+                if state.processes.is_empty() {
+                    crate::p2p::send_admin_request(crate::protocol::AdminReq::GetProcesses);
+                }
+                return LRESULT(0);
+            } else if hit >= 1000 {
                 let close_idx = (hit - 1000) as usize;
                 close_session_tab(hwnd, close_idx);
                 return LRESULT(0);
@@ -1650,8 +1718,14 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             }
 
             if client_y >= TOOLBAR_HEIGHT {
-                unsafe {
-                    inject_remote_mouse(hwnd, client_x, client_y, true, false);
+                if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                    if super::admin::handle_admin_click(client_x, client_y, client_w, client_h) {
+                        return LRESULT(0);
+                    }
+                } else {
+                    unsafe {
+                        inject_remote_mouse(hwnd, client_x, client_y, true, false);
+                    }
                 }
             }
             LRESULT(0)
@@ -1693,7 +1767,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
-            if client_y >= TOOLBAR_HEIGHT {
+            if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 unsafe {
                     inject_remote_mouse(hwnd, client_x, client_y, true, true);
                 }
@@ -1704,7 +1778,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
-            if client_y >= TOOLBAR_HEIGHT {
+            if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 unsafe {
                     inject_remote_mouse(hwnd, client_x, client_y, false, true);
                 }
@@ -1715,7 +1789,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
-            if client_y >= TOOLBAR_HEIGHT {
+            if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 unsafe {
                     inject_remote_mouse_middle(hwnd, client_x, client_y, true);
                 }
@@ -1726,7 +1800,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
-            if client_y >= TOOLBAR_HEIGHT {
+            if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 unsafe {
                     inject_remote_mouse_middle(hwnd, client_x, client_y, false);
                 }
@@ -1745,8 +1819,17 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 }
             } else {
                 TAB_HOVER_STATE.store(-1, Ordering::Relaxed);
-                unsafe {
-                    inject_remote_mouse_move(hwnd, client_x, client_y);
+                if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                    let mut rect = RECT::default();
+                    let _ = unsafe { GetClientRect(hwnd, &mut rect) };
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    let hover = super::admin::get_admin_hover_state(client_x, client_y, client_w, client_h);
+                    ADMIN_HOVER_STATE.store(hover, Ordering::Relaxed);
+                } else {
+                    unsafe {
+                        inject_remote_mouse_move(hwnd, client_x, client_y);
+                    }
                 }
             }
             LRESULT(0)
@@ -1771,10 +1854,29 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
-            crate::p2p::send_remote_input(InputEvent::MouseWheel { delta });
+            if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                super::admin::handle_admin_scroll(delta);
+            } else {
+                crate::p2p::send_remote_input(InputEvent::MouseWheel { delta });
+            }
+            LRESULT(0)
+        }
+        WM_CHAR => {
+            if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                if let Some(c) = char::from_u32(wparam.0 as u32) {
+                    if super::admin::handle_admin_char(c) {
+                        return LRESULT(0);
+                    }
+                }
+            }
             LRESULT(0)
         }
         WM_KEYDOWN => {
+            if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                if super::admin::handle_admin_key(wparam.0 as u32) {
+                    return LRESULT(0);
+                }
+            }
             if wparam.0 == 0x1B {
                 if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);

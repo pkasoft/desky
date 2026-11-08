@@ -1,5 +1,6 @@
 //! Windows User Interface Module (Win32 Native Canvas & Multi-Window Architecture)
 
+pub mod admin;
 pub mod launcher;
 pub mod progress;
 pub mod theme;

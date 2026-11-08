@@ -93,7 +93,7 @@ pub fn append_status_log(msg: &str) {
 
 pub fn prompt_incoming_request(client_id: &str) {
     append_status_log(&format!(
-        "🔔 Incoming request from ID: {} — Click Accept or Decline!",
+        "Incoming request from ID: {} - Click Accept or Decline!",
         client_id
     ));
     bring_main_window_to_front();
@@ -102,7 +102,7 @@ pub fn set_assigned_desky_id(id: &str) {
     if let Ok(mut guard) = LOCAL_DESKY_ID.lock() {
         *guard = id.to_string();
     }
-    append_status_log(&format!("✅ Online • ID: {}", id));
+    append_status_log(&format!("Online | ID: {}", id));
     request_main_redraw();
 }
 
@@ -263,7 +263,7 @@ impl NativeWin32App {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 class_name,
-                w!("Desky • pkasoft.com"),
+                w!("Desky | pkasoft.com"),
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -316,7 +316,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 {
                     let mut logs = STATUS_LOGS.lock().unwrap();
                     if logs.is_empty() {
-                        logs.push("• Ready to connect".into());
+                        logs.push("- Ready to connect".into());
                     }
                 }
 
@@ -458,23 +458,24 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let ping = crate::p2p::get_server_ping_ms();
                     let (pill_text_str, pill_bg, pill_fg) = if is_online {
                         let s = if ping > 0 {
-                            format!("● Online ({}ms)", ping)
+                            format!("Online ({}ms)", ping)
                         } else {
-                            "● Online".to_string()
+                            "Online".to_string()
                         };
                         (s, PK_GREEN_TINT, PK_GREEN)
                     } else {
-                        ("● Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
+                        ("Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
                     };
 
                     let pill_w = (118.0 * l.font_scale) as i32;
                     let pill_h = (30.0 * l.font_scale) as i32;
                     let pill_x = (w - pill_w - 24).max(24);
                     draw_rounded_box(mem_dc, pill_x, 16, pill_w, pill_h, pill_bg, PK_CARD_BORDER, pill_h / 2);
+                    crate::ui::draw_radio(mem_dc, pill_x + 10, 16 + (pill_h - 14) / 2, 14, pill_fg, 2);
                     let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                     SetTextColor(mem_dc, pill_fg);
                     let mut pill_text: Vec<u16> = pill_text_str.encode_utf16().collect();
-                    let mut pill_rect = RECT { left: pill_x, top: 16, right: pill_x + pill_w, bottom: 16 + pill_h };
+                    let mut pill_rect = RECT { left: pill_x + 22, top: 16, right: pill_x + pill_w - 4, bottom: 16 + pill_h };
                     let _ = DrawTextW(mem_dc, &mut pill_text, &mut pill_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                     let hover = HOVER_BUTTON.load(Ordering::Relaxed);
@@ -490,14 +491,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         draw_rounded_box(mem_dc, mx, my, mw, mh, PK_CARD, PK_GREEN, 14);
 
-                        // Badge Pill
-                        let badge_w = 250;
+                        // Badge Pill (with Lucide Bell vector icon)
+                        let badge_w = 260;
                         let badge_x = mx + (mw - badge_w) / 2;
                         draw_rounded_box(mem_dc, badge_x, my + 22, badge_w, 28, PK_GREEN_TINT, PK_GREEN, 14);
+                        crate::ui::draw_bell(mem_dc, badge_x + 10, my + 28, 16, PK_GREEN, 2);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                         SetTextColor(mem_dc, PK_GREEN);
-                        let mut b_txt: Vec<u16> = "🔔 INCOMING CONNECTION REQUEST".encode_utf16().collect();
-                        let mut b_rc = RECT { left: badge_x, top: my + 22, right: badge_x + badge_w, bottom: my + 50 };
+                        let mut b_txt: Vec<u16> = "INCOMING CONNECTION REQUEST".encode_utf16().collect();
+                        let mut b_rc = RECT { left: badge_x + 28, top: my + 22, right: badge_x + badge_w - 6, bottom: my + 50 };
                         let _ = DrawTextW(mem_dc, &mut b_txt, &mut b_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                         // Client ID Display
@@ -517,7 +519,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         let mut p_rc = RECT { left: mx + 24, top: my + 124, right: mx + mw - 24, bottom: my + 156 };
                         let _ = DrawTextW(mem_dc, &mut p_txt, &mut p_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-                        // [ ✓ Accept ] and [ ✕ Decline ] buttons
+                        // [ Accept ] and [ Decline ] buttons (with Lucide Check & X vector icons)
                         let btn_w = (mw - 72) / 2;
                         let btn_h = 50;
                         let btn_y = my + 190;
@@ -526,17 +528,19 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         let acc_bg = if hover == 3 { PK_GREEN_DARK } else { PK_GREEN };
                         draw_rounded_box(mem_dc, acc_x, btn_y, btn_w, btn_h, acc_bg, acc_bg, 10);
+                        crate::ui::draw_check(mem_dc, acc_x + 18, btn_y + 16, 18, COLORREF(0x00FFFFFF), 2);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                         SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
-                        let mut acc_txt: Vec<u16> = "✓  Accept Connection".encode_utf16().collect();
-                        let mut acc_rc = RECT { left: acc_x, top: btn_y, right: acc_x + btn_w, bottom: btn_y + btn_h };
-                        let _ = DrawTextW(mem_dc, &mut acc_txt, &mut acc_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                        let mut acc_txt: Vec<u16> = "Accept Connection".encode_utf16().collect();
+                        let mut acc_rc = RECT { left: acc_x + 36, top: btn_y, right: acc_x + btn_w, bottom: btn_y + btn_h };
+                        let _ = DrawTextW(hdc, &mut acc_txt, &mut acc_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                         draw_rounded_box(mem_dc, dec_x, btn_y, btn_w, btn_h, PK_RED, PK_RED, 10);
+                        crate::ui::draw_x(mem_dc, dec_x + 22, btn_y + 16, 18, COLORREF(0x00FFFFFF), 2);
                         SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
-                        let mut dec_txt: Vec<u16> = "✕  Decline".encode_utf16().collect();
-                        let mut dec_rc = RECT { left: dec_x, top: btn_y, right: dec_x + btn_w, bottom: btn_y + btn_h };
-                        let _ = DrawTextW(mem_dc, &mut dec_txt, &mut dec_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                        let mut dec_txt: Vec<u16> = "Decline".encode_utf16().collect();
+                        let mut dec_rc = RECT { left: dec_x + 36, top: btn_y, right: dec_x + btn_w, bottom: btn_y + btn_h };
+                        let _ = DrawTextW(hdc, &mut dec_txt, &mut dec_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
                     } else {
                         // Normal Launcher Cards
                         let c1_x = l.c1_x;
@@ -603,10 +607,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         let copy_bg = if hover == 1 { PK_BTN_HOVER } else { PK_CARD };
                         let copy_border = if hover == 1 { PK_GREEN } else { PK_CARD_BORDER };
                         draw_rounded_box(mem_dc, copy_btn_x, copy_btn_y, copy_btn_w, copy_btn_h, copy_bg, copy_border, 8);
+                        let copy_fg = if hover == 1 { PK_GREEN_DARK } else { PK_TEXT };
+                        crate::ui::draw_copy(mem_dc, copy_btn_x + 14, copy_btn_y + 11, 16, copy_fg, 2);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
-                        SetTextColor(mem_dc, if hover == 1 { PK_GREEN_DARK } else { PK_TEXT });
+                        SetTextColor(mem_dc, copy_fg);
                         let mut copy_text: Vec<u16> = "Copy ID".encode_utf16().collect();
-                        let mut copy_rect = RECT { left: copy_btn_x, top: copy_btn_y, right: copy_btn_x + copy_btn_w, bottom: copy_btn_y + copy_btn_h };
+                        let mut copy_rect = RECT { left: copy_btn_x + 28, top: copy_btn_y, right: copy_btn_x + copy_btn_w, bottom: copy_btn_y + copy_btn_h };
                         let _ = DrawTextW(mem_dc, &mut copy_text, &mut copy_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                         // 2. Card 2: REMOTE DESK
@@ -625,10 +631,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         let conn_bg = if hover == 2 { PK_GREEN_DARK } else { PK_GREEN };
                         draw_rounded_box(mem_dc, conn_btn_x, conn_btn_y, conn_btn_w, conn_btn_h, conn_bg, conn_bg, 8);
+                        crate::ui::draw_monitor(mem_dc, conn_btn_x + (conn_btn_w / 2) - 46, conn_btn_y + 11, 16, COLORREF(0x00FFFFFF), 2);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                         SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
                         let mut conn_text: Vec<u16> = "Connect".encode_utf16().collect();
-                        let mut conn_rect = RECT { left: conn_btn_x, top: conn_btn_y, right: conn_btn_x + conn_btn_w, bottom: conn_btn_y + conn_btn_h };
+                        let mut conn_rect = RECT { left: conn_btn_x + 16, top: conn_btn_y, right: conn_btn_x + conn_btn_w, bottom: conn_btn_y + conn_btn_h };
                         let _ = DrawTextW(mem_dc, &mut conn_text, &mut conn_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                         // 3. Card 3: RECENT SESSIONS (Bottom Left)
@@ -724,12 +731,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         let srv_status = if is_online {
                             if ping > 0 {
-                                format!("Istanbul (TR)  •  {}ms", ping)
+                                format!("Istanbul (TR) | {}ms", ping)
                             } else {
-                                "Istanbul (TR)  •  Online".to_string()
+                                "Istanbul (TR) | Online".to_string()
                             }
                         } else {
-                            "Istanbul (TR)  •  Offline".to_string()
+                            "Istanbul (TR) | Offline".to_string()
                         };
 
                         let host_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows PC".into());
@@ -888,7 +895,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                     if !id_to_copy.is_empty() {
                         copy_to_clipboard(&id_to_copy);
-                        append_status_log(&format!("✅ Desky ID '{}' copied to Windows Clipboard!", id_to_copy));
+                        append_status_log(&format!("Desky ID '{}' copied to Windows Clipboard!", id_to_copy));
                     }
                 }
 

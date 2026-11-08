@@ -1,10 +1,10 @@
-﻿use crate::p2p::state::{
+use crate::p2p::state::{
     decode_lan_endpoint, encode_lan_endpoint_port, fix_loopback_peer, format_id_display,
     host_std_socket_store, host_subscribers_store, is_same_lan_subnet, normalize_id,
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
-    PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS,
+    PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS, PKT_ADMIN_REQ,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -711,6 +711,55 @@ impl P2PManager {
                                         }
                                     }
                                     crate::p2p::state::handle_incoming_file_finish();
+                                }
+                                PKT_ADMIN_REQ => {
+                                    let maybe_dest = {
+                                        if let Ok(mut map) = clients_recv.lock() {
+                                            let mut found = None;
+                                            for sub in map.values_mut() {
+                                                if (sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server)
+                                                    && sub.auth_state == AuthState::Approved
+                                                {
+                                                    sub.last_seen = Instant::now();
+                                                    found = Some((sub.addr, sub.relay_id.clone()));
+                                                    break;
+                                                }
+                                            }
+                                            found
+                                        } else {
+                                            None
+                                        }
+                                    };
+                                    if let Some((client_addr, norm_relay_id)) = maybe_dest {
+                                        if slice.len() >= 13 {
+                                            let msg_id = u32::from_le_bytes(slice[5..9].try_into().unwrap());
+                                            let chunk_idx = u16::from_le_bytes(slice[9..11].try_into().unwrap());
+                                            let total_chunks = u16::from_le_bytes(slice[11..13].try_into().unwrap());
+                                            if let Some(req) = crate::p2p::state::feed_admin_req_chunk(msg_id, chunk_idx, total_chunks, &slice[13..]) {
+                                                let socket_reply = socket_recv.clone();
+                                                let srv_addr = target_server;
+                                                tokio::spawn(async move {
+                                                    let resp = crate::platform::admin::handle_admin_request(req);
+                                                    if let Ok(resp_bytes) = serde_json::to_vec(&resp) {
+                                                        let resp_pkts = crate::p2p::state::create_chunked_admin_packets(
+                                                            crate::p2p::state::PKT_ADMIN_RESP,
+                                                            msg_id,
+                                                            &resp_bytes,
+                                                        );
+                                                        for pkt in resp_pkts {
+                                                            if client_addr != srv_addr {
+                                                                let _ = socket_reply.send_to(&pkt, client_addr).await;
+                                                            }
+                                                            if !norm_relay_id.is_empty() {
+                                                                let relay_pkt = wrap_relay_packet(&norm_relay_id, &pkt);
+                                                                let _ = socket_reply.send_to(&relay_pkt, srv_addr).await;
+                                                            }
+                                                        }
+                                                    }
+                                                });
+                                            }
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }

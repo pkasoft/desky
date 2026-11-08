@@ -49,6 +49,28 @@ pub unsafe fn create_segoe_font(height: i32, weight: FONT_WEIGHT) -> HFONT {
     }
 }
 
+pub unsafe fn create_mono_font(height: i32, weight: FONT_WEIGHT) -> HFONT {
+    let safe_height = height.max(12);
+    unsafe {
+        CreateFontW(
+            safe_height,
+            0,
+            0,
+            0,
+            weight.0 as i32,
+            0,
+            0,
+            0,
+            FONT_CHARSET(1),
+            FONT_OUTPUT_PRECISION(0),
+            FONT_CLIP_PRECISION(0),
+            FONT_QUALITY(5),
+            0,
+            w!("Consolas"),
+        )
+    }
+}
+
 pub unsafe fn draw_rounded_box(
     hdc: HDC,
     x: i32,

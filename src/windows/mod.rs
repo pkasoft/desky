@@ -7,6 +7,7 @@
 //! - `server_2012`: Windows Server 2012 & 2012 R2
 //! - `win7_8`: Windows 7, Windows 8 & 8.1
 
+pub mod admin;
 pub mod capture;
 pub mod clipboard;
 pub mod input;
@@ -79,22 +80,29 @@ pub fn get_platform() -> WindowsPlatform {
                             major, minor, build, if is_server { "Server" } else { "Workstation" }
                         );
 
-                        if is_server {
-                            if major >= 10 && build >= 20348 {
-                                return WindowsPlatform::Server2022;
-                            } else if major >= 10 {
-                                return WindowsPlatform::Server2016_2019;
-                            } else if major == 6 && (minor == 2 || minor == 3) {
+                        if major >= 10 {
+                            if is_server {
+                                if major >= 10 && build >= 20348 {
+                                    return WindowsPlatform::Server2022;
+                                } else if major >= 10 {
+                                    return WindowsPlatform::Server2016_2019;
+                                } else if major == 6 && (minor == 2 || minor == 3) {
+                                    return WindowsPlatform::Server2012;
+                                } else {
+                                    return WindowsPlatform::Server2022;
+                                }
+                            } else {
+                                if major >= 10 {
+                                    return WindowsPlatform::Win10_11;
+                                } else {
+                                    return WindowsPlatform::Win7_8;
+                                }
+                            }
+                        } else if major == 6 {
+                            if minor == 2 || minor == 3 {
                                 return WindowsPlatform::Server2012;
-                            } else {
-                                return WindowsPlatform::Server2022;
                             }
-                        } else {
-                            if major >= 10 {
-                                return WindowsPlatform::Win10_11;
-                            } else {
-                                return WindowsPlatform::Win7_8;
-                            }
+                            return WindowsPlatform::Win7_8;
                         }
                     }
                 }
