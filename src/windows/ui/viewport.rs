@@ -240,7 +240,7 @@ pub unsafe fn draw_tab_bar(
         // Status Dot
         let _ = SelectObject(hdc, HGDIOBJ(font_sym.0));
         SetTextColor(hdc, if is_active { PK_GREEN } else { PK_MUTED });
-        let mut dot_txt: Vec<u16> = "â—".encode_utf16().collect();
+        let mut dot_txt: Vec<u16> = "●".encode_utf16().collect();
         let mut dot_rc = RECT { left: tx + 8, top: tab_y, right: tx + 20, bottom: tab_y + tab_h };
         let _ = DrawTextW(hdc, &mut dot_txt, &mut dot_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
@@ -251,7 +251,7 @@ pub unsafe fn draw_tab_bar(
         let mut title_rc = RECT { left: tx + 22, top: tab_y, right: tx + tab_w - 24, bottom: tab_y + tab_h };
         let _ = DrawTextW(hdc, &mut title_txt, &mut title_rc, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 
-        // Close button 'âœ•'
+        // Close button '✕'
         let close_x = tx + tab_w - 22;
         let close_y = tab_y + 6;
         let close_sz = 18;
@@ -263,7 +263,7 @@ pub unsafe fn draw_tab_bar(
         }
         let _ = SelectObject(hdc, HGDIOBJ(font_sym.0));
         SetTextColor(hdc, if is_close_hover { PK_RED } else { PK_MUTED });
-        let mut close_txt: Vec<u16> = "âœ•".encode_utf16().collect();
+        let mut close_txt: Vec<u16> = "✕".encode_utf16().collect();
         let mut close_rc = RECT { left: close_x, top: close_y, right: close_x + close_sz, bottom: close_y + close_sz };
         let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     }
@@ -408,7 +408,7 @@ pub fn spawn_or_add_tab_viewport(target: &str) {
             }
         }
         ACTIVE_TAB_INDEX.store(idx, Ordering::Relaxed);
-        let window_title = format!("Desky â€¢ [{}]", target);
+        let window_title = format!("Desky • [{}]", target);
         let wide_title: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
             let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
@@ -436,7 +436,7 @@ unsafe fn spawn_detached_viewport_window(target: &str, screen_x: i32, screen_y: 
     let h_module = GetModuleHandleW(None).unwrap_or_default();
     let h_instance: HINSTANCE = h_module.into();
 
-    let window_title = format!("Desky â€¢ [{}]", target);
+    let window_title = format!("Desky • [{}]", target);
     let wide_title: Vec<u16> = window_title.encode_utf16().chain(std::iter::once(0)).collect();
 
     let viewport_hwnd = CreateWindowExW(
@@ -711,7 +711,7 @@ unsafe fn draw_fullscreen_settings_view(
     let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
     let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
     let res_str = if orig_w > 0 && orig_h > 0 {
-        format!("{}Ãƒâ€”{} ({}%)", orig_w, orig_h, active_scale)
+        format!("{}×{} ({}%)", orig_w, orig_h, active_scale)
     } else {
         format!("{}% Native", active_scale)
     };
@@ -1291,11 +1291,11 @@ unsafe fn spawn_viewport_window(target: &str) {
                                         COLORREF(0x00EDB363),
                                     ),
                                     SessionStatus::WaitingApproval(id) => (
-                                        format!("ğŸ”” Waiting for Remote Desk {} to accept your connection request...", id),
+                                        format!("🔔 Waiting for Remote Desk {} to accept your connection request...", id),
                                         COLORREF(0x0078BB48),
                                     ),
                                     SessionStatus::Error(err) => (
-                                        format!("âŒ {}  (Press Esc to close)", err),
+                                        format!("❌ {}  (Press Esc to close)", err),
                                         COLORREF(0x006060FF),
                                     ),
                                     _ => (
@@ -1450,7 +1450,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 let files = crate::p2p::read_clipboard_files();
                 if !files.is_empty() {
                     for f in files {
-                        info!("ğŸ“‹ Clipboard contains file for remote transfer: {:?}", f);
+                        info!("📋 Clipboard contains file for remote transfer: {:?}", f);
                         crate::p2p::send_file_transfer(f);
                     }
                 } else if let Some(text) = crate::p2p::read_clipboard_text() {
@@ -1784,7 +1784,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                     let files = crate::p2p::read_clipboard_files();
                     if !files.is_empty() {
                         for f in files {
-                            info!("ğŸ“‹ Pasting file from clipboard: {:?}", f);
+                            info!("📋 Pasting file from clipboard: {:?}", f);
                             crate::p2p::send_file_transfer(f);
                         }
                         return LRESULT(0);
