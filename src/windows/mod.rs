@@ -11,6 +11,7 @@ pub mod admin;
 pub mod audio;
 pub mod capture;
 pub mod clipboard;
+pub mod cursor;
 pub mod dxgi_capture;
 pub mod input;
 pub mod server_2012;
@@ -26,6 +27,7 @@ pub use clipboard::{
     is_clipboard_recently_synced, mark_clipboard_synced, read_clipboard_files,
     read_clipboard_text, write_clipboard_files, write_clipboard_text,
 };
+pub use cursor::{get_current_cursor_shape, get_hcursor_for_shape};
 pub use input::InputInjector;
 pub use system::{get_desktop_dir, get_identity_dir, get_machine_id, notify_file_received};
 pub use ui::set_assigned_desky_id;

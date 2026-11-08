@@ -25,6 +25,17 @@ pub const PKT_FILE_FINISH: u8 = 0x0C;
 pub const PKT_ADMIN_REQ: u8 = 0x0D;
 pub const PKT_ADMIN_RESP: u8 = 0x0E;
 pub const PKT_AUDIO_CHUNK: u8 = 0x0F;
+pub const PKT_CURSOR_SHAPE: u8 = 0x10;
+
+pub static CLIENT_REMOTE_CURSOR_SHAPE: AtomicU8 = AtomicU8::new(0);
+
+pub fn set_remote_cursor_shape(shape: u8) {
+    CLIENT_REMOTE_CURSOR_SHAPE.store(shape, Ordering::Relaxed);
+}
+
+pub fn get_remote_cursor_shape() -> u8 {
+    CLIENT_REMOTE_CURSOR_SHAPE.load(Ordering::Relaxed)
+}
 
 pub const AUTH_PENDING: u8 = 0;
 pub const AUTH_APPROVED: u8 = 1;

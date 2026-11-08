@@ -14,9 +14,11 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use windows::Win32::Foundation::{COLORREF, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, FrameRect, SelectObject, SetBkColor,
-    SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE,
-    DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ, OPAQUE, TRANSPARENT,
+    AlphaBlend, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush, DeleteDC,
+    DeleteObject, DrawTextW, FillRect, FrameRect, SelectObject, SetBkColor, SetBkMode,
+    SetTextColor, AC_SRC_OVER, BLENDFUNCTION, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ, OPAQUE,
+    TRANSPARENT,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,12 @@ pub enum AdminSubTab {
     Processes,
     Terminal,
     SystemInfo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmModalKind {
+    Restart,
+    SafeModeRestart,
 }
 
 pub struct AdminState {
@@ -39,6 +47,7 @@ pub struct AdminState {
     pub status_msg: Option<(String, Instant)>,
     pub is_loading: bool,
     pub last_req_time: Option<Instant>,
+    pub confirm_modal: Option<ConfirmModalKind>,
 }
 
 impl Default for AdminState {
@@ -60,6 +69,7 @@ impl Default for AdminState {
             status_msg: None,
             is_loading: false,
             last_req_time: None,
+            confirm_modal: None,
         }
     }
 }
@@ -107,6 +117,12 @@ pub fn poll_admin_responses() {
                 AdminResp::RebootScheduled { safe_mode } => {
                     state.status_msg = Some((format!("Host reboot scheduled (Safe Mode: {}). Desky will reconnect automatically...", safe_mode), Instant::now()));
                 }
+                AdminResp::PrivacyModeChanged { enabled } => {
+                    state.status_msg = Some((if enabled { "Host Privacy Screen & Input Lock ENABLED".into() } else { "Host Privacy Screen & Input Lock DISABLED".into() }, Instant::now()));
+                }
+                AdminResp::WakeOnLanSent { mac, success } => {
+                    state.status_msg = Some((if success { format!("Magic packet broadcasted to {}", mac) } else { format!("Failed to send WoL packet to {}", mac) }, Instant::now()));
+                }
             }
         }
     }
@@ -134,6 +150,7 @@ pub unsafe fn draw_admin_view(hdc: HDC, width: i32, height: i32, hover_state: i3
     }
 
     draw_status_toast(hdc, width, height);
+    draw_reboot_confirmation_modal(hdc, width, height, hover_state);
 }
 
 unsafe fn draw_sub_tab_bar(hdc: HDC, width: i32, current_tab: AdminSubTab, hover_state: i32) {
@@ -501,7 +518,7 @@ unsafe fn draw_terminal_view(hdc: HDC, width: i32, height: i32) {
     let _ = DeleteObject(HGDIOBJ(font_term.0));
 }
 
-unsafe fn draw_system_info_view(hdc: HDC, width: i32, _height: i32, _hover_state: i32) {
+unsafe fn draw_system_info_view(hdc: HDC, width: i32, _height: i32, hover_state: i32) {
     let top_y = 96;
     let stats = {
         let state = get_admin_state().lock().unwrap();
@@ -597,10 +614,149 @@ unsafe fn draw_system_info_view(hdc: HDC, width: i32, _height: i32, _hover_state
         }
     }
 
+    // 5. Wake-on-LAN (WoL) & Hardware Network Identity Card
+    let net_cx = 24;
+    let net_cy = top_y + (card_h + 16) * 2;
+    let net_w = width - 48;
+    let net_h = 76;
+    draw_rounded_box(hdc, net_cx, net_cy, net_w, net_h, PK_CARD, PK_CARD_BORDER, 6);
+
+    crate::ui::draw_server(hdc, net_cx + 18, net_cy + 16, 18, PK_GREEN_DARK, 2);
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_title.0));
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let mut net_h_txt: Vec<u16> = "Wake-on-LAN & Physical Network Interface".encode_utf16().collect();
+    let mut net_h_rc = RECT { left: net_cx + 42, top: net_cy + 14, right: net_cx + net_w - 240, bottom: net_cy + 34 };
+    let _ = DrawTextW(hdc, &mut net_h_txt, &mut net_h_rc, DT_LEFT | DT_SINGLELINE);
+
+    let mac_str = stats_ref.map(|s| if s.mac_addr.is_empty() { "Auto-Discovered Physical Interface (Online)" } else { s.mac_addr.as_str() }).unwrap_or("Querying host network adapter...");
+    let _ = SelectObject(hdc, HGDIOBJ(font_val.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut mac_txt: Vec<u16> = mac_str.encode_utf16().collect();
+    let mut mac_rc = RECT { left: net_cx + 18, top: net_cy + 40, right: net_cx + net_w - 240, bottom: net_cy + 66 };
+    let _ = DrawTextW(hdc, &mut mac_txt, &mut mac_rc, DT_LEFT | DT_SINGLELINE);
+
+    // [ Broadcast WoL Magic Packet ] Button
+    let wol_btn_w = 210;
+    let wol_btn_x = net_cx + net_w - wol_btn_w - 18;
+    let is_wol_hover = hover_state == 2990;
+    let wol_bg = if is_wol_hover { PK_GREEN_DARK } else { PK_GREEN };
+    draw_rounded_box(hdc, wol_btn_x, net_cy + 18, wol_btn_w, 40, wol_bg, PK_GREEN, 6);
+    let font_btn = create_segoe_font(12, FW_SEMIBOLD);
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+    let mut wol_btn_txt: Vec<u16> = "Broadcast Wake-on-LAN".encode_utf16().collect();
+    let mut wol_btn_rc = RECT { left: wol_btn_x, top: net_cy + 18, right: wol_btn_x + wol_btn_w, bottom: net_cy + 58 };
+    let _ = DrawTextW(hdc, &mut wol_btn_txt, &mut wol_btn_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    let _ = DeleteObject(HGDIOBJ(font_btn.0));
+
     let _ = SelectObject(hdc, old_font);
     let _ = DeleteObject(HGDIOBJ(font_title.0));
     let _ = DeleteObject(HGDIOBJ(font_val.0));
     let _ = DeleteObject(HGDIOBJ(font_label.0));
+}
+
+unsafe fn draw_reboot_confirmation_modal(hdc: HDC, width: i32, height: i32, hover_state: i32) {
+    let modal_kind = {
+        let state = get_admin_state().lock().unwrap();
+        state.confirm_modal
+    };
+
+    let kind = match modal_kind {
+        Some(k) => k,
+        None => return,
+    };
+
+    // 1. Dim background
+    let mem_dc = CreateCompatibleDC(Some(hdc));
+    let mem_bmp = CreateCompatibleBitmap(hdc, width, height);
+    let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
+    let dark_brush = CreateSolidBrush(COLORREF(0x000F0A05));
+    let full_rc = RECT { left: 0, top: 40, right: width, bottom: height };
+    FillRect(mem_dc, &full_rc, dark_brush);
+    let _ = DeleteObject(HGDIOBJ(dark_brush.0));
+
+    let blend = BLENDFUNCTION {
+        BlendOp: AC_SRC_OVER as u8,
+        BlendFlags: 0,
+        SourceConstantAlpha: 140,
+        AlphaFormat: 0,
+    };
+    let _ = AlphaBlend(hdc, 0, 40, width, height - 40, mem_dc, 0, 40, width, height - 40, blend);
+    let _ = SelectObject(mem_dc, old_bmp);
+    let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
+    let _ = DeleteDC(mem_dc);
+
+    // 2. Centered Modal Card
+    let card_w = 460;
+    let card_h = 220;
+    let card_x = (width - card_w) / 2;
+    let card_y = (height - card_h) / 2;
+
+    draw_rounded_box(hdc, card_x, card_y, card_w, card_h, PK_CARD, PK_GREEN, 8);
+
+    // 3. Header & Icon
+    crate::ui::draw_refresh(hdc, card_x + 24, card_y + 24, 22, PK_GREEN_DARK, 2);
+
+    let (title, desc, confirm_btn_label, confirm_bg) = match kind {
+        ConfirmModalKind::Restart => (
+            "Confirm Remote Restart",
+            "The remote host will restart immediately.\n\nDesky will automatically register itself to launch upon startup so you can reconnect once Windows boots back up. Proceed?",
+            "Yes, Restart",
+            if hover_state == 2996 { PK_GREEN_DARK } else { PK_GREEN },
+        ),
+        ConfirmModalKind::SafeModeRestart => (
+            "Confirm Safe Mode Restart",
+            "The remote host will configure BCD to boot into Safe Mode with Networking.\n\nDesky will auto-launch upon boot so you can reconnect in diagnostic mode. Proceed?",
+            "Yes, Safe Mode",
+            if hover_state == 2996 { COLORREF(0x000F7AEE) } else { COLORREF(0x001290FF) },
+        ),
+    };
+
+    let font_title = create_segoe_font(16, FW_BOLD);
+    let old_f = SelectObject(hdc, HGDIOBJ(font_title.0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, PK_TEXT);
+    let mut t_title: Vec<u16> = title.encode_utf16().collect();
+    let mut rc_title = RECT { left: card_x + 56, top: card_y + 22, right: card_x + card_w - 24, bottom: card_y + 48 };
+    let _ = DrawTextW(hdc, &mut t_title, &mut rc_title, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let font_body = create_segoe_font(12, FW_NORMAL);
+    let _ = SelectObject(hdc, HGDIOBJ(font_body.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut t_desc: Vec<u16> = desc.encode_utf16().collect();
+    let mut rc_desc = RECT { left: card_x + 24, top: card_y + 58, right: card_x + card_w - 24, bottom: card_y + 150 };
+    let _ = DrawTextW(hdc, &mut t_desc, &mut rc_desc, DT_LEFT | DT_WORDBREAK);
+
+    // 4. Action Buttons
+    let btn_y = card_y + 160;
+    let btn_h = 36;
+    let confirm_w = 140;
+    let confirm_x = card_x + card_w - 24 - confirm_w;
+    let cancel_w = 110;
+    let cancel_x = confirm_x - 12 - cancel_w;
+
+    // Cancel Button
+    let cancel_bg = if hover_state == 2995 { PK_BTN_HOVER } else { PK_CARD };
+    draw_rounded_box(hdc, cancel_x, btn_y, cancel_w, btn_h, cancel_bg, PK_CARD_BORDER, 6);
+    let font_btn = create_segoe_font(13, FW_SEMIBOLD);
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut t_canc: Vec<u16> = "Cancel".encode_utf16().collect();
+    let mut rc_canc = RECT { left: cancel_x, top: btn_y, right: cancel_x + cancel_w, bottom: btn_y + btn_h };
+    let _ = DrawTextW(hdc, &mut t_canc, &mut rc_canc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    // Confirm Button
+    draw_rounded_box(hdc, confirm_x, btn_y, confirm_w, btn_h, confirm_bg, confirm_bg, 6);
+    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+    let mut t_conf: Vec<u16> = confirm_btn_label.encode_utf16().collect();
+    let mut rc_conf = RECT { left: confirm_x, top: btn_y, right: confirm_x + confirm_w, bottom: btn_y + btn_h };
+    let _ = DrawTextW(hdc, &mut t_conf, &mut rc_conf, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, old_f);
+    let _ = DeleteObject(HGDIOBJ(font_title.0));
+    let _ = DeleteObject(HGDIOBJ(font_body.0));
+    let _ = DeleteObject(HGDIOBJ(font_btn.0));
 }
 
 unsafe fn draw_status_toast(hdc: HDC, width: i32, height: i32) {
@@ -634,6 +790,44 @@ unsafe fn draw_status_toast(hdc: HDC, width: i32, height: i32) {
 }
 
 pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
+    // 0. Handle confirmation modal if active
+    if let Ok(mut state) = get_admin_state().lock() {
+        if let Some(modal) = state.confirm_modal {
+            let card_w = 460;
+            let card_h = 220;
+            let card_x = (width - card_w) / 2;
+            let card_y = (height - card_h) / 2;
+
+            let btn_y = card_y + 160;
+            let btn_h = 36;
+            let confirm_w = 140;
+            let confirm_x = card_x + card_w - 24 - confirm_w;
+            let cancel_w = 110;
+            let cancel_x = confirm_x - 12 - cancel_w;
+
+            if y >= btn_y && y < btn_y + btn_h {
+                if x >= confirm_x && x < confirm_x + confirm_w {
+                    let safe_mode = matches!(modal, ConfirmModalKind::SafeModeRestart);
+                    crate::p2p::send_admin_request(AdminReq::RebootHost { safe_mode });
+                    state.status_msg = Some((
+                        if safe_mode { "Initiating remote Safe Mode reboot...".into() } else { "Initiating remote reboot...".into() },
+                        Instant::now(),
+                    ));
+                    state.confirm_modal = None;
+                    return true;
+                } else if x >= cancel_x && x < cancel_x + cancel_w {
+                    state.confirm_modal = None;
+                    return true;
+                }
+            } else if x < card_x || x >= card_x + card_w || y < card_y || y >= card_y + card_h {
+                state.confirm_modal = None;
+                return true;
+            }
+
+            return true;
+        }
+    }
+
     let bar_y = 48;
     if y >= bar_y && y < bar_y + 36 {
         let mut cur_x = 32;
@@ -673,9 +867,8 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         let reboot_w = 92;
         let reboot_x = ref_x - reboot_w - 8;
         if x >= reboot_x && x < reboot_x + reboot_w {
-            crate::p2p::send_admin_request(AdminReq::RebootHost { safe_mode: false });
             if let Ok(mut state) = get_admin_state().lock() {
-                state.status_msg = Some(("Initiating remote reboot...".into(), Instant::now()));
+                state.confirm_modal = Some(ConfirmModalKind::Restart);
             }
             return true;
         }
@@ -683,9 +876,8 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         let safe_w = 98;
         let safe_x = reboot_x - safe_w - 8;
         if x >= safe_x && x < safe_x + safe_w {
-            crate::p2p::send_admin_request(AdminReq::RebootHost { safe_mode: true });
             if let Ok(mut state) = get_admin_state().lock() {
-                state.status_msg = Some(("Initiating remote Safe Mode reboot...".into(), Instant::now()));
+                state.confirm_modal = Some(ConfirmModalKind::SafeModeRestart);
             }
             return true;
         }
@@ -695,6 +887,32 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         let state = get_admin_state().lock().unwrap();
         state.sub_tab
     };
+
+    if sub_tab == AdminSubTab::SystemInfo {
+        let card_h = 120;
+        let net_cy = 96 + (card_h + 16) * 2;
+        let net_w = width - 48;
+        let wol_btn_w = 210;
+        let wol_btn_x = 24 + net_w - wol_btn_w - 18;
+        if y >= net_cy + 18 && y < net_cy + 18 + 40 && x >= wol_btn_x && x < wol_btn_x + wol_btn_w {
+            let mac = {
+                let state = get_admin_state().lock().unwrap();
+                state.system_stats.as_ref().map(|s| s.mac_addr.clone()).unwrap_or_default()
+            };
+            if !mac.is_empty() {
+                crate::p2p::send_admin_request(AdminReq::WakeOnLan { mac: mac.clone() });
+                if let Ok(mut state) = get_admin_state().lock() {
+                    state.status_msg = Some((format!("Broadcasting Wake-on-LAN to {}...", mac), Instant::now()));
+                }
+            } else {
+                let _ = crate::p2p::send_wake_on_lan([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+                if let Ok(mut state) = get_admin_state().lock() {
+                    state.status_msg = Some(("Broadcasting LAN Wake-on-LAN Magic Packet...".into(), Instant::now()));
+                }
+            }
+            return true;
+        }
+    }
 
     if sub_tab == AdminSubTab::Processes {
         let top_y = 96;
@@ -795,6 +1013,25 @@ pub fn handle_admin_char(c: char) -> bool {
 }
 
 pub fn handle_admin_key(key: u32) -> bool {
+    if let Ok(mut state) = get_admin_state().lock() {
+        if let Some(modal) = state.confirm_modal {
+            if key == 0x1B {
+                state.confirm_modal = None;
+                return true;
+            } else if key == 0x0D {
+                let safe_mode = matches!(modal, ConfirmModalKind::SafeModeRestart);
+                crate::p2p::send_admin_request(AdminReq::RebootHost { safe_mode });
+                state.status_msg = Some((
+                    if safe_mode { "Initiating remote Safe Mode reboot...".into() } else { "Initiating remote reboot...".into() },
+                    Instant::now(),
+                ));
+                state.confirm_modal = None;
+                return true;
+            }
+            return true;
+        }
+    }
+
     if key == 0x0D {
         return handle_admin_char('\r');
     } else if key == 0x08 {
@@ -820,6 +1057,30 @@ pub fn handle_admin_scroll(delta: i32) {
 }
 
 pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
+    if let Ok(state) = get_admin_state().lock() {
+        if state.confirm_modal.is_some() {
+            let card_w = 460;
+            let card_h = 220;
+            let card_x = (width - card_w) / 2;
+            let card_y = (height - card_h) / 2;
+            let btn_y = card_y + 160;
+            let btn_h = 36;
+            let confirm_w = 140;
+            let confirm_x = card_x + card_w - 24 - confirm_w;
+            let cancel_w = 110;
+            let cancel_x = confirm_x - 12 - cancel_w;
+
+            if y >= btn_y && y < btn_y + btn_h {
+                if x >= confirm_x && x < confirm_x + confirm_w {
+                    return 2996;
+                } else if x >= cancel_x && x < cancel_x + cancel_w {
+                    return 2995;
+                }
+            }
+            return 2994;
+        }
+    }
+
     let bar_y = 48;
     if y >= bar_y && y < bar_y + 36 {
         let mut cur_x = 32;
@@ -883,6 +1144,17 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
                 }
                 return 3000 + row_idx as i32;
             }
+        }
+    }
+
+    if sub_tab == AdminSubTab::SystemInfo {
+        let card_h = 120;
+        let net_cy = 96 + (card_h + 16) * 2;
+        let net_w = width - 48;
+        let wol_btn_w = 210;
+        let wol_btn_x = 24 + net_w - wol_btn_w - 18;
+        if y >= net_cy + 18 && y < net_cy + 18 + 40 && x >= wol_btn_x && x < wol_btn_x + wol_btn_w {
+            return 2990;
         }
     }
 
