@@ -1,6 +1,6 @@
 use crate::protocol::InputEvent;
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
@@ -58,7 +58,9 @@ pub enum AuthState {
 #[derive(Clone)]
 pub struct ClientSubscriber {
     pub client_id: String,
+    pub relay_id: String,
     pub addr: SocketAddr,
+    pub lan_addr: Option<SocketAddr>,
     pub auth_state: AuthState,
     pub last_seen: Instant,
     pub target_fps: u32,
@@ -129,6 +131,59 @@ pub fn get_pending_approval() -> Option<PendingApprovalRequest> {
     pending_approval_store().lock().ok().and_then(|g| g.clone())
 }
 
+/// Detects the machine's active outbound LAN IPv4 address via OS routing table lookup (zero packets sent)
+pub fn detect_local_lan_ip(target_server: SocketAddr) -> Option<Ipv4Addr> {
+    let probe = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    let _ = probe.connect(target_server);
+    if let Ok(SocketAddr::V4(v4)) = probe.local_addr() {
+        let ip = *v4.ip();
+        if !ip.is_loopback() && !ip.is_unspecified() {
+            return Some(ip);
+        }
+    }
+    None
+}
+
+/// Returns the 6-byte `[ipv4 (4 bytes), port_le (2 bytes)]` of `sock` on the active local LAN
+pub fn encode_lan_endpoint(sock: &UdpSocket, target_server: SocketAddr) -> [u8; 6] {
+    let mut out = [0u8; 6];
+    let local_port = sock.local_addr().ok().map(|a| a.port()).unwrap_or(0);
+    if local_port > 0 {
+        if let Some(ip) = detect_local_lan_ip(target_server) {
+            let octs = ip.octets();
+            out[0..4].copy_from_slice(&octs);
+            out[4..6].copy_from_slice(&local_port.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// Decodes a 6-byte `[ipv4 (4 bytes), port_le (2 bytes)]` LAN endpoint if valid
+pub fn decode_lan_endpoint(bytes: &[u8]) -> Option<SocketAddr> {
+    if bytes.len() < 6 {
+        return None;
+    }
+    let ip = Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3]);
+    let port = u16::from_le_bytes([bytes[4], bytes[5]]);
+    if ip.is_unspecified() || ip.is_loopback() || port == 0 {
+        return None;
+    }
+    Some(SocketAddr::new(IpAddr::V4(ip), port))
+}
+
+/// Returns broadcast addresses for LAN discovery including the active `/24` subnet broadcast
+pub fn lan_broadcast_addrs(target_server: SocketAddr, port: u16) -> Vec<SocketAddr> {
+    let mut list = Vec::with_capacity(3);
+    if let Some(ip) = detect_local_lan_ip(target_server) {
+        let oct = ip.octets();
+        let subnet_bcast = Ipv4Addr::new(oct[0], oct[1], oct[2], 255);
+        list.push(SocketAddr::new(IpAddr::V4(subnet_bcast), port));
+    }
+    list.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::BROADCAST), port));
+    list.push(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+    list
+}
+
 /// Called by the Host UI when the user clicks Accept (`approved = true`) or Decline (`approved = false`)
 pub fn respond_to_pending_approval(approved: bool) {
     let req = {
@@ -139,7 +194,7 @@ pub fn respond_to_pending_approval(approved: bool) {
         }
     };
 
-    let mut acks_to_send: Vec<(SocketAddr, u8)> = Vec::new();
+    let mut acks_to_send: Vec<(SocketAddr, Option<SocketAddr>, String, u8)> = Vec::new();
     if let Ok(mut map) = host_subscribers_store().lock() {
         let now = Instant::now();
         for (key, sub) in map.iter_mut() {
@@ -151,10 +206,20 @@ pub fn respond_to_pending_approval(approved: bool) {
                 if approved {
                     sub.auth_state = AuthState::Approved;
                     sub.last_seen = now;
-                    acks_to_send.push((sub.addr, AUTH_APPROVED));
+                    acks_to_send.push((
+                        sub.addr,
+                        sub.lan_addr,
+                        sub.relay_id.clone(),
+                        AUTH_APPROVED,
+                    ));
                 } else {
                     sub.auth_state = AuthState::Declined(now);
-                    acks_to_send.push((sub.addr, AUTH_DECLINED));
+                    acks_to_send.push((
+                        sub.addr,
+                        sub.lan_addr,
+                        sub.relay_id.clone(),
+                        AUTH_DECLINED,
+                    ));
                 }
             }
         }
@@ -163,30 +228,38 @@ pub fn respond_to_pending_approval(approved: bool) {
     if !acks_to_send.is_empty() {
         if let Ok(Some(sock)) = host_socket_store().lock().map(|g| g.clone()) {
             let server_addr = resolve_server_addr();
-            let my_id = {
-                let ident = crate::identity::load_or_create_identity();
-                ident.desky_id.unwrap_or_default()
-            };
+            let lan_bytes = encode_lan_endpoint(&sock, server_addr);
             std::thread::spawn(move || {
                 if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                 {
                     rt.block_on(async move {
-                        for (addr, status_byte) in acks_to_send {
-                            let mut auth_pkt = Vec::with_capacity(6);
+                        for (addr, lan_addr, relay_id, status_byte) in acks_to_send {
+                            let mut auth_pkt = Vec::with_capacity(12);
                             auth_pkt.extend_from_slice(MAGIC_DSKY);
                             auth_pkt.push(PKT_AUTH_STATUS);
                             auth_pkt.push(status_byte);
+                            auth_pkt.extend_from_slice(&lan_bytes);
 
-                            // Send directly to peer
-                            for _ in 0..4 {
-                                let _ = sock.send_to(&auth_pkt, addr).await;
+                            // 1. Send directly to peer's observed address
+                            if addr != server_addr {
+                                for _ in 0..4 {
+                                    let _ = sock.send_to(&auth_pkt, addr).await;
+                                }
                             }
-                            // ALSO send via VDS Relay so NAT never blocks approval!
-                            let relay_pkt = wrap_relay_packet(&my_id, &auth_pkt);
-                            for _ in 0..4 {
-                                let _ = sock.send_to(&relay_pkt, server_addr).await;
+                            // 2. Send directly to peer's LAN endpoint (same-router peers)
+                            if let Some(l_addr) = lan_addr {
+                                for _ in 0..4 {
+                                    let _ = sock.send_to(&auth_pkt, l_addr).await;
+                                }
+                            }
+                            // 3. Also send via VDS Relay addressed to the Client's session relay_id!
+                            if !relay_id.is_empty() {
+                                let relay_pkt = wrap_relay_packet(&relay_id, &auth_pkt);
+                                for _ in 0..4 {
+                                    let _ = sock.send_to(&relay_pkt, server_addr).await;
+                                }
                             }
                         }
                     });
