@@ -164,18 +164,6 @@ pub fn detect_local_lan_ip(target_server: SocketAddr) -> Option<Ipv4Addr> {
     None
 }
 
-/// Returns true if `candidate` is on the exact same `/24` private IPv4 subnet as our local LAN IP
-pub fn is_same_lan_subnet(local_lan_bytes: &[u8; 6], candidate: SocketAddr) -> bool {
-    if local_lan_bytes[0] == 0 {
-        return false;
-    }
-    if let IpAddr::V4(cand_v4) = candidate.ip() {
-        let oct = cand_v4.octets();
-        oct[0] == local_lan_bytes[0] && oct[1] == local_lan_bytes[1] && oct[2] == local_lan_bytes[2]
-    } else {
-        false
-    }
-}
 
 /// Returns the 6-byte `[ipv4 (4 bytes), port_le (2 bytes)]` of `local_port` on the active local LAN
 pub fn encode_lan_endpoint_port(local_port: u16, target_server: SocketAddr) -> [u8; 6] {
