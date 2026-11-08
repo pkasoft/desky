@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Gdi::{
     InvalidateRect, ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
     SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS,
-    DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HALFTONE, HBRUSH,
+    DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD, HALFTONE, HBRUSH,
     HDC, HGDIOBJ, OPAQUE, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::DataExchange::{
@@ -922,10 +922,6 @@ unsafe fn draw_fullscreen_settings_view(
     fps: u32,
     top_y: i32,
 ) {
-    let scale_w = client_w as f32 / 1024.0;
-    let scale_h = ((client_h - top_y).max(400)) as f32 / 640.0;
-    let s = (scale_w.min(scale_h)).clamp(1.0, 1.40);
-
     // 1. Full-Screen Canvas (PK_BG)
     let full_rect = RECT {
         left: 0,
@@ -938,344 +934,69 @@ unsafe fn draw_fullscreen_settings_view(
     let _ = DeleteObject(HGDIOBJ(bg_brush.0));
 
     let line_brush = CreateSolidBrush(PK_CARD_BORDER);
-    let card_brush = CreateSolidBrush(PK_CARD);
     let green_brush = CreateSolidBrush(PK_GREEN);
     let green_dark_brush = CreateSolidBrush(PK_GREEN_DARK);
-    let tint_brush = CreateSolidBrush(PK_GREEN_TINT);
     let input_brush = CreateSolidBrush(PK_INPUT_BG);
 
-    // 2. Integrated Top Header Bar (Adaptive)
-    let hdr_h = (46.0 * s) as i32;
-    let side_w = (210.0 * s) as i32;
-
-    let hdr_rect = RECT {
-        left: 0,
-        top: top_y,
-        right: client_w,
-        bottom: top_y + hdr_h,
-    };
-    FillRect(hdc, &hdr_rect, card_brush);
-    let hdr_line = RECT {
-        left: 0,
-        top: top_y + hdr_h - 1,
-        right: client_w,
-        bottom: top_y + hdr_h,
-    };
-    FillRect(hdc, &hdr_line, line_brush);
-
-    let f_brand = ((16.0 * s) as i32).max(16);
-    let f_title = ((17.0 * s) as i32).max(17);
-    let f_sec = ((11.0 * s) as i32).max(12);
-    let f_btn = ((12.0 * s) as i32).max(13);
-    let f_info = ((12.0 * s) as i32).max(12);
-
-    let font_brand = create_segoe_font(f_brand, FW_BOLD);
-    let font_title = create_segoe_font(f_title, FW_BOLD);
-    let font_sec = create_segoe_font(f_sec, FW_BOLD);
-    let font_btn = create_segoe_font(f_btn, FW_SEMIBOLD);
-    let font_info = create_segoe_font(f_info, FW_NORMAL);
+    let font_title = create_segoe_font(16, FW_BOLD);
+    let font_lbl = create_segoe_font(13, FW_SEMIBOLD);
+    let font_btn = create_segoe_font(12, FW_SEMIBOLD);
 
     SetBkMode(hdc, TRANSPARENT);
 
-    // Brand Label
-    let brand_cell_div = RECT {
-        left: side_w - 1,
-        top: top_y,
-        right: side_w,
-        bottom: top_y + hdr_h,
-    };
-    FillRect(hdc, &brand_cell_div, line_brush);
+    // Responsive centered panel: never breaks or clips on any screen size!
+    let panel_w = (client_w - 48).clamp(320, 620);
+    let panel_x = (client_w - panel_w) / 2;
 
-    let old_font = SelectObject(hdc, HGDIOBJ(font_brand.0));
-    SetTextColor(hdc, PK_GREEN_DARK);
-    let mut brand_txt: Vec<u16> = "DESKY".encode_utf16().collect();
-    let mut brand_rc = RECT {
-        left: (18.0 * s) as i32,
-        top: top_y,
-        right: side_w - 10,
-        bottom: top_y + hdr_h,
-    };
-    let _ = DrawTextW(hdc, &mut brand_txt, &mut brand_rc, DT_SINGLELINE | DT_VCENTER);
+    // Top Navigation & Close Bar
+    let tab_y = top_y + 14;
+    let tab_h = 32;
+    let cat_w = (panel_w - 110) / 2;
+    let cat0_x = panel_x;
+    let cat1_x = cat0_x + cat_w + 8;
+    let close_w = 84;
+    let close_x = panel_x + panel_w - close_w;
 
-    // Breadcrumb
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
-    let crumb_label = match active_cat {
-        0 => "SETTINGS  /  DISPLAY & QUALITY",
-        1 => "SETTINGS  /  FRAMERATE & INPUT",
-        _ => "SETTINGS  /  CONNECTION & REGION",
-    };
-    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, PK_MUTED);
-    let mut crumb_txt: Vec<u16> = crumb_label.encode_utf16().collect();
-    let mut crumb_rc = RECT {
-        left: side_w + (20.0 * s) as i32,
-        top: top_y,
-        right: client_w - (180.0 * s) as i32,
-        bottom: top_y + hdr_h,
-    };
-    let _ = DrawTextW(hdc, &mut crumb_txt, &mut crumb_rc, DT_SINGLELINE | DT_VCENTER);
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(1);
 
-    // Back to stream button
-    let back_w = (160.0 * s) as i32;
-    let back_x = (client_w - back_w).max(side_w + 20);
-    let back_rc = RECT {
-        left: back_x,
-        top: top_y,
-        right: client_w,
-        bottom: top_y + hdr_h - 1,
-    };
-    FillRect(hdc, &back_rc, green_brush);
-    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-    SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let mut back_txt: Vec<u16> = "< BACK".encode_utf16().collect();
-    let mut back_txt_rc = back_rc;
-    let _ = DrawTextW(
-        hdc,
-        &mut back_txt,
-        &mut back_txt_rc,
-        DT_SINGLELINE | DT_CENTER | DT_VCENTER,
-    );
-
-    // Left Navigation Dock
-    let side_rc = RECT {
-        left: 0,
-        top: top_y + hdr_h,
-        right: side_w,
-        bottom: client_h,
-    };
-    FillRect(hdc, &side_rc, card_brush);
-    let side_border = RECT {
-        left: side_w - 1,
-        top: top_y + hdr_h,
-        right: side_w,
-        bottom: client_h,
-    };
-    FillRect(hdc, &side_border, line_brush);
-
-    let nav_hdr_h = (32.0 * s) as i32;
-    let nav_hdr_bg = RECT {
-        left: 0,
-        top: top_y + hdr_h,
-        right: side_w - 1,
-        bottom: top_y + hdr_h + nav_hdr_h,
-    };
-    FillRect(hdc, &nav_hdr_bg, input_brush);
-    let nav_hdr_line = RECT {
-        left: 0,
-        top: top_y + hdr_h + nav_hdr_h - 1,
-        right: side_w,
-        bottom: top_y + hdr_h + nav_hdr_h,
-    };
-    FillRect(hdc, &nav_hdr_line, line_brush);
-
-    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, PK_MUTED);
-    let mut nav_hdr: Vec<u16> = "CATEGORIES".encode_utf16().collect();
-    let mut nav_hdr_rc = RECT {
-        left: (18.0 * s) as i32,
-        top: top_y + hdr_h,
-        right: side_w - 12,
-        bottom: top_y + hdr_h + nav_hdr_h,
-    };
-    let _ = DrawTextW(hdc, &mut nav_hdr, &mut nav_hdr_rc, DT_SINGLELINE | DT_VCENTER);
-
-    let categories = [
-        ("01", "DISPLAY & QUALITY"),
-        ("02", "FRAMERATE & INPUT"),
-        ("03", "CONNECTION & REGION"),
-    ];
-
-    let tab_start_y = top_y + hdr_h + nav_hdr_h;
-    let tab_h = (44.0 * s) as i32;
-
-    for (i, (num, label)) in categories.iter().enumerate() {
-        let item_y = tab_start_y + (i as i32) * tab_h;
-        let is_sel = active_cat == i as u8;
-        let item_rc = RECT {
-            left: 0,
-            top: item_y,
-            right: side_w - 1,
-            bottom: item_y + tab_h,
-        };
-
-        if is_sel {
-            FillRect(hdc, &item_rc, tint_brush);
-            let bar_rc = RECT {
-                left: 0,
-                top: item_y,
-                right: 4,
-                bottom: item_y + tab_h,
-            };
-            FillRect(hdc, &bar_rc, green_brush);
-        } else {
-            FillRect(hdc, &item_rc, card_brush);
-        }
-
-        let row_div = RECT {
-            left: 0,
-            top: item_y + tab_h - 1,
-            right: side_w,
-            bottom: item_y + tab_h,
-        };
-        FillRect(hdc, &row_div, line_brush);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-        SetTextColor(hdc, if is_sel { PK_GREEN } else { PK_MUTED });
-        let mut num_wide: Vec<u16> = num.encode_utf16().collect();
-        let mut num_rc = RECT {
-            left: (16.0 * s) as i32,
-            top: item_y,
-            right: (38.0 * s) as i32,
-            bottom: item_y + tab_h,
-        };
-        let _ = DrawTextW(hdc, &mut num_wide, &mut num_rc, DT_SINGLELINE | DT_VCENTER);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, if is_sel { PK_GREEN_DARK } else { PK_TEXT });
-        let mut lbl_wide: Vec<u16> = label.encode_utf16().collect();
-        let mut lbl_rc = RECT {
-            left: (42.0 * s) as i32,
-            top: item_y,
-            right: side_w - 8,
-            bottom: item_y + tab_h,
-        };
-        let _ = DrawTextW(hdc, &mut lbl_wide, &mut lbl_rc, DT_SINGLELINE | DT_VCENTER);
-    }
-
-    // Telemetry Dock (Sidebar bottom)
-    let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
-    let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
-    let rtt_ms = crate::p2p::get_session_rtt_ms();
-    let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
-    let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
-    let res_str = if orig_w > 0 && orig_h > 0 {
-        format!("{}x{} ({}%)", orig_w, orig_h, active_scale)
+    // Category 0: Stream & Display Tab Button
+    let (c0_bg, c0_border, c0_fg) = if active_cat == 0 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
-        format!("{}% Native", active_scale)
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
+    draw_rounded_box(hdc, cat0_x, tab_y, cat_w, tab_h, c0_bg, c0_border, 6);
+    let old_font = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    SetTextColor(hdc, c0_fg);
+    let mut c0_txt: Vec<u16> = "Stream & Display".encode_utf16().collect();
+    let mut c0_rc = RECT { left: cat0_x, top: tab_y, right: cat0_x + cat_w, bottom: tab_y + tab_h };
+    let _ = DrawTextW(hdc, &mut c0_txt, &mut c0_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    let tele_h = (150.0 * s) as i32;
-    let tele_y = (client_h - tele_h).max(tab_start_y + 3 * tab_h + 10);
-    let tele_top_line = RECT {
-        left: 0,
-        top: tele_y,
-        right: side_w,
-        bottom: tele_y + 1,
+    // Category 1: Connection Info Tab Button
+    let (c1_bg, c1_border, c1_fg) = if active_cat == 1 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else {
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
-    FillRect(hdc, &tele_top_line, line_brush);
+    draw_rounded_box(hdc, cat1_x, tab_y, cat_w, tab_h, c1_bg, c1_border, 6);
+    SetTextColor(hdc, c1_fg);
+    let mut c1_txt: Vec<u16> = "Connection Info".encode_utf16().collect();
+    let mut c1_rc = RECT { left: cat1_x, top: tab_y, right: cat1_x + cat_w, bottom: tab_y + tab_h };
+    let _ = DrawTextW(hdc, &mut c1_txt, &mut c1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    let tele_hdr_h = (30.0 * s) as i32;
-    let tele_hdr_bg = RECT {
-        left: 0,
-        top: tele_y + 1,
-        right: side_w - 1,
-        bottom: tele_y + tele_hdr_h,
-    };
-    FillRect(hdc, &tele_hdr_bg, tint_brush);
-    let tele_hdr_line = RECT {
-        left: 0,
-        top: tele_y + tele_hdr_h,
-        right: side_w,
-        bottom: tele_y + tele_hdr_h + 1,
-    };
-    FillRect(hdc, &tele_hdr_line, line_brush);
+    // Close Button [ Close × ]
+    draw_rounded_box(hdc, close_x, tab_y, close_w, tab_h, PK_CARD, PK_CARD_BORDER, 6);
+    SetTextColor(hdc, PK_MUTED);
+    let mut close_txt: Vec<u16> = "Close ×".encode_utf16().collect();
+    let mut close_rc = RECT { left: close_x, top: tab_y, right: close_x + close_w, bottom: tab_y + tab_h };
+    let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-    SetTextColor(hdc, PK_GREEN_DARK);
-    let mut tele_hdr: Vec<u16> = "LIVE STATUS".encode_utf16().collect();
-    let mut tele_hdr_rc = RECT {
-        left: (16.0 * s) as i32,
-        top: tele_y + 1,
-        right: side_w - 12,
-        bottom: tele_y + tele_hdr_h,
-    };
-    let _ = DrawTextW(hdc, &mut tele_hdr, &mut tele_hdr_rc, DT_SINGLELINE | DT_VCENTER);
-
-    let stats_rows = [
-        ("REGION", "Istanbul (TR)"),
-        ("LATENCY", &format!("{} ms RTT", rtt_ms)),
-        ("BITRATE", bitrate_str.as_str()),
-        ("STREAM", res_str.as_str()),
-    ];
-    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-    let row_step = (24.0 * s) as i32;
-    for (idx, (k, v)) in stats_rows.iter().enumerate() {
-        let ry = tele_y + tele_hdr_h + 6 + (idx as i32) * row_step;
-        SetTextColor(hdc, PK_MUTED);
-        let mut kw: Vec<u16> = k.encode_utf16().collect();
-        let mut krc = RECT { left: (16.0 * s) as i32, top: ry, right: (82.0 * s) as i32, bottom: ry + row_step };
-        let _ = DrawTextW(hdc, &mut kw, &mut krc, DT_SINGLELINE | DT_VCENTER);
-
-        SetTextColor(hdc, PK_TEXT);
-        let mut vw: Vec<u16> = v.encode_utf16().collect();
-        let mut vrc = RECT { left: (84.0 * s) as i32, top: ry, right: side_w - 8, bottom: ry + row_step };
-        let _ = DrawTextW(hdc, &mut vw, &mut vrc, DT_SINGLELINE | DT_VCENTER);
-    }
-
-    // Right Workspace Area
-    let work_x = side_w + (24.0 * s) as i32;
-    let work_w = (client_w - work_x - (24.0 * s) as i32).clamp(360, 960);
-    let work_y = top_y + hdr_h + (20.0 * s) as i32;
-
-    let mod_hdr_h = (32.0 * s) as i32;
-    let badge_w = (84.0 * s) as i32;
-
-    // Helper: Draws module panel
-    let draw_module_panel = |top: i32, height: i32, badge: &str, title: &str| {
-        draw_rounded_box(hdc, work_x, top, work_w, height, PK_CARD, PK_CARD_BORDER, 0);
-        let h_bg = RECT {
-            left: work_x + 1,
-            top: top + 1,
-            right: work_x + work_w - 1,
-            bottom: top + mod_hdr_h,
-        };
-        FillRect(hdc, &h_bg, input_brush);
-        let h_line = RECT {
-            left: work_x,
-            top: top + mod_hdr_h,
-            right: work_x + work_w,
-            bottom: top + mod_hdr_h + 1,
-        };
-        FillRect(hdc, &h_line, line_brush);
-
-        let b_rc = RECT {
-            left: work_x + 1,
-            top: top + 1,
-            right: work_x + badge_w,
-            bottom: top + mod_hdr_h,
-        };
-        FillRect(hdc, &b_rc, tint_brush);
-        let b_div = RECT {
-            left: work_x + badge_w,
-            top: top + 1,
-            right: work_x + badge_w + 1,
-            bottom: top + mod_hdr_h,
-        };
-        FillRect(hdc, &b_div, line_brush);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-        SetTextColor(hdc, PK_GREEN_DARK);
-        let mut bw: Vec<u16> = badge.encode_utf16().collect();
-        let mut b_txt_rc = b_rc;
-        let _ = DrawTextW(hdc, &mut bw, &mut b_txt_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
-        SetTextColor(hdc, PK_TEXT);
-        let mut tw: Vec<u16> = title.encode_utf16().collect();
-        let mut t_rc = RECT {
-            left: work_x + badge_w + 12,
-            top: top + 1,
-            right: work_x + work_w - 12,
-            bottom: top + mod_hdr_h,
-        };
-        let _ = DrawTextW(hdc, &mut tw, &mut t_rc, DT_SINGLELINE | DT_VCENTER);
-    };
-
-    // Helper: Draws segmented button strip
+    // Segmented button strip helper
     let draw_segmented_strip = |x: i32, y: i32, w: i32, h: i32, labels: &[&str], active_idx: usize| {
         let count = labels.len().max(1) as i32;
         let seg_w = w / count;
 
-        draw_rounded_box(hdc, x, y, w, h, PK_INPUT_BG, PK_CARD_BORDER, 0);
+        draw_rounded_box(hdc, x, y, w, h, PK_INPUT_BG, PK_CARD_BORDER, 6);
 
         let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
         for (i, label) in labels.iter().enumerate() {
@@ -1291,25 +1012,18 @@ unsafe fn draw_fullscreen_settings_view(
             };
             if is_active {
                 FillRect(hdc, &cell_rc, green_brush);
-                let top_accent = RECT {
-                    left: sx + 1,
-                    top: y + 1,
-                    right: sr - 1,
-                    bottom: y + 3,
-                };
-                FillRect(hdc, &top_accent, green_dark_brush);
                 SetTextColor(hdc, COLORREF(0x00FFFFFF));
             } else {
                 FillRect(hdc, &cell_rc, input_brush);
-                SetTextColor(hdc, PK_TEXT);
+                SetTextColor(hdc, PK_MUTED);
             }
 
             if (i as i32) < count - 1 {
                 let div_rc = RECT {
                     left: sr - 1,
-                    top: y,
+                    top: y + 4,
                     right: sr,
-                    bottom: y + h,
+                    bottom: y + h - 4,
                 };
                 FillRect(hdc, &div_rc, line_brush);
             }
@@ -1320,147 +1034,140 @@ unsafe fn draw_fullscreen_settings_view(
         }
     };
 
-    let content_y = work_y + (44.0 * s) as i32;
-    let strip_x = work_x + (16.0 * s) as i32;
-    let strip_w = work_w - (32.0 * s) as i32;
-    let strip_h = (38.0 * s) as i32;
+    if active_cat == 0 {
+        // Category 0: Stream & Display Settings
+        let sec0_y = top_y + 60;
+        let strip_h = 36;
+        let step = 74;
 
-    let m1_y = content_y;
-    let m1_h = (94.0 * s) as i32;
-    let m2_y = m1_y + m1_h + (16.0 * s) as i32;
-    let m2_h = (94.0 * s) as i32;
+        // 1. Display Scaling (pure text label, no confusing button/badge box!)
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s0_lbl: Vec<u16> = "Display Scaling".encode_utf16().collect();
+        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
+        let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-    let q_mode = crate::p2p::get_quality_mode() as usize;
+        let scale_labels = ["Auto Fit", "Stretch", "Original (1:1)"];
+        draw_segmented_strip(panel_x, sec0_y + 22, panel_w, strip_h, &scale_labels, (mode as usize).min(2));
 
-    match active_cat {
-        0 => {
-            // Module 1: Scaling Mode
-            draw_module_panel(m1_y, m1_h, "SCALING", "VIEWPORT SCALING MODE");
-            let scale_labels = ["AUTO FIT", "STRETCH", "ORIGINAL 1:1"];
-            let strip1_y = m1_y + mod_hdr_h + (12.0 * s) as i32;
-            draw_segmented_strip(strip_x, strip1_y, strip_w, strip_h, &scale_labels, (mode as usize).min(2));
+        // 2. Stream Quality
+        let sec1_y = sec0_y + step;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s1_lbl: Vec<u16> = "Stream Quality".encode_utf16().collect();
+        let mut s1_rc = RECT { left: panel_x, top: sec1_y, right: panel_x + panel_w, bottom: sec1_y + 20 };
+        let _ = DrawTextW(hdc, &mut s1_lbl, &mut s1_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-            // Module 2: Image Quality
-            draw_module_panel(m2_y, m2_h, "QUALITY", "STREAM QUALITY PRESET");
-            let q_labels = ["AUTO (ABR)", "HIGH (4:4:4)", "BALANCED", "LOW DATA"];
-            let q_idx = match q_mode {
-                0 => 0,
-                1 | 2 => 1,
-                3 => 2,
-                _ => 3,
-            };
-            let strip2_y = m2_y + mod_hdr_h + (12.0 * s) as i32;
-            draw_segmented_strip(strip_x, strip2_y, strip_w, strip_h, &q_labels, q_idx);
+        let q_mode = crate::p2p::get_quality_mode() as usize;
+        let q_labels = ["Auto (ABR)", "High Quality", "Balanced", "Low Data"];
+        let q_idx = match q_mode {
+            0 => 0,
+            1 | 2 => 1,
+            3 => 2,
+            _ => 3,
+        };
+        draw_segmented_strip(panel_x, sec1_y + 22, panel_w, strip_h, &q_labels, q_idx);
+
+        // 3. Target Framerate
+        let sec2_y = sec1_y + step;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s2_lbl: Vec<u16> = "Target Framerate".encode_utf16().collect();
+        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
+        let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let fps_labels = ["30 FPS", "60 FPS", "120 FPS"];
+        let fps_idx = match fps {
+            30 => 0,
+            120 => 2,
+            _ => 1,
+        };
+        draw_segmented_strip(panel_x, sec2_y + 22, panel_w, strip_h, &fps_labels, fps_idx);
+
+        // 4. Remote Cursor
+        let sec3_y = sec2_y + step;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s3_lbl: Vec<u16> = "Remote Cursor".encode_utf16().collect();
+        let mut s3_rc = RECT { left: panel_x, top: sec3_y, right: panel_x + panel_w, bottom: sec3_y + 20 };
+        let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let cur_labels = ["Show Cursor", "Hide Cursor"];
+        let cursor_on = CAPTURE_CURSOR.load(Ordering::Relaxed);
+        draw_segmented_strip(panel_x, sec3_y + 22, panel_w, strip_h, &cur_labels, if cursor_on { 0 } else { 1 });
+
+        // Bottom [ Done ] Button
+        let done_y = sec3_y + step + 6;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
+        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
+        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    } else {
+        // Category 1: Clean Connection Info (minimal text, clean striped table from Picture 2)
+        let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
+        let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
+        let rtt_ms = crate::p2p::get_session_rtt_ms();
+        let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed);
+        let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
+        let res_str = if orig_w > 0 && orig_h > 0 {
+            format!("{}x{} ({}%)", orig_w, orig_h, active_scale)
+        } else {
+            format!("{}% Native", active_scale)
+        };
+
+        let rows = [
+            ("Latency (Ping)", if rtt_ms > 0 { format!("{} ms", rtt_ms) } else { "Local LAN (<1 ms)".to_string() }),
+            ("Stream Bitrate", bitrate_str),
+            ("Resolution", res_str),
+            ("Encryption", "ChaCha20-Poly1305 E2EE".to_string()),
+        ];
+
+        let row_h = 40;
+        let tbl_y = top_y + 60;
+        for (i, (k, v)) in rows.iter().enumerate() {
+            let ry = tbl_y + (i as i32) * (row_h + 4);
+            let row_bg = if i % 2 == 0 { PK_CARD } else { PK_INPUT_BG };
+            draw_rounded_box(hdc, panel_x, ry, panel_w, row_h, row_bg, PK_CARD_BORDER, 6);
+
+            let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+            SetTextColor(hdc, PK_MUTED);
+            let mut kw: Vec<u16> = k.encode_utf16().collect();
+            let mut k_rc = RECT { left: panel_x + 16, top: ry, right: panel_x + 200, bottom: ry + row_h };
+            let _ = DrawTextW(hdc, &mut kw, &mut k_rc, DT_SINGLELINE | DT_VCENTER);
+
+            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+            SetTextColor(hdc, PK_GREEN_DARK);
+            let mut vw: Vec<u16> = v.encode_utf16().collect();
+            let mut v_rc = RECT { left: panel_x + 200, top: ry, right: panel_x + panel_w - 16, bottom: ry + row_h };
+            let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
         }
 
-        1 => {
-            // Module 1: Framerate
-            draw_module_panel(m1_y, m1_h, "FRAMERATE", "TARGET STREAM FRAMERATE");
-            let fps_labels = ["30 FPS", "60 FPS", "120 FPS"];
-            let fps_idx = match fps {
-                30 => 0,
-                120 => 2,
-                _ => 1,
-            };
-            let strip1_y = m1_y + mod_hdr_h + (12.0 * s) as i32;
-            draw_segmented_strip(strip_x, strip1_y, strip_w, strip_h, &fps_labels, fps_idx);
-
-            // Module 2: Remote Cursor
-            draw_module_panel(m2_y, m2_h, "CURSOR", "REMOTE CURSOR DISPLAY");
-            let cur_labels = ["SHOW CURSOR", "HIDE CURSOR"];
-            let cursor_on = CAPTURE_CURSOR.load(Ordering::Relaxed);
-            let strip2_y = m2_y + mod_hdr_h + (12.0 * s) as i32;
-            draw_segmented_strip(strip_x, strip2_y, strip_w, strip_h, &cur_labels, if cursor_on { 0 } else { 1 });
-        }
-
-        _ => {
-            // Module 1: Connection & Region Information
-            let conn_h = (220.0 * s) as i32;
-            draw_module_panel(m1_y, conn_h, "CONNECTION", "SESSION & REGION DETAILS");
-
-            let rows = [
-                ("SERVER REGION", "Istanbul (TR)"),
-                ("LATENCY (RTT)", &format!("{} ms", rtt_ms)),
-                ("STREAM BITRATE", bitrate_str.as_str()),
-                ("REMOTE RESOLUTION", res_str.as_str()),
-                ("CONNECTION TYPE", "Direct P2P UDP"),
-                ("ENCRYPTION", "ChaCha20-Poly1305 E2EE"),
-            ];
-
-            let row_h = (26.0 * s) as i32;
-            for (i, (k, v)) in rows.iter().enumerate() {
-                let ry = m1_y + mod_hdr_h + 8 + (i as i32) * (row_h + 3);
-                let row_bg = if i % 2 == 0 { PK_INPUT_BG } else { PK_CARD };
-                draw_rounded_box(hdc, strip_x, ry, strip_w, row_h, row_bg, PK_CARD_BORDER, 0);
-
-                let _ = SelectObject(hdc, HGDIOBJ(font_sec.0));
-                SetTextColor(hdc, PK_MUTED);
-                let mut kw: Vec<u16> = k.encode_utf16().collect();
-                let mut k_rc = RECT {
-                    left: strip_x + 12,
-                    top: ry,
-                    right: strip_x + (180.0 * s) as i32,
-                    bottom: ry + row_h,
-                };
-                let _ = DrawTextW(hdc, &mut kw, &mut k_rc, DT_SINGLELINE | DT_VCENTER);
-
-                let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-                SetTextColor(hdc, PK_GREEN_DARK);
-                let mut vw: Vec<u16> = v.encode_utf16().collect();
-                let mut v_rc = RECT {
-                    left: strip_x + (190.0 * s) as i32,
-                    top: ry,
-                    right: strip_x + strip_w - 12,
-                    bottom: ry + row_h,
-                };
-                let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_SINGLELINE | DT_VCENTER);
-            }
-        }
+        // Bottom [ Done ] Button
+        let done_y = tbl_y + 4 * (row_h + 4) + 24;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
+        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
+        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     }
-
-    // Bottom Action Bar
-    let footer_h = (40.0 * s) as i32;
-    let footer_y = (client_h - footer_h - (16.0 * s) as i32).max(m2_y + m2_h + (16.0 * s) as i32);
-    draw_rounded_box(hdc, work_x, footer_y, work_w, footer_h, PK_CARD, PK_CARD_BORDER, 0);
-
-    let apply_w = (220.0 * s) as i32;
-    let apply_x = work_x + work_w - apply_w;
-    let apply_rc = RECT {
-        left: apply_x,
-        top: footer_y + 1,
-        right: work_x + work_w - 1,
-        bottom: footer_y + footer_h - 1,
-    };
-    FillRect(hdc, &apply_rc, green_brush);
-
-    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-    SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let mut done_txt: Vec<u16> = "APPLY & CLOSE".encode_utf16().collect();
-    let mut done_rc = apply_rc;
-    let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
-    let _ = SelectObject(hdc, HGDIOBJ(font_info.0));
-    SetTextColor(hdc, PK_MUTED);
-    let mut hint_txt: Vec<u16> = "Press [Tab] or [Esc] to return to stream".encode_utf16().collect();
-    let mut hint_rc = RECT {
-        left: work_x + 14,
-        top: footer_y,
-        right: apply_x - 10,
-        bottom: footer_y + footer_h,
-    };
-    let _ = DrawTextW(hdc, &mut hint_txt, &mut hint_rc, DT_SINGLELINE | DT_VCENTER);
 
     let _ = SelectObject(hdc, old_font);
     let _ = DeleteObject(HGDIOBJ(line_brush.0));
     let _ = DeleteObject(HGDIOBJ(green_brush.0));
     let _ = DeleteObject(HGDIOBJ(green_dark_brush.0));
-    let _ = DeleteObject(HGDIOBJ(tint_brush.0));
     let _ = DeleteObject(HGDIOBJ(input_brush.0));
-    let _ = DeleteObject(HGDIOBJ(font_brand.0));
     let _ = DeleteObject(HGDIOBJ(font_title.0));
-    let _ = DeleteObject(HGDIOBJ(font_sec.0));
+    let _ = DeleteObject(HGDIOBJ(font_lbl.0));
     let _ = DeleteObject(HGDIOBJ(font_btn.0));
-    let _ = DeleteObject(HGDIOBJ(font_info.0));
 }
 
 pub fn start_viewport_render_thread(hwnd: HWND) {
@@ -2165,17 +1872,20 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 }
 
                 let top_y = TOOLBAR_HEIGHT;
-                let scale_w = client_w as f32 / 1024.0;
-                let scale_h = ((client_h - top_y).max(400)) as f32 / 640.0;
-                let s = (scale_w.min(scale_h)).clamp(1.0, 1.40);
+                let panel_w = (client_w - 48).clamp(320, 620);
+                let panel_x = (client_w - panel_w) / 2;
 
-                let hdr_h = (46.0 * s) as i32;
-                let side_w = (210.0 * s) as i32;
-                let back_w = (160.0 * s) as i32;
-                let back_x = (client_w - back_w).max(side_w + 20);
+                // Top Navigation & Close Bar
+                let tab_y = top_y + 14;
+                let tab_h = 32;
+                let cat_w = (panel_w - 110) / 2;
+                let cat0_x = panel_x;
+                let cat1_x = cat0_x + cat_w + 8;
+                let close_w = 84;
+                let close_x = panel_x + panel_w - close_w;
 
-                // Top-right [ < BACK ] button
-                if client_x >= back_x && client_x <= client_w && client_y >= top_y && client_y <= top_y + hdr_h {
+                // Close Button [ Close × ]
+                if client_x >= close_x && client_x <= close_x + close_w && client_y >= tab_y && client_y <= tab_y + tab_h {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
                     let has_pending = crate::p2p::get_pending_approval().is_some();
                     let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
@@ -2184,122 +1894,120 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                     return LRESULT(0);
                 }
 
-                // Left Navigation Dock Tabs (0..3)
-                let nav_hdr_h = (32.0 * s) as i32;
-                let tab_start_y = top_y + hdr_h + nav_hdr_h;
-                let tab_h = (44.0 * s) as i32;
-                if client_x >= 0 && client_x < side_w {
-                    for i in 0..3 {
-                        let item_y = tab_start_y + (i as i32) * tab_h;
-                        if client_y >= item_y && client_y < item_y + tab_h {
-                            SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
-                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-                            return LRESULT(0);
-                        }
-                    }
-                }
-
-                // Right Workspace Geometry
-                let work_x = side_w + (24.0 * s) as i32;
-                let work_w = (client_w - work_x - (24.0 * s) as i32).clamp(360, 960);
-                let work_y = top_y + hdr_h + (20.0 * s) as i32;
-                let content_y = work_y + (44.0 * s) as i32;
-                let strip_x = work_x + (16.0 * s) as i32;
-                let strip_w = work_w - (32.0 * s) as i32;
-                let strip_h = (38.0 * s) as i32;
-                let mod_hdr_h = (32.0 * s) as i32;
-
-                let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
-
-                let hit_segment = |strip_y: i32, count: i32| -> Option<usize> {
-                    if client_x >= strip_x
-                        && client_x <= strip_x + strip_w
-                        && client_y >= strip_y
-                        && client_y <= strip_y + strip_h
-                    {
-                        let seg_w = (strip_w / count.max(1)).max(1);
-                        let idx = ((client_x - strip_x) / seg_w).clamp(0, count - 1) as usize;
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                };
-
-                let m1_y = content_y;
-                let m1_h = (94.0 * s) as i32;
-                let m2_y = m1_y + m1_h + (16.0 * s) as i32;
-                let m2_h = (94.0 * s) as i32;
-
-                let strip1_y = m1_y + mod_hdr_h + (12.0 * s) as i32;
-                let strip2_y = m2_y + mod_hdr_h + (12.0 * s) as i32;
-
-                match active_cat {
-                    0 => {
-                        // Category 0: Display & Quality
-                        if let Some(idx) = hit_segment(strip1_y, 3) {
-                            DISPLAY_MODE.store(idx as u8, Ordering::Relaxed);
-                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-                            return LRESULT(0);
-                        }
-                        if let Some(idx) = hit_segment(strip2_y, 4) {
-                            let target_mode = match idx {
-                                0 => 0,
-                                1 => 2,
-                                2 => 3,
-                                _ => 4,
-                            };
-                            crate::p2p::set_quality_mode(target_mode);
-                            info!("Settings: Quality preset set to mode {}", target_mode);
-                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-                            return LRESULT(0);
-                        }
-                    }
-                    1 => {
-                        // Category 1: Framerate & Input
-                        if let Some(idx) = hit_segment(strip1_y, 3) {
-                            let new_fps = match idx {
-                                0 => 30,
-                                2 => 120,
-                                _ => 60,
-                            };
-                            TARGET_FPS.store(new_fps, Ordering::Relaxed);
-                            crate::p2p::update_client_preferences(
-                                new_fps,
-                                CAPTURE_CURSOR.load(Ordering::Relaxed),
-                            );
-                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-                            return LRESULT(0);
-                        }
-                        if let Some(idx) = hit_segment(strip2_y, 2) {
-                            let enabled = idx == 0;
-                            CAPTURE_CURSOR.store(enabled, Ordering::Relaxed);
-                            crate::p2p::update_client_preferences(
-                                TARGET_FPS.load(Ordering::Relaxed),
-                                enabled,
-                            );
-                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-                            return LRESULT(0);
-                        }
-                    }
-                    _ => {}
-                }
-
-                // Bottom [ APPLY & CLOSE ] button
-                let footer_h = (40.0 * s) as i32;
-                let footer_y = (client_h - footer_h - (16.0 * s) as i32).max(m2_y + m2_h + (16.0 * s) as i32);
-                let apply_w = (220.0 * s) as i32;
-                let apply_x = work_x + work_w - apply_w;
-                if client_x >= apply_x
-                    && client_x <= work_x + work_w
-                    && client_y >= footer_y
-                    && client_y <= footer_y + footer_h
-                {
-                    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-                    let has_pending = crate::p2p::get_pending_approval().is_some();
-                    let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-                    super::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+                // Category 0 Tab: Stream & Display
+                if client_x >= cat0_x && client_x <= cat0_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
+                    SETTINGS_CATEGORY.store(0, Ordering::Relaxed);
                     unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                     return LRESULT(0);
+                }
+
+                // Category 1 Tab: Connection Info
+                if client_x >= cat1_x && client_x <= cat1_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
+                    SETTINGS_CATEGORY.store(1, Ordering::Relaxed);
+                    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                    return LRESULT(0);
+                }
+
+                let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(1);
+
+                if active_cat == 0 {
+                    // Category 0: Stream & Display Settings
+                    let sec0_y = top_y + 60;
+                    let strip_h = 36;
+                    let step = 74;
+
+                    let hit_segment = |sy: i32, count: i32| -> Option<usize> {
+                        if client_x >= panel_x
+                            && client_x <= panel_x + panel_w
+                            && client_y >= sy
+                            && client_y <= sy + strip_h
+                        {
+                            let seg_w = (panel_w / count.max(1)).max(1);
+                            let idx = ((client_x - panel_x) / seg_w).clamp(0, count - 1) as usize;
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    };
+
+                    // 1. Display Scaling (3 options)
+                    if let Some(idx) = hit_segment(sec0_y + 22, 3) {
+                        DISPLAY_MODE.store(idx as u8, Ordering::Relaxed);
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
+
+                    // 2. Stream Quality (4 options)
+                    if let Some(idx) = hit_segment(sec0_y + step + 22, 4) {
+                        let target_mode = match idx {
+                            0 => 0,
+                            1 => 2,
+                            2 => 3,
+                            _ => 4,
+                        };
+                        crate::p2p::set_quality_mode(target_mode);
+                        info!("Settings: Quality preset set to mode {}", target_mode);
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
+
+                    // 3. Target Framerate (3 options)
+                    if let Some(idx) = hit_segment(sec0_y + step * 2 + 22, 3) {
+                        let new_fps = match idx {
+                            0 => 30,
+                            2 => 120,
+                            _ => 60,
+                        };
+                        TARGET_FPS.store(new_fps, Ordering::Relaxed);
+                        crate::p2p::update_client_preferences(
+                            new_fps,
+                            CAPTURE_CURSOR.load(Ordering::Relaxed),
+                        );
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
+
+                    // 4. Remote Cursor (2 options)
+                    if let Some(idx) = hit_segment(sec0_y + step * 3 + 22, 2) {
+                        let enabled = idx == 0;
+                        CAPTURE_CURSOR.store(enabled, Ordering::Relaxed);
+                        crate::p2p::update_client_preferences(
+                            TARGET_FPS.load(Ordering::Relaxed),
+                            enabled,
+                        );
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
+
+                    // Bottom [ Done ] Button
+                    let done_y = sec0_y + step * 4 + 6;
+                    let done_w = 140;
+                    let done_x = (client_w - done_w) / 2;
+                    let done_h = 36;
+                    if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
+                        SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                        let has_pending = crate::p2p::get_pending_approval().is_some();
+                        let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                        super::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
+                } else {
+                    // Category 1: Connection Info
+                    let tbl_y = top_y + 60;
+                    let row_h = 40;
+                    let done_y = tbl_y + 4 * (row_h + 4) + 24;
+                    let done_w = 140;
+                    let done_x = (client_w - done_w) / 2;
+                    let done_h = 36;
+                    if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
+                        SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                        let has_pending = crate::p2p::get_pending_approval().is_some();
+                        let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                        super::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
                 }
 
                 return LRESULT(0);
