@@ -5,13 +5,14 @@ use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
 use tracing::info;
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreateSolidBrush,
-    DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect, SelectObject, SetBkColor,
-    SetBkMode, SetTextColor, SRCCOPY, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK,
-    FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, OPAQUE, PAINTSTRUCT, TRANSPARENT,
+    DeleteObject, DrawTextW, EndPaint, FillRect, GetTextExtentPoint32W, InvalidateRect,
+    SelectObject, SetBkColor, SetBkMode, SetTextColor, SRCCOPY, DT_CENTER, DT_LEFT,
+    DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC,
+    HGDIOBJ, OPAQUE, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -467,16 +468,38 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         ("Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
                     };
 
-                    let pill_w = (118.0 * l.font_scale) as i32;
-                    let pill_h = (30.0 * l.font_scale) as i32;
-                    let pill_x = (w - pill_w - 24).max(24);
-                    draw_rounded_box(mem_dc, pill_x, 16, pill_w, pill_h, pill_bg, PK_CARD_BORDER, pill_h / 2);
-                    crate::ui::draw_radio(mem_dc, pill_x + 10, 16 + (pill_h - 14) / 2, 14, pill_fg, 2);
                     let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                     SetTextColor(mem_dc, pill_fg);
                     let mut pill_text: Vec<u16> = pill_text_str.encode_utf16().collect();
-                    let mut pill_rect = RECT { left: pill_x + 22, top: 16, right: pill_x + pill_w - 4, bottom: 16 + pill_h };
-                    let _ = DrawTextW(mem_dc, &mut pill_text, &mut pill_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                    let mut pill_sz = SIZE::default();
+                    let _ = GetTextExtentPoint32W(mem_dc, &pill_text, &mut pill_sz);
+
+                    let icon_sz = 14;
+                    let gap = 8;
+                    let pad_x = 14;
+                    let pill_w = (pill_sz.cx + gap + icon_sz + pad_x * 2).max(114);
+                    let pill_h = (30.0 * l.font_scale) as i32;
+                    let pill_x = (w - pill_w - 24).max(24);
+
+                    draw_rounded_box(mem_dc, pill_x, 16, pill_w, pill_h, pill_bg, PK_CARD_BORDER, pill_h / 2);
+
+                    let content_w = icon_sz + gap + pill_sz.cx;
+                    let start_x = pill_x + (pill_w - content_w) / 2;
+                    let icon_y = 16 + (pill_h - icon_sz) / 2;
+
+                    if is_online {
+                        crate::ui::draw_wifi(mem_dc, start_x, icon_y, icon_sz, pill_fg, 2);
+                    } else {
+                        crate::ui::draw_radio(mem_dc, start_x, icon_y, icon_sz, pill_fg, 2);
+                    }
+
+                    let mut pill_rect = RECT {
+                        left: start_x + icon_sz + gap,
+                        top: 16,
+                        right: start_x + content_w + 4,
+                        bottom: 16 + pill_h,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
                     let hover = HOVER_BUTTON.load(Ordering::Relaxed);
 
@@ -608,12 +631,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         let copy_border = if hover == 1 { PK_GREEN } else { PK_CARD_BORDER };
                         draw_rounded_box(mem_dc, copy_btn_x, copy_btn_y, copy_btn_w, copy_btn_h, copy_bg, copy_border, 8);
                         let copy_fg = if hover == 1 { PK_GREEN_DARK } else { PK_TEXT };
-                        crate::ui::draw_copy(mem_dc, copy_btn_x + 14, copy_btn_y + 11, 16, copy_fg, 2);
+
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                         SetTextColor(mem_dc, copy_fg);
                         let mut copy_text: Vec<u16> = "Copy ID".encode_utf16().collect();
-                        let mut copy_rect = RECT { left: copy_btn_x + 28, top: copy_btn_y, right: copy_btn_x + copy_btn_w, bottom: copy_btn_y + copy_btn_h };
-                        let _ = DrawTextW(mem_dc, &mut copy_text, &mut copy_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                        let mut copy_sz = SIZE::default();
+                        let _ = GetTextExtentPoint32W(mem_dc, &copy_text, &mut copy_sz);
+
+                        let icon_sz = 16;
+                        let gap = 8;
+                        let copy_total_w = copy_sz.cx + gap + icon_sz;
+                        let copy_start_x = copy_btn_x + (copy_btn_w - copy_total_w) / 2;
+                        let copy_icon_y = copy_btn_y + (copy_btn_h - icon_sz) / 2;
+
+                        crate::ui::draw_copy(mem_dc, copy_start_x, copy_icon_y, icon_sz, copy_fg, 2);
+
+                        let mut copy_rect = RECT {
+                            left: copy_start_x + icon_sz + gap,
+                            top: copy_btn_y,
+                            right: copy_start_x + copy_total_w + 4,
+                            bottom: copy_btn_y + copy_btn_h,
+                        };
+                        let _ = DrawTextW(mem_dc, &mut copy_text, &mut copy_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
                         // 2. Card 2: REMOTE DESK
                         draw_rounded_box(mem_dc, c2_x, card_y, card_w, card_h, PK_CARD, PK_CARD_BORDER, 12);
@@ -631,12 +670,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         let conn_bg = if hover == 2 { PK_GREEN_DARK } else { PK_GREEN };
                         draw_rounded_box(mem_dc, conn_btn_x, conn_btn_y, conn_btn_w, conn_btn_h, conn_bg, conn_bg, 8);
-                        crate::ui::draw_monitor(mem_dc, conn_btn_x + (conn_btn_w / 2) - 46, conn_btn_y + 11, 16, COLORREF(0x00FFFFFF), 2);
+
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                         SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
                         let mut conn_text: Vec<u16> = "Connect".encode_utf16().collect();
-                        let mut conn_rect = RECT { left: conn_btn_x + 16, top: conn_btn_y, right: conn_btn_x + conn_btn_w, bottom: conn_btn_y + conn_btn_h };
-                        let _ = DrawTextW(mem_dc, &mut conn_text, &mut conn_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                        let mut conn_sz = SIZE::default();
+                        let _ = GetTextExtentPoint32W(mem_dc, &conn_text, &mut conn_sz);
+
+                        let conn_total_w = conn_sz.cx + gap + icon_sz;
+                        let conn_start_x = conn_btn_x + (conn_btn_w - conn_total_w) / 2;
+                        let conn_icon_y = conn_btn_y + (conn_btn_h - icon_sz) / 2;
+
+                        let mut conn_rect = RECT {
+                            left: conn_start_x,
+                            top: conn_btn_y,
+                            right: conn_start_x + conn_sz.cx,
+                            bottom: conn_btn_y + conn_btn_h,
+                        };
+                        let _ = DrawTextW(mem_dc, &mut conn_text, &mut conn_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+                        let conn_icon_x = conn_start_x + conn_sz.cx + gap;
+                        crate::ui::draw_arrow_right(mem_dc, conn_icon_x, conn_icon_y, icon_sz, COLORREF(0x00FFFFFF), 2);
 
                         // 3. Card 3: RECENT SESSIONS (Bottom Left)
                         draw_rounded_box(mem_dc, col1_x, col_y, col_w, col_h, PK_CARD, PK_CARD_BORDER, 12);
@@ -691,21 +745,34 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                                 };
                                 let _ = DrawTextW(mem_dc, &mut id_txt, &mut id_rc, DT_SINGLELINE | DT_VCENTER);
 
-                                let pill_btn_w = 72;
+                                let pill_btn_w = 76;
                                 let pill_btn_h = item_h - 10;
                                 let pill_btn_x = item_x + item_w - pill_btn_w - 6;
                                 let pill_btn_y = item_y + 5;
                                 draw_rounded_box(mem_dc, pill_btn_x, pill_btn_y, pill_btn_w, pill_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
+
                                 let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                                 SetTextColor(mem_dc, PK_GREEN);
                                 let mut c_txt: Vec<u16> = "Connect".encode_utf16().collect();
+                                let mut c_sz = SIZE::default();
+                                let _ = GetTextExtentPoint32W(mem_dc, &c_txt, &mut c_sz);
+
+                                let mini_icon_sz = 12;
+                                let mini_gap = 5;
+                                let mini_total_w = c_sz.cx + mini_gap + mini_icon_sz;
+                                let mini_start_x = pill_btn_x + (pill_btn_w - mini_total_w) / 2;
+
                                 let mut c_rc = RECT {
-                                    left: pill_btn_x,
+                                    left: mini_start_x,
                                     top: pill_btn_y,
-                                    right: pill_btn_x + pill_btn_w,
+                                    right: mini_start_x + c_sz.cx,
                                     bottom: pill_btn_y + pill_btn_h,
                                 };
-                                let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                                let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+                                let mini_icon_x = mini_start_x + c_sz.cx + mini_gap;
+                                let mini_icon_y = pill_btn_y + (pill_btn_h - mini_icon_sz) / 2;
+                                crate::ui::draw_arrow_right(mem_dc, mini_icon_x, mini_icon_y, mini_icon_sz, PK_GREEN, 2);
                             }
                         }
 

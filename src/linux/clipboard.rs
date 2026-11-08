@@ -12,6 +12,12 @@ pub fn write_clipboard_text(_text: &str) {
     // Linux clipboard text format
 }
 
+pub fn mark_clipboard_synced(_text: &str) {}
+
+pub fn is_clipboard_recently_synced(_text: &str) -> bool {
+    false
+}
+
 /// Reads Unicode text from the Linux clipboard
 pub fn read_clipboard_text() -> Option<String> {
     None

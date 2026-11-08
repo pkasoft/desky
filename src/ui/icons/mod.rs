@@ -3,6 +3,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
+pub mod arrow_right;
 pub mod bell;
 pub mod check;
 pub mod copy;
@@ -19,8 +20,11 @@ pub mod search;
 pub mod settings;
 pub mod terminal;
 pub mod trash;
+pub mod wifi;
 pub mod x;
+pub mod zap;
 
+pub use arrow_right::draw_arrow_right;
 pub use bell::draw_bell;
 pub use check::draw_check;
 pub use copy::draw_copy;
@@ -37,7 +41,9 @@ pub use search::draw_search;
 pub use settings::draw_settings;
 pub use terminal::draw_terminal;
 pub use trash::draw_trash;
+pub use wifi::draw_wifi;
 pub use x::draw_x;
+pub use zap::draw_zap;
 
 use windows::Win32::Foundation::{COLORREF, POINT};
 use windows::Win32::Graphics::Gdi::{

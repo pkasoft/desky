@@ -3,16 +3,34 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use windows::Win32::Foundation::POINT;
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, IsClipboardFormatAvailable, OpenClipboard,
     SetClipboardData,
 };
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GHND};
 use windows::Win32::UI::Shell::{DragQueryFileW, DROPFILES, HDROP};
 
 const CF_UNICODETEXT: u32 = 13;
 const CF_HDROP: u32 = 15;
+
+static LAST_SYNCED_CLIPBOARD: Mutex<String> = Mutex::new(String::new());
+
+pub fn mark_clipboard_synced(text: &str) {
+    if let Ok(mut guard) = LAST_SYNCED_CLIPBOARD.lock() {
+        *guard = text.to_string();
+    }
+}
+
+pub fn is_clipboard_recently_synced(text: &str) -> bool {
+    if let Ok(guard) = LAST_SYNCED_CLIPBOARD.lock() {
+        if *guard == text {
+            return true;
+        }
+    }
+    false
+}
 
 /// Writes an array of file paths to the Windows clipboard in `CF_HDROP` format
 pub fn write_clipboard_files(paths: &[PathBuf]) {
@@ -73,6 +91,7 @@ pub fn write_clipboard_files(paths: &[PathBuf]) {
 
 /// Writes Unicode text to the Windows clipboard in `CF_UNICODETEXT` format
 pub fn write_clipboard_text(text: &str) {
+    mark_clipboard_synced(text);
     unsafe {
         if OpenClipboard(None).is_ok() {
             let _ = EmptyClipboard();
@@ -104,16 +123,23 @@ pub fn read_clipboard_text() -> Option<String> {
         if OpenClipboard(None).is_ok() {
             let res = if let Ok(h) = GetClipboardData(CF_UNICODETEXT) {
                 if !h.0.is_null() {
-                    let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(h.0)) as *const u16;
-                    if !ptr.is_null() {
-                        let mut len = 0;
-                        while *ptr.add(len) != 0 {
-                            len += 1;
+                    let hglob = windows::Win32::Foundation::HGLOBAL(h.0);
+                    let max_bytes = GlobalSize(hglob);
+                    if max_bytes >= 2 {
+                        let ptr = GlobalLock(hglob) as *const u16;
+                        if !ptr.is_null() {
+                            let max_len = (max_bytes / 2) as usize;
+                            let mut len = 0;
+                            while len < max_len && *ptr.add(len) != 0 {
+                                len += 1;
+                            }
+                            let slice = std::slice::from_raw_parts(ptr, len);
+                            let s = String::from_utf16_lossy(slice);
+                            let _ = GlobalUnlock(hglob);
+                            Some(s)
+                        } else {
+                            None
                         }
-                        let slice = std::slice::from_raw_parts(ptr, len);
-                        let s = String::from_utf16_lossy(slice);
-                        let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(h.0));
-                        Some(s)
                     } else {
                         None
                     }

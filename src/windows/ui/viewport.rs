@@ -1521,7 +1521,10 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                         desc
                     ));
                 } else if let Some(text) = crate::p2p::read_clipboard_text() {
-                    crate::p2p::send_remote_clipboard(&text);
+                    if !crate::platform::is_clipboard_recently_synced(&text) {
+                        crate::platform::mark_clipboard_synced(&text);
+                        crate::p2p::send_remote_clipboard(&text);
+                    }
                 }
             }
             LRESULT(0)
@@ -1864,18 +1867,16 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
         WM_CHAR => {
             if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 if let Some(c) = char::from_u32(wparam.0 as u32) {
-                    if super::admin::handle_admin_char(c) {
-                        return LRESULT(0);
-                    }
+                    let _ = super::admin::handle_admin_char(c);
                 }
+                return LRESULT(0);
             }
             LRESULT(0)
         }
         WM_KEYDOWN => {
             if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
-                if super::admin::handle_admin_key(wparam.0 as u32) {
-                    return LRESULT(0);
-                }
+                let _ = super::admin::handle_admin_key(wparam.0 as u32);
+                return LRESULT(0);
             }
             if wparam.0 == 0x1B {
                 if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
@@ -1895,7 +1896,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                     let files = crate::p2p::read_clipboard_files();
                     if !files.is_empty() {
                         for f in files {
-                            info!("📋 Pasting file from clipboard: {:?}", f);
+                            info!("Clipboard Pasting file: {:?}", f);
                             crate::p2p::send_file_transfer(f);
                         }
                         return LRESULT(0);
@@ -1908,6 +1909,9 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             LRESULT(0)
         }
         WM_KEYUP => {
+            if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             if wparam.0 != 0x1B && wparam.0 != 0x09 && !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 unsafe {
                     inject_remote_key(wparam.0 as u8, true);
