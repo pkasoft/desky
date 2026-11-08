@@ -54,15 +54,28 @@ impl P2PManager {
             };
 
             rt.block_on(async move {
-                let std_sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
-                    Ok(s) => {
-                        let _ = s.set_broadcast(true);
-                        s
-                    }
-                    Err(e) => {
+                let std_sock = {
+                    let builder = match socket2::Socket::new(
+                        socket2::Domain::IPV4,
+                        socket2::Type::DGRAM,
+                        Some(socket2::Protocol::UDP),
+                    ) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            error!("Failed to create local UDP socket for P2P: {:?}", e);
+                            return;
+                        }
+                    };
+                    let _ = builder.set_broadcast(true);
+                    let _ = builder.set_send_buffer_size(4 * 1024 * 1024);
+                    let _ = builder.set_recv_buffer_size(4 * 1024 * 1024);
+                    let any_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+                    if let Err(e) = builder.bind(&any_addr.into()) {
                         error!("Failed to bind local UDP socket for P2P: {:?}", e);
                         return;
                     }
+                    let s: std::net::UdpSocket = builder.into();
+                    s
                 };
 
                 let std_sock_stream = match std_sock.try_clone() {
@@ -343,13 +356,25 @@ impl P2PManager {
                                             pkt.extend_from_slice(&(orig_h as u16).to_le_bytes());
                                             pkt.extend_from_slice(chunk);
 
+                                            let send_chunk_retry = |sock: &std::net::UdpSocket, data: &[u8], target: std::net::SocketAddr| {
+                                                for _ in 0..6 {
+                                                    match sock.send_to(data, target) {
+                                                        Ok(_) => return true,
+                                                        Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                                            std::thread::sleep(Duration::from_micros(60));
+                                                        }
+                                                        Err(_) => return false,
+                                                    }
+                                                }
+                                                false
+                                            };
+
                                             for sub in &subscribers {
                                                 if sub.is_direct || sub.addr != target_server_stream {
-                                                    let _ =
-                                                        std_sock_stream_capture.send_to(&pkt, sub.addr);
+                                                    send_chunk_retry(&std_sock_stream_capture, &pkt, sub.addr);
                                                     if let Some(l_addr) = sub.lan_addr {
                                                         if l_addr != sub.addr {
-                                                            let _ = std_sock_stream_capture.send_to(&pkt, l_addr);
+                                                            send_chunk_retry(&std_sock_stream_capture, &pkt, l_addr);
                                                         }
                                                     }
                                                 } else if !sub.relay_id.is_empty() {
@@ -360,13 +385,13 @@ impl P2PManager {
                                                 }
                                             }
 
-                                            // Smooth micro-pacing so home ISP upload buffers never overflow without burning CPU
+                                            // Smooth micro-pacing so socket/LAN buffers never drop UDP packets
                                             if any_relay {
                                                 if (idx + 1) % 3 == 0 {
                                                     std::thread::yield_now();
                                                 }
                                             } else if (idx + 1) % 8 == 0 {
-                                                std::thread::yield_now();
+                                                std::thread::sleep(Duration::from_micros(30));
                                             }
                                         }
                                         frame_id = frame_id.wrapping_add(1).max(1);
