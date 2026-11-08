@@ -63,3 +63,16 @@ pub fn get_machine_id() -> String {
         0xDEADBEEFu32
     )
 }
+
+/// Trims the process working set, returning unused heap memory and cached pages back to Windows
+pub fn trim_process_working_set() {
+    unsafe {
+        let current_process = windows::Win32::System::Threading::GetCurrentProcess();
+        let _ = windows::Win32::System::Memory::SetProcessWorkingSetSizeEx(
+            current_process,
+            usize::MAX,
+            usize::MAX,
+            windows::Win32::System::Memory::SETPROCESSWORKINGSETSIZEEX_FLAGS(0),
+        );
+    }
+}

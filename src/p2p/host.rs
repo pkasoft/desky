@@ -181,7 +181,7 @@ impl P2PManager {
                             };
 
                             if subscribers.is_empty() {
-                                std::thread::sleep(Duration::from_millis(12));
+                                std::thread::sleep(Duration::from_millis(50));
                                 continue;
                             }
 
@@ -345,23 +345,13 @@ impl P2PManager {
                                                 }
                                             }
 
-                                            // Smooth micro-pacing so home ISP upload buffers never overflow
+                                            // Smooth micro-pacing so home ISP upload buffers never overflow without burning CPU
                                             if any_relay {
-                                                if (idx + 1) % 2 == 0 {
-                                                    let t_pace = Instant::now();
-                                                    while t_pace.elapsed()
-                                                        < Duration::from_micros(200)
-                                                    {
-                                                        std::hint::spin_loop();
-                                                    }
+                                                if (idx + 1) % 3 == 0 {
+                                                    std::thread::yield_now();
                                                 }
-                                            } else if (idx + 1) % 5 == 0 {
-                                                let t_pace = Instant::now();
-                                                while t_pace.elapsed()
-                                                    < Duration::from_micros(120)
-                                                {
-                                                    std::hint::spin_loop();
-                                                }
+                                            } else if (idx + 1) % 8 == 0 {
+                                                std::thread::yield_now();
                                             }
                                         }
                                         frame_id = frame_id.wrapping_add(1).max(1);
@@ -392,6 +382,18 @@ impl P2PManager {
                             let channels = capturer.channels;
                             let sample_rate = capturer.sample_rate;
                             while running_audio.load(Ordering::Relaxed) {
+                                let has_subscribers = {
+                                    if let Ok(map) = clients_audio.lock() {
+                                        map.values().any(|s| s.auth_state == AuthState::Approved)
+                                    } else {
+                                        false
+                                    }
+                                };
+                                if !has_subscribers {
+                                    std::thread::sleep(Duration::from_millis(80));
+                                    continue;
+                                }
+
                                 if let Ok(Some(pcm_data)) = capturer.read_packet() {
                                     if !pcm_data.is_empty() {
                                         let subscribers: Vec<ClientSubscriber> = {

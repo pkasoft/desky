@@ -30,7 +30,7 @@ use windows::Win32::Graphics::Gdi::{
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HICON,
+    DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HCURSOR, HICON,
     ICONINFO,
 };
 
@@ -236,6 +236,81 @@ impl DxgiCapturer {
     }
 }
 
+struct CachedCursorPixels {
+    hcursor: isize,
+    hot_x: i32,
+    hot_y: i32,
+    pixels: [u8; 32 * 32 * 4],
+}
+
+static CURSOR_PIXEL_CACHE: Mutex<Option<CachedCursorPixels>> = Mutex::new(None);
+
+unsafe fn extract_cursor_pixels(
+    hcursor: HCURSOR,
+    cur_handle: isize,
+    cache: &mut Option<CachedCursorPixels>,
+) -> (i32, i32, [u8; 32 * 32 * 4]) {
+    let mut icon_info = ICONINFO::default();
+    let (hot_x, hot_y) = if GetIconInfo(HICON(hcursor.0), &mut icon_info).is_ok() {
+        if !icon_info.hbmMask.0.is_null() {
+            let _ = DeleteObject(HGDIOBJ(icon_info.hbmMask.0));
+        }
+        if !icon_info.hbmColor.0.is_null() {
+            let _ = DeleteObject(HGDIOBJ(icon_info.hbmColor.0));
+        }
+        (icon_info.xHotspot as i32, icon_info.yHotspot as i32)
+    } else {
+        (0, 0)
+    };
+
+    let mut cursor_pixels = [0u8; 32 * 32 * 4];
+    let hdc_screen = GetDC(None);
+    if !hdc_screen.0.is_null() {
+        let mem_dc = CreateCompatibleDC(Some(hdc_screen));
+        let mem_bmp = CreateCompatibleBitmap(hdc_screen, 32, 32);
+        let old = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
+
+        let _ = DrawIconEx(mem_dc, 0, 0, hcursor.into(), 32, 32, 0, None, DI_NORMAL);
+
+        let mut bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: 32,
+                biHeight: -32,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        GetDIBits(
+            mem_dc,
+            mem_bmp,
+            0,
+            32,
+            Some(cursor_pixels.as_mut_ptr() as *mut _),
+            &mut bmi,
+            DIB_RGB_COLORS,
+        );
+
+        let _ = SelectObject(mem_dc, old);
+        let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
+        let _ = DeleteDC(mem_dc);
+        let _ = ReleaseDC(None, hdc_screen);
+    }
+
+    *cache = Some(CachedCursorPixels {
+        hcursor: cur_handle,
+        hot_x,
+        hot_y,
+        pixels: cursor_pixels,
+    });
+
+    (hot_x, hot_y, cursor_pixels)
+}
+
 /// Blends the hardware mouse cursor onto the raw BGRA buffer
 fn blend_cursor_if_needed(bgra: &mut [u8], width: u32, height: u32) {
     unsafe {
@@ -247,78 +322,39 @@ fn blend_cursor_if_needed(bgra: &mut [u8], width: u32, height: u32) {
             && (ci.flags.0 & CURSOR_SHOWING.0 != 0)
             && !ci.hCursor.is_invalid()
         {
-            let mut icon_info = ICONINFO::default();
-            let (hot_x, hot_y) = if GetIconInfo(HICON(ci.hCursor.0), &mut icon_info).is_ok() {
-                if !icon_info.hbmMask.0.is_null() {
-                    let _ = DeleteObject(HGDIOBJ(icon_info.hbmMask.0));
+            let cur_handle = ci.hCursor.0 as isize;
+            let mut cached_opt = CURSOR_PIXEL_CACHE.lock().unwrap();
+            let (hot_x, hot_y, cursor_pixels) = if let Some(ref c) = *cached_opt {
+                if c.hcursor == cur_handle {
+                    (c.hot_x, c.hot_y, c.pixels)
+                } else {
+                    extract_cursor_pixels(ci.hCursor, cur_handle, &mut *cached_opt)
                 }
-                if !icon_info.hbmColor.0.is_null() {
-                    let _ = DeleteObject(HGDIOBJ(icon_info.hbmColor.0));
-                }
-                (icon_info.xHotspot as i32, icon_info.yHotspot as i32)
             } else {
-                (0, 0)
+                extract_cursor_pixels(ci.hCursor, cur_handle, &mut *cached_opt)
             };
 
             let cx = ci.ptScreenPos.x - hot_x;
             let cy = ci.ptScreenPos.y - hot_y;
 
-            let hdc_screen = GetDC(None);
-            if !hdc_screen.0.is_null() {
-                let mem_dc = CreateCompatibleDC(Some(hdc_screen));
-                let mem_bmp = CreateCompatibleBitmap(hdc_screen, 32, 32);
-                let old = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
-
-                let _ = DrawIconEx(mem_dc, 0, 0, ci.hCursor.into(), 32, 32, 0, None, DI_NORMAL);
-
-                let mut bmi = BITMAPINFO {
-                    bmiHeader: BITMAPINFOHEADER {
-                        biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                        biWidth: 32,
-                        biHeight: -32,
-                        biPlanes: 1,
-                        biBitCount: 32,
-                        biCompression: BI_RGB.0,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-
-                let mut cursor_pixels = [0u8; 32 * 32 * 4];
-                GetDIBits(
-                    mem_dc,
-                    mem_bmp,
-                    0,
-                    32,
-                    Some(cursor_pixels.as_mut_ptr() as *mut _),
-                    &mut bmi,
-                    DIB_RGB_COLORS,
-                );
-
-                let _ = SelectObject(mem_dc, old);
-                let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
-                let _ = DeleteDC(mem_dc);
-                let _ = ReleaseDC(None, hdc_screen);
-
-                for py in 0..32 {
-                    let ty = cy + py;
-                    if ty < 0 || ty >= height as i32 {
+            for py in 0..32 {
+                let ty = cy + py;
+                if ty < 0 || ty >= height as i32 {
+                    continue;
+                }
+                for px in 0..32 {
+                    let tx = cx + px;
+                    if tx < 0 || tx >= width as i32 {
                         continue;
                     }
-                    for px in 0..32 {
-                        let tx = cx + px;
-                        if tx < 0 || tx >= width as i32 {
-                            continue;
-                        }
-                        let c_idx = ((py * 32 + px) * 4) as usize;
-                        let alpha = cursor_pixels[c_idx + 3] as u32;
-                        if alpha > 0 {
-                            let dst_idx = ((ty as u32 * width + tx as u32) * 4) as usize;
-                            let inv = 255 - alpha;
-                            bgra[dst_idx] = ((cursor_pixels[c_idx] as u32 * alpha + bgra[dst_idx] as u32 * inv) / 255) as u8;
-                            bgra[dst_idx + 1] = ((cursor_pixels[c_idx + 1] as u32 * alpha + bgra[dst_idx + 1] as u32 * inv) / 255) as u8;
-                            bgra[dst_idx + 2] = ((cursor_pixels[c_idx + 2] as u32 * alpha + bgra[dst_idx + 2] as u32 * inv) / 255) as u8;
-                        }
+                    let c_idx = ((py * 32 + px) * 4) as usize;
+                    let alpha = cursor_pixels[c_idx + 3] as u32;
+                    if alpha > 0 {
+                        let dst_idx = ((ty as u32 * width + tx as u32) * 4) as usize;
+                        let inv = 255 - alpha;
+                        bgra[dst_idx] = ((cursor_pixels[c_idx] as u32 * alpha + bgra[dst_idx] as u32 * inv) / 255) as u8;
+                        bgra[dst_idx + 1] = ((cursor_pixels[c_idx + 1] as u32 * alpha + bgra[dst_idx + 1] as u32 * inv) / 255) as u8;
+                        bgra[dst_idx + 2] = ((cursor_pixels[c_idx + 2] as u32 * alpha + bgra[dst_idx + 2] as u32 * inv) / 255) as u8;
                     }
                 }
             }
@@ -384,7 +420,11 @@ pub fn try_dxgi_capture(
 
 /// Fast software downscaler when client requests reduced resolution
 fn scale_bgra_nearest(src: &[u8], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u8> {
-    let mut dst = vec![0u8; (dst_w * dst_h * 4) as usize];
+    let dst_len = (dst_w * dst_h * 4) as usize;
+    let mut dst = Vec::with_capacity(dst_len);
+    unsafe {
+        dst.set_len(dst_len);
+    }
     for dy in 0..dst_h {
         let sy = (dy * src_h) / dst_h;
         let src_row = (sy * src_w * 4) as usize;

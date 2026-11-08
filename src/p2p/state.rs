@@ -437,6 +437,8 @@ pub fn stop_client_session() {
     SESSION_BITRATE_KBPS.store(0, Ordering::Relaxed);
     set_session_status(SessionStatus::Idle);
     input_notify().notify_one();
+    #[cfg(target_os = "windows")]
+    crate::windows::trim_process_working_set();
 }
 
 pub fn normalize_id(id: &str) -> String {
@@ -500,13 +502,22 @@ pub fn decode_jpeg_to_bgra(
     }
 
     let pixel_count = (w as usize) * (h as usize);
-    let mut bgra = vec![255u8; pixel_count * 4];
-    for i in 0..pixel_count {
-        let s = i * 3;
-        let d = i * 4;
-        bgra[d] = rgb[s + 2];     // B
-        bgra[d + 1] = rgb[s + 1]; // G
-        bgra[d + 2] = rgb[s];     // R
+    let mut bgra = Vec::with_capacity(pixel_count * 4);
+    unsafe {
+        bgra.set_len(pixel_count * 4);
+    }
+    let src = rgb.as_slice();
+    let dst = bgra.as_mut_slice();
+
+    let mut s = 0;
+    let mut d = 0;
+    while s + 3 <= src.len() && d + 4 <= dst.len() {
+        dst[d] = src[s + 2];     // B
+        dst[d + 1] = src[s + 1]; // G
+        dst[d + 2] = src[s];     // R
+        dst[d + 3] = 255;        // Alpha
+        s += 3;
+        d += 4;
     }
 
     Some(RemoteFrame {

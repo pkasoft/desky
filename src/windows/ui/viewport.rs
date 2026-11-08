@@ -10,7 +10,7 @@ use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POI
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, ClientToScreen, CreateCompatibleBitmap, CreateCompatibleDC,
-    CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetTextExtentPoint32W,
+    CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetTextExtentPoint32W,
     InvalidateRect, ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
     SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS,
@@ -1332,6 +1332,12 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
             let mut last_frame_change_time = Instant::now();
             let mut sharp_pass_done: bool = false;
 
+            let mut cached_mem_dc: Option<HDC> = None;
+            let mut cached_mem_bmp: Option<windows::Win32::Graphics::Gdi::HBITMAP> = None;
+            let mut cached_old_bmp: Option<HGDIOBJ> = None;
+            let mut cached_bmp_w: i32 = 0;
+            let mut cached_bmp_h: i32 = 0;
+
             while VIEWPORT_RUNNING.load(Ordering::Relaxed) {
                 unsafe {
                     if !IsWindow(Some(target_hwnd)).as_bool() {
@@ -1399,9 +1405,26 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
 
                     if client_w > 50 && client_h > 50 {
                         let hdc_window = GetDC(Some(target_hwnd));
-                        let mem_dc = CreateCompatibleDC(Some(hdc_window));
-                        let mem_bmp = CreateCompatibleBitmap(hdc_window, client_w, client_h);
-                        let old_bmp = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
+
+                        if cached_mem_dc.is_none() {
+                            cached_mem_dc = Some(CreateCompatibleDC(Some(hdc_window)));
+                        }
+                        let mem_dc = cached_mem_dc.unwrap();
+
+                        if cached_mem_bmp.is_none() || cached_bmp_w != client_w || cached_bmp_h != client_h {
+                            if let Some(old) = cached_old_bmp.take() {
+                                let _ = SelectObject(mem_dc, old);
+                            }
+                            if let Some(bmp) = cached_mem_bmp.take() {
+                                let _ = DeleteObject(HGDIOBJ(bmp.0));
+                            }
+                            let new_bmp = CreateCompatibleBitmap(hdc_window, client_w, client_h);
+                            let old_bmp = SelectObject(mem_dc, HGDIOBJ(new_bmp.0));
+                            cached_old_bmp = Some(old_bmp);
+                            cached_mem_bmp = Some(new_bmp);
+                            cached_bmp_w = client_w;
+                            cached_bmp_h = client_h;
+                        }
 
                         let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                         let tabs = get_session_tabs();
@@ -1591,14 +1614,23 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     }
 
                         let _ = BitBlt(hdc_window, 0, 0, client_w, client_h, Some(mem_dc), 0, 0, SRCCOPY);
-
-                        let _ = SelectObject(mem_dc, old_bmp);
-                        let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
-                        let _ = DeleteObject(HGDIOBJ(mem_dc.0));
                         let _ = ReleaseDC(Some(target_hwnd), hdc_window);
                     }
                 }
             }
+
+            unsafe {
+                if let Some(mem_dc) = cached_mem_dc {
+                    if let Some(old) = cached_old_bmp {
+                        let _ = SelectObject(mem_dc, old);
+                    }
+                    if let Some(bmp) = cached_mem_bmp {
+                        let _ = DeleteObject(HGDIOBJ(bmp.0));
+                    }
+                    let _ = DeleteDC(mem_dc);
+                }
+            }
+
             crate::p2p::stop_client_session();
             info!("Dedicated Viewport Render Thread Exited.");
         });
@@ -1796,6 +1828,9 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
         WM_TIMER => {
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
+                if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+                    crate::windows::trim_process_working_set();
+                }
             }
             LRESULT(0)
         }
