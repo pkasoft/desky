@@ -58,6 +58,8 @@ pub enum AdminReq {
     GetSystemInfo,
     SwitchMonitor { monitor_index: u32 },
     RebootHost { safe_mode: bool },
+    SetPrivacyMode { enabled: bool },
+    WakeOnLan { mac: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +77,8 @@ pub struct SystemStats {
     pub cpu_count: usize,
     pub total_mem_mb: u64,
     pub free_mem_mb: u64,
+    #[serde(default)]
+    pub mac_addr: String,
 }
 
 /// Responses sent by host back to client in Silent Admin Mode
@@ -86,4 +90,6 @@ pub enum AdminResp {
     SystemInfo(SystemStats),
     MonitorSwitched { monitor_index: u32, count: u32 },
     RebootScheduled { safe_mode: bool },
+    PrivacyModeChanged { enabled: bool },
+    WakeOnLanSent { mac: String, success: bool },
 }

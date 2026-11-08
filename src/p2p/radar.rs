@@ -235,3 +235,33 @@ pub fn start_lan_radar(local_id_getter: impl Fn() -> String + Send + Sync + 'sta
         });
     });
 }
+
+/// Sends a Wake-on-LAN magic packet to broadcast addresses (port 9 and port 7)
+pub fn send_wake_on_lan(mac: [u8; 6]) -> std::io::Result<()> {
+    let mut packet = [0xFFu8; 102];
+    for i in 0..16 {
+        let offset = 6 + i * 6;
+        packet[offset..offset + 6].copy_from_slice(&mac);
+    }
+
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    sock.set_broadcast(true)?;
+    let _ = sock.send_to(&packet, "255.255.255.255:9");
+    let _ = sock.send_to(&packet, "255.255.255.255:7");
+    info!("📡 [WAKE-ON-LAN] Magic packet dispatched for MAC {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    Ok(())
+}
+
+/// Parses a MAC address string (e.g. "00:1A:2B:3C:4D:5E" or "00-1A-2B-3C-4D-5E") into bytes
+pub fn parse_mac_address(s: &str) -> Option<[u8; 6]> {
+    let clean: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if clean.len() != 12 {
+        return None;
+    }
+    let mut mac = [0u8; 6];
+    for i in 0..6 {
+        mac[i] = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(mac)
+}

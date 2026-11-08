@@ -1,14 +1,24 @@
 //! Windows Silent Admin & Background Management Implementation
 //! Zero-screen-takeover process inspection, termination, system telemetry and shell execution.
 
+#![allow(unsafe_op_in_unsafe_fn)]
+
 use crate::protocol::{AdminReq, AdminResp, ProcessItem, SystemStats};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use tracing::{info, warn};
-use windows::Win32::Foundation::CloseHandle;
+use windows::core::w;
+use windows::Win32::Foundation::{CloseHandle, COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, SelectObject,
+    SetBkMode, SetTextColor, DT_CENTER, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, HGDIOBJ,
+    PAINTSTRUCT, TRANSPARENT,
+};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows::Win32::System::SystemInformation::{
     GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX,
@@ -16,6 +26,15 @@ use windows::Win32::System::SystemInformation::{
 use windows::Win32::System::Threading::{
     OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
+use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, RegisterClassExW,
+    SetWindowDisplayAffinity, IDC_ARROW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WINDOW_DISPLAY_AFFINITY, WM_ERASEBKGND, WM_PAINT,
+    WNDCLASSEXW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+};
+
+static PRIVACY_CURTAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 
 pub fn handle_admin_request(req: AdminReq) -> AdminResp {
     match req {
@@ -38,6 +57,18 @@ pub fn handle_admin_request(req: AdminReq) -> AdminResp {
         AdminReq::RebootHost { safe_mode } => {
             schedule_remote_reboot(safe_mode);
             AdminResp::RebootScheduled { safe_mode }
+        }
+        AdminReq::SetPrivacyMode { enabled } => {
+            set_privacy_curtain(enabled);
+            AdminResp::PrivacyModeChanged { enabled }
+        }
+        AdminReq::WakeOnLan { mac } => {
+            let success = if let Some(bytes) = crate::p2p::parse_mac_address(&mac) {
+                crate::p2p::send_wake_on_lan(bytes).is_ok()
+            } else {
+                false
+            };
+            AdminResp::WakeOnLanSent { mac, success }
         }
     }
 }
@@ -207,6 +238,15 @@ pub fn get_system_info() -> SystemStats {
 
     let uptime_secs = unsafe { GetTickCount64() / 1000 };
 
+    let mac_output = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", "(Get-NetAdapter | Where-Object Status -eq 'Up').MacAddress | Select-Object -First 1"])
+        .creation_flags(0x08000000)
+        .output();
+    let mac_addr = match mac_output {
+        Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Err(_) => String::new(),
+    };
+
     SystemStats {
         os_name: "Windows".into(),
         hostname,
@@ -214,5 +254,119 @@ pub fn get_system_info() -> SystemStats {
         cpu_count,
         total_mem_mb,
         free_mem_mb,
+        mac_addr,
+    }
+}
+
+pub fn set_privacy_curtain(enabled: bool) {
+    unsafe {
+        let _ = BlockInput(enabled);
+        if enabled {
+            let existing = PRIVACY_CURTAIN_HWND.load(Ordering::Relaxed);
+            if existing != 0 {
+                return;
+            }
+
+            let h_module = GetModuleHandleW(None).unwrap_or_default();
+            let h_instance: HINSTANCE = h_module.into();
+            let class_name = w!("DeskyPrivacyCurtain");
+
+            let mut wc = WNDCLASSEXW::default();
+            wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+            wc.lpfnWndProc = Some(privacy_curtain_wndproc);
+            wc.hInstance = h_instance;
+            wc.lpszClassName = class_name;
+            wc.hCursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+            let _ = RegisterClassExW(&wc);
+
+            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+
+            if let Ok(hwnd) = CreateWindowExW(
+                WS_EX_TOPMOST,
+                class_name,
+                w!("Desky Privacy Curtain"),
+                WS_POPUP | WS_VISIBLE,
+                vx,
+                vy,
+                vw,
+                vh,
+                None,
+                None,
+                Some(h_instance),
+                None,
+            ) {
+                // WDA_EXCLUDEFROMCAPTURE (0x00000011): visible on physical screen, hidden from DXGI capture
+                let _ = SetWindowDisplayAffinity(hwnd, WINDOW_DISPLAY_AFFINITY(0x00000011));
+                PRIVACY_CURTAIN_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
+                info!("🔒 Host Privacy Curtain window activated ({}x{} at {},{})", vw, vh, vx, vy);
+            }
+        } else {
+            let old = PRIVACY_CURTAIN_HWND.swap(0, Ordering::Relaxed);
+            if old != 0 {
+                let hwnd = HWND(old as *mut _);
+                let _ = DestroyWindow(hwnd);
+                info!("🔓 Host Privacy Curtain window dismissed");
+            }
+        }
+    }
+}
+
+unsafe extern "system" fn privacy_curtain_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_ERASEBKGND => LRESULT(1),
+        WM_PAINT => {
+            let mut ps = PAINTSTRUCT::default();
+            let hdc = BeginPaint(hwnd, &mut ps);
+
+            let mut rect = RECT::default();
+            let _ = windows::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
+            let bg_brush = CreateSolidBrush(COLORREF(0x000F0A05));
+            FillRect(hdc, &rect, bg_brush);
+            let _ = DeleteObject(HGDIOBJ(bg_brush.0));
+
+            SetBkMode(hdc, TRANSPARENT);
+
+            let font_title = super::ui::theme::create_segoe_font(28, FW_BOLD);
+            let old_f = SelectObject(hdc, HGDIOBJ(font_title.0));
+            SetTextColor(hdc, super::ui::theme::PK_GREEN);
+            let mut t_title: Vec<u16> = "DESKY PRIVACY CURTAIN ACTIVE".encode_utf16().collect();
+            let mut rc_title = RECT {
+                left: 0,
+                top: (rect.bottom / 2) - 60,
+                right: rect.right,
+                bottom: (rect.bottom / 2) - 10,
+            };
+            let _ = DrawTextW(hdc, &mut t_title, &mut rc_title, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+            let font_sub = super::ui::theme::create_segoe_font(16, FW_NORMAL);
+            let _ = SelectObject(hdc, HGDIOBJ(font_sub.0));
+            SetTextColor(hdc, COLORREF(0x0094A3B8));
+            let mut t_sub: Vec<u16> = "This computer is being remotely serviced. Physical display & input are locked for privacy."
+                .encode_utf16()
+                .collect();
+            let mut rc_sub = RECT {
+                left: 0,
+                top: (rect.bottom / 2),
+                right: rect.right,
+                bottom: (rect.bottom / 2) + 40,
+            };
+            let _ = DrawTextW(hdc, &mut t_sub, &mut rc_sub, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+            let _ = SelectObject(hdc, old_f);
+            let _ = DeleteObject(HGDIOBJ(font_title.0));
+            let _ = DeleteObject(HGDIOBJ(font_sub.0));
+
+            let _ = EndPaint(hwnd, &ps);
+            LRESULT(0)
+        }
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }

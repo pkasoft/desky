@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Gdi::{
     InvalidateRect, ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
     SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS,
-    DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HALFTONE, HBRUSH,
+    DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HALFTONE, HBRUSH,
     HDC, HGDIOBJ, OPAQUE, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::DataExchange::{
@@ -108,6 +108,7 @@ pub(crate) static CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 // Silent Admin Mode toggle: false = normal desktop stream, true = background admin manager
 pub static VIEWPORT_IS_ADMIN_MODE: AtomicBool = AtomicBool::new(false);
 static ADMIN_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
+pub static REMOTE_PRIVACY_MODE: AtomicBool = AtomicBool::new(false);
 
 
 fn map_client_to_screen(
@@ -387,20 +388,23 @@ pub unsafe fn draw_tab_bar(
         };
         let _ = DrawTextW(hdc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     } else {
-        // Mode Switchers & Tools: [ 1 ] [ 2 ] [ Audio ] [ Desktop ] [ Admin ]
+        // Mode Switchers & Tools: [ 1 ] [ 2 ] [ Audio ] [ Privacy ] [ Desktop ] [ Admin ]
         let mode_y = 5;
         let is_admin = VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed);
         let active_mon = ACTIVE_REMOTE_MONITOR.load(Ordering::Relaxed);
         let is_muted = crate::windows::audio::is_audio_muted();
+        let is_privacy = REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
 
-        let admin_w = 78;
-        let desk_w = 84;
-        let audio_w = 68;
-        let mon_w = 28;
+        let admin_w = 76;
+        let desk_w = 80;
+        let priv_w = 78;
+        let audio_w = 64;
+        let mon_w = 26;
 
         let admin_x = client_w - admin_w - 10;
         let desk_x = admin_x - desk_w - 6;
-        let audio_x = desk_x - audio_w - 6;
+        let priv_x = desk_x - priv_w - 6;
+        let audio_x = priv_x - audio_w - 6;
         let mon2_x = audio_x - mon_w - 6;
         let mon1_x = mon2_x - mon_w - 4;
 
@@ -440,6 +444,22 @@ pub unsafe fn draw_tab_bar(
         let mut aud_txt: Vec<u16> = aud_str.encode_utf16().collect();
         let mut aud_rc = RECT { left: audio_x, top: mode_y, right: audio_x + audio_w, bottom: mode_y + tab_h };
         let _ = DrawTextW(hdc, &mut aud_txt, &mut aud_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Privacy pill
+        let priv_hover = hover_state == 9004;
+        let (p_bg, p_border, p_fg) = if is_privacy {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if priv_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, priv_x, mode_y, priv_w, tab_h, p_bg, p_border, 6);
+        crate::ui::draw_lock(hdc, priv_x + 6, mode_y + 8, 14, p_fg, 2);
+        SetTextColor(hdc, p_fg);
+        let mut p_txt: Vec<u16> = "Privacy".encode_utf16().collect();
+        let mut p_rc = RECT { left: priv_x + 22, top: mode_y, right: priv_x + priv_w, bottom: mode_y + tab_h };
+        let _ = DrawTextW(hdc, &mut p_txt, &mut p_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         // Desktop pill
         let desk_hover = hover_state == 9001;
@@ -533,14 +553,16 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
     // Mode Switchers & Tools Hit Testing (only for remote tabs)
     let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
     if active_idx > 0 {
-        let admin_w = 78;
-        let desk_w = 84;
-        let audio_w = 68;
-        let mon_w = 28;
+        let admin_w = 76;
+        let desk_w = 80;
+        let priv_w = 78;
+        let audio_w = 64;
+        let mon_w = 26;
 
         let admin_x = client_w - admin_w - 10;
         let desk_x = admin_x - desk_w - 6;
-        let audio_x = desk_x - audio_w - 6;
+        let priv_x = desk_x - priv_w - 6;
+        let audio_x = priv_x - audio_w - 6;
         let mon2_x = audio_x - mon_w - 6;
         let mon1_x = mon2_x - mon_w - 4;
 
@@ -550,6 +572,9 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
             }
             if client_x >= admin_x && client_x < admin_x + admin_w {
                 return 9002;
+            }
+            if client_x >= priv_x && client_x < priv_x + priv_w {
+                return 9004;
             }
             if client_x >= audio_x && client_x < audio_x + audio_w {
                 return 9003;
@@ -1562,6 +1587,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                             let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                             let hover_state = TAB_HOVER_STATE.load(Ordering::Relaxed);
                             draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
+                            draw_file_transfer_hud(mem_dc, client_w, client_h);
                     }
 
                         let _ = BitBlt(hdc_window, 0, 0, client_w, client_h, Some(mem_dc), 0, 0, SRCCOPY);
@@ -1576,6 +1602,69 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
             crate::p2p::stop_client_session();
             info!("Dedicated Viewport Render Thread Exited.");
         });
+}
+
+unsafe fn draw_file_transfer_hud(hdc: HDC, width: i32, height: i32) {
+    let prog = crate::p2p::get_transfer_progress();
+    if prog.total_bytes == 0 {
+        return;
+    }
+
+    let hud_w = 400.min(width - 40);
+    let hud_h = 52;
+    let hud_x = (width - hud_w) / 2;
+    let hud_y = height - hud_h - 16;
+
+    draw_rounded_box(hdc, hud_x, hud_y, hud_w, hud_h, PK_CARD, PK_GREEN, 8);
+
+    // File icon
+    crate::ui::draw_file(hdc, hud_x + 14, hud_y + 16, 18, PK_GREEN_DARK, 2);
+
+    let font_name = create_segoe_font(12, FW_SEMIBOLD);
+    let old_f = SelectObject(hdc, HGDIOBJ(font_name.0));
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, PK_TEXT);
+
+    let prefix = if prog.is_complete {
+        "Transferred: "
+    } else if prog.is_sending {
+        "Uploading: "
+    } else {
+        "Receiving: "
+    };
+    let full_name = format!("{}{}", prefix, prog.file_name);
+    let mut t_name: Vec<u16> = full_name.encode_utf16().collect();
+    let mut rc_name = RECT { left: hud_x + 38, top: hud_y + 7, right: hud_x + hud_w - 70, bottom: hud_y + 26 };
+    let _ = DrawTextW(hdc, &mut t_name, &mut rc_name, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_VCENTER);
+
+    // Percentage
+    let pct_str = format!("{}%", prog.percentage);
+    let mut t_pct: Vec<u16> = pct_str.encode_utf16().collect();
+    let mut rc_pct = RECT { left: hud_x + hud_w - 65, top: hud_y + 7, right: hud_x + hud_w - 14, bottom: hud_y + 26 };
+    SetTextColor(hdc, PK_GREEN_DARK);
+    let _ = DrawTextW(hdc, &mut t_pct, &mut rc_pct, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+
+    // Progress bar track
+    let bar_x = hud_x + 38;
+    let bar_y = hud_y + 32;
+    let bar_w = hud_w - 52;
+    let bar_h = 6;
+    let track_rc = RECT { left: bar_x, top: bar_y, right: bar_x + bar_w, bottom: bar_y + bar_h };
+    let tb = CreateSolidBrush(PK_INPUT_BG);
+    FillRect(hdc, &track_rc, tb);
+    let _ = DeleteObject(HGDIOBJ(tb.0));
+
+    // Progress bar fill
+    let fill_w = ((bar_w as f64) * (prog.percentage as f64 / 100.0)).clamp(0.0, bar_w as f64) as i32;
+    if fill_w > 0 {
+        let fill_rc = RECT { left: bar_x, top: bar_y, right: bar_x + fill_w, bottom: bar_y + bar_h };
+        let fb = CreateSolidBrush(PK_GREEN);
+        FillRect(hdc, &fill_rc, fb);
+        let _ = DeleteObject(HGDIOBJ(fb.0));
+    }
+
+    let _ = SelectObject(hdc, old_f);
+    let _ = DeleteObject(HGDIOBJ(font_name.0));
 }
 
 unsafe fn inject_remote_mouse(hwnd: HWND, client_x: i32, client_y: i32, is_down: bool, is_right: bool) {
@@ -1982,6 +2071,12 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 let _ = crate::windows::audio::toggle_audio_mute();
                 unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                 return LRESULT(0);
+            } else if hit == 9004 {
+                let new_priv = !REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
+                REMOTE_PRIVACY_MODE.store(new_priv, Ordering::Relaxed);
+                crate::p2p::send_admin_request(crate::protocol::AdminReq::SetPrivacyMode { enabled: new_priv });
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return LRESULT(0);
             } else if hit == 9101 {
                 ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
                 crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 0 });
@@ -2138,6 +2233,9 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                     ADMIN_HOVER_STATE.store(hover, Ordering::Relaxed);
                 } else {
                     unsafe {
+                        let shape_id = crate::p2p::get_remote_cursor_shape();
+                        let c = crate::windows::get_hcursor_for_shape(shape_id);
+                        SetCursor(Some(c));
                         inject_remote_mouse_move(hwnd, client_x, client_y);
                     }
                 }
@@ -2155,6 +2253,11 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                         let hit = get_tab_hit_state(hwnd, cursor_pt.x, cursor_pt.y);
                         let cursor_name = if hit >= 0 { IDC_HAND } else { IDC_ARROW };
                         let c = LoadCursorW(None, cursor_name).unwrap_or_default();
+                        SetCursor(Some(c));
+                        return LRESULT(1);
+                    } else if !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) && ACTIVE_TAB_INDEX.load(Ordering::Relaxed) > 0 {
+                        let shape_id = crate::p2p::get_remote_cursor_shape();
+                        let c = crate::windows::get_hcursor_for_shape(shape_id);
                         SetCursor(Some(c));
                         return LRESULT(1);
                     }

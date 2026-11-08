@@ -160,6 +160,7 @@ impl P2PManager {
                         let mut frame_id: u32 = 1;
                         let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
                         let mut last_jpeg_len: usize = 0;
+                        let mut last_cursor_shape: u8 = 0xFF;
 
                         while running_stream.load(Ordering::Relaxed) {
                             let loop_start = Instant::now();
@@ -237,6 +238,26 @@ impl P2PManager {
                                 } else {
                                     jpeg_encoder::SamplingFactor::R_4_2_0
                                 });
+
+                                #[cfg(target_os = "windows")]
+                                {
+                                    let cur_shape = crate::windows::get_current_cursor_shape();
+                                    if cur_shape != last_cursor_shape {
+                                        last_cursor_shape = cur_shape;
+                                        let mut cur_pkt = [0u8; 6];
+                                        cur_pkt[0..4].copy_from_slice(MAGIC_DSKY);
+                                        cur_pkt[4] = crate::p2p::state::PKT_CURSOR_SHAPE;
+                                        cur_pkt[5] = cur_shape;
+                                        for sub in &subscribers {
+                                            if sub.is_direct {
+                                                let _ = std_sock_stream_capture.send_to(&cur_pkt, sub.addr);
+                                            } else if !sub.relay_id.is_empty() {
+                                                let relay = wrap_relay_packet(&sub.relay_id, &cur_pkt);
+                                                let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
+                                            }
+                                        }
+                                    }
+                                }
 
                                 // Host -> Client Clipboard Synchronization check
                                 if frame_id % 30 == 0 {
