@@ -24,6 +24,7 @@ pub const PKT_FILE_CHUNK: u8 = 0x0B;
 pub const PKT_FILE_FINISH: u8 = 0x0C;
 pub const PKT_ADMIN_REQ: u8 = 0x0D;
 pub const PKT_ADMIN_RESP: u8 = 0x0E;
+pub const PKT_AUDIO_CHUNK: u8 = 0x0F;
 
 pub const AUTH_PENDING: u8 = 0;
 pub const AUTH_APPROVED: u8 = 1;

@@ -8,6 +8,7 @@ use crate::p2p::state::{
     CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
     PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
     PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_ADMIN_RESP,
+    PKT_AUDIO_CHUNK,
     admin_notify, pop_outgoing_admin_packet, feed_admin_resp_chunk, store_admin_response,
     clipboard_notify, pop_outgoing_clipboard, file_notify, pop_outgoing_file_packet,
     handle_incoming_file_start, handle_incoming_file_chunk, handle_incoming_file_finish,
@@ -628,6 +629,15 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     }
                                     PKT_FILE_FINISH => {
                                         handle_incoming_file_finish();
+                                    }
+                                    PKT_AUDIO_CHUNK => {
+                                        if slice.len() >= 10 {
+                                            let channels = slice[5] as u16;
+                                            let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
+                                            let pcm = &slice[10..];
+                                            #[cfg(target_os = "windows")]
+                                            crate::windows::audio::play_remote_audio_chunk(sample_rate, channels, pcm);
+                                        }
                                     }
                                     PKT_ADMIN_RESP => {
                                         if slice.len() >= 13 {

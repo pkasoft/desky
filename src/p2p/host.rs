@@ -154,6 +154,7 @@ impl P2PManager {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
                     let target_server_stream = target_server;
+                    let std_sock_stream_capture = Arc::clone(&std_sock_stream);
 
                     std::thread::spawn(move || {
                         let mut frame_id: u32 = 1;
@@ -252,10 +253,10 @@ impl P2PManager {
                                                 pkt.extend_from_slice(text_bytes);
                                                 for sub in &subscribers {
                                                     if sub.is_direct {
-                                                        let _ = std_sock_stream.send_to(&pkt, sub.addr);
+                                                        let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
                                                     } else if !sub.relay_id.is_empty() {
                                                         let relay = wrap_relay_packet(&sub.relay_id, &pkt);
-                                                        let _ = std_sock_stream.send_to(&relay, target_server_stream);
+                                                        let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
                                                     }
                                                 }
                                             }
@@ -269,10 +270,10 @@ impl P2PManager {
                                     if let Some(pkt) = crate::p2p::state::pop_outgoing_file_packet() {
                                         for sub in &subscribers {
                                             if sub.is_direct {
-                                                let _ = std_sock_stream.send_to(&pkt, sub.addr);
+                                                let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
                                             } else if !sub.relay_id.is_empty() {
                                                 let relay = wrap_relay_packet(&sub.relay_id, &pkt);
-                                                let _ = std_sock_stream.send_to(&relay, target_server_stream);
+                                                let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
                                             }
                                         }
                                         file_pkts_sent += 1;
@@ -314,11 +315,11 @@ impl P2PManager {
                                             for sub in &subscribers {
                                                 if sub.is_direct {
                                                     let _ =
-                                                        std_sock_stream.send_to(&pkt, sub.addr);
+                                                        std_sock_stream_capture.send_to(&pkt, sub.addr);
                                                 } else if !sub.relay_id.is_empty() {
                                                     let relay_pkt =
                                                         wrap_relay_packet(&sub.relay_id, &pkt);
-                                                    let _ = std_sock_stream
+                                                    let _ = std_sock_stream_capture
                                                         .send_to(&relay_pkt, target_server_stream);
                                                 }
                                             }
@@ -352,6 +353,56 @@ impl P2PManager {
                             let elapsed = loop_start.elapsed();
                             if elapsed < target_frame_time {
                                 std::thread::sleep(target_frame_time - elapsed);
+                            }
+                        }
+                    });
+                }
+
+                // Dedicated Host Audio WASAPI Loopback Streamer OS Thread
+                #[cfg(target_os = "windows")]
+                {
+                    let clients_audio = Arc::clone(&active_clients);
+                    let running_audio = Arc::clone(&running);
+                    let sock_audio = Arc::clone(&std_sock_stream);
+                    let target_server_audio = target_server;
+
+                    std::thread::spawn(move || {
+                        if let Ok(capturer) = crate::windows::audio::WasapiLoopbackCapturer::new() {
+                            let channels = capturer.channels;
+                            let sample_rate = capturer.sample_rate;
+                            while running_audio.load(Ordering::Relaxed) {
+                                if let Ok(Some(pcm_data)) = capturer.read_packet() {
+                                    if !pcm_data.is_empty() {
+                                        let subscribers: Vec<ClientSubscriber> = {
+                                            if let Ok(map) = clients_audio.lock() {
+                                                map.values()
+                                                    .filter(|s| s.auth_state == AuthState::Approved)
+                                                    .cloned()
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
+                                        if !subscribers.is_empty() {
+                                            let mut pkt = Vec::with_capacity(10 + pcm_data.len());
+                                            pkt.extend_from_slice(MAGIC_DSKY);
+                                            pkt.push(crate::p2p::state::PKT_AUDIO_CHUNK);
+                                            pkt.push(channels as u8);
+                                            pkt.extend_from_slice(&sample_rate.to_le_bytes());
+                                            pkt.extend_from_slice(&pcm_data);
+
+                                            for sub in &subscribers {
+                                                if sub.is_direct {
+                                                    let _ = sock_audio.send_to(&pkt, sub.addr);
+                                                } else if !sub.relay_id.is_empty() {
+                                                    let relay = wrap_relay_packet(&sub.relay_id, &pkt);
+                                                    let _ = sock_audio.send_to(&relay, target_server_audio);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                std::thread::sleep(Duration::from_millis(15));
                             }
                         }
                     });

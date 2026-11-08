@@ -62,6 +62,7 @@ static HWND_VIEWPORT: AtomicIsize = AtomicIsize::new(0);
 static TAB_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
 static DRAGGING_TAB_INDEX: AtomicI32 = AtomicI32::new(-1);
 static DRAG_START_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+pub static ACTIVE_REMOTE_MONITOR: AtomicU32 = AtomicU32::new(0);
 
 pub fn init_session_tabs() {
     let store = SESSION_TABS.get_or_init(|| Mutex::new(Vec::new()));
@@ -386,17 +387,62 @@ pub unsafe fn draw_tab_bar(
         };
         let _ = DrawTextW(hdc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     } else {
-        // Mode Switchers: [ Desktop ] and [ Admin ] (for remote connections)
-        let mode_w = 98;
+        // Mode Switchers & Tools: [ 1 ] [ 2 ] [ Audio ] [ Desktop ] [ Admin ]
         let mode_y = 5;
         let is_admin = VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed);
+        let active_mon = ACTIVE_REMOTE_MONITOR.load(Ordering::Relaxed);
+        let is_muted = crate::windows::audio::is_audio_muted();
 
-        let desk_x = client_w - (mode_w * 2 + 16);
-        let admin_x = client_w - (mode_w + 10);
+        let admin_w = 78;
+        let desk_w = 84;
+        let audio_w = 68;
+        let mon_w = 28;
 
+        let admin_x = client_w - admin_w - 10;
+        let desk_x = admin_x - desk_w - 6;
+        let audio_x = desk_x - audio_w - 6;
+        let mon2_x = audio_x - mon_w - 6;
+        let mon1_x = mon2_x - mon_w - 4;
+
+        // Mon 1 pill
+        let (m1_bg, m1_border, m1_fg) = if active_mon == 0 {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, mon1_x, mode_y, mon_w, tab_h, m1_bg, m1_border, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
+        SetTextColor(hdc, m1_fg);
+        let mut m1_txt: Vec<u16> = "1".encode_utf16().collect();
+        let mut m1_rc = RECT { left: mon1_x, top: mode_y, right: mon1_x + mon_w, bottom: mode_y + tab_h };
+        let _ = DrawTextW(hdc, &mut m1_txt, &mut m1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Mon 2 pill
+        let (m2_bg, m2_border, m2_fg) = if active_mon == 1 {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, mon2_x, mode_y, mon_w, tab_h, m2_bg, m2_border, 6);
+        SetTextColor(hdc, m2_fg);
+        let mut m2_txt: Vec<u16> = "2".encode_utf16().collect();
+        let mut m2_rc = RECT { left: mon2_x, top: mode_y, right: mon2_x + mon_w, bottom: mode_y + tab_h };
+        let _ = DrawTextW(hdc, &mut m2_txt, &mut m2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Audio pill
+        let (aud_bg, aud_border, aud_fg, aud_str) = if !is_muted {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK, "Audio")
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED, "Muted")
+        };
+        draw_rounded_box(hdc, audio_x, mode_y, audio_w, tab_h, aud_bg, aud_border, 6);
+        SetTextColor(hdc, aud_fg);
+        let mut aud_txt: Vec<u16> = aud_str.encode_utf16().collect();
+        let mut aud_rc = RECT { left: audio_x, top: mode_y, right: audio_x + audio_w, bottom: mode_y + tab_h };
+        let _ = DrawTextW(hdc, &mut aud_txt, &mut aud_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Desktop pill
         let desk_hover = hover_state == 9001;
-        let admin_hover = hover_state == 9002;
-
         let (d_bg, d_border, d_fg) = if !is_admin {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else if desk_hover {
@@ -404,14 +450,15 @@ pub unsafe fn draw_tab_bar(
         } else {
             (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, desk_x, mode_y, mode_w, tab_h, d_bg, d_border, 6);
+        draw_rounded_box(hdc, desk_x, mode_y, desk_w, tab_h, d_bg, d_border, 6);
         crate::ui::draw_monitor(hdc, desk_x + 8, mode_y + 7, 16, d_fg, 2);
-        let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
         SetTextColor(hdc, d_fg);
         let mut d_txt: Vec<u16> = "Desktop".encode_utf16().collect();
-        let mut d_rc = RECT { left: desk_x + 24, top: mode_y, right: desk_x + mode_w, bottom: mode_y + tab_h };
+        let mut d_rc = RECT { left: desk_x + 22, top: mode_y, right: desk_x + desk_w, bottom: mode_y + tab_h };
         let _ = DrawTextW(hdc, &mut d_txt, &mut d_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
+        // Admin pill
+        let admin_hover = hover_state == 9002;
         let (a_bg, a_border, a_fg) = if is_admin {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else if admin_hover {
@@ -419,11 +466,11 @@ pub unsafe fn draw_tab_bar(
         } else {
             (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, admin_x, mode_y, mode_w, tab_h, a_bg, a_border, 6);
+        draw_rounded_box(hdc, admin_x, mode_y, admin_w, tab_h, a_bg, a_border, 6);
         crate::ui::draw_terminal(hdc, admin_x + 8, mode_y + 7, 16, a_fg, 2);
         SetTextColor(hdc, a_fg);
         let mut a_txt: Vec<u16> = "Admin".encode_utf16().collect();
-        let mut a_rc = RECT { left: admin_x + 22, top: mode_y, right: admin_x + mode_w, bottom: mode_y + tab_h };
+        let mut a_rc = RECT { left: admin_x + 20, top: mode_y, right: admin_x + admin_w, bottom: mode_y + tab_h };
         let _ = DrawTextW(hdc, &mut a_txt, &mut a_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     }
 
@@ -483,18 +530,35 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
         return 999;
     }
 
-    // Mode Switchers Hit Testing (only for remote tabs)
+    // Mode Switchers & Tools Hit Testing (only for remote tabs)
     let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
     if active_idx > 0 {
-        let mode_w = 98;
-        let desk_x = client_w - (mode_w * 2 + 16);
-        let admin_x = client_w - (mode_w + 10);
+        let admin_w = 78;
+        let desk_w = 84;
+        let audio_w = 68;
+        let mon_w = 28;
+
+        let admin_x = client_w - admin_w - 10;
+        let desk_x = admin_x - desk_w - 6;
+        let audio_x = desk_x - audio_w - 6;
+        let mon2_x = audio_x - mon_w - 6;
+        let mon1_x = mon2_x - mon_w - 4;
+
         if client_y >= tab_y && client_y < tab_y + tab_h {
-            if client_x >= desk_x && client_x < desk_x + mode_w {
+            if client_x >= desk_x && client_x < desk_x + desk_w {
                 return 9001;
             }
-            if client_x >= admin_x && client_x < admin_x + mode_w {
+            if client_x >= admin_x && client_x < admin_x + admin_w {
                 return 9002;
+            }
+            if client_x >= audio_x && client_x < audio_x + audio_w {
+                return 9003;
+            }
+            if client_x >= mon1_x && client_x < mon1_x + mon_w {
+                return 9101;
+            }
+            if client_x >= mon2_x && client_x < mon2_x + mon_w {
+                return 9102;
             }
         }
     }
@@ -1913,6 +1977,20 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 if state.processes.is_empty() {
                     crate::p2p::send_admin_request(crate::protocol::AdminReq::GetProcesses);
                 }
+                return LRESULT(0);
+            } else if hit == 9003 {
+                let _ = crate::windows::audio::toggle_audio_mute();
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return LRESULT(0);
+            } else if hit == 9101 {
+                ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
+                crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 0 });
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return LRESULT(0);
+            } else if hit == 9102 {
+                ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
+                crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 1 });
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                 return LRESULT(0);
             } else if hit >= 1000 {
                 let close_idx = (hit - 1000) as usize;

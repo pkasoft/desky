@@ -56,6 +56,8 @@ pub enum AdminReq {
     KillProcess { pid: u32 },
     ExecuteCommand { command: String },
     GetSystemInfo,
+    SwitchMonitor { monitor_index: u32 },
+    RebootHost { safe_mode: bool },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,4 +84,6 @@ pub enum AdminResp {
     KillResult { pid: u32, success: bool, msg: String },
     CommandOutput { output: String, exit_code: i32 },
     SystemInfo(SystemStats),
+    MonitorSwitched { monitor_index: u32, count: u32 },
+    RebootScheduled { safe_mode: bool },
 }
