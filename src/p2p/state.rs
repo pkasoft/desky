@@ -103,6 +103,26 @@ pub static CLIENT_SESSION_GEN: AtomicU32 = AtomicU32::new(0);
 pub static CLIENT_TARGET_FPS: AtomicU32 = AtomicU32::new(60);
 pub static CLIENT_CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 
+static ACTIVE_SESSION_TARGET: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+pub fn get_active_session_target() -> Option<String> {
+    ACTIVE_SESSION_TARGET
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+}
+
+pub fn set_active_session_target(target: Option<String>) {
+    if let Ok(mut g) = ACTIVE_SESSION_TARGET.get_or_init(|| Mutex::new(None)).lock() {
+        *g = target;
+    }
+}
+
+pub fn is_client_session_active() -> bool {
+    CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
+}
+
 // Quality / Bitrate Mode:
 // 0 = Auto Adaptive (ABR based on network speed & loss)
 // 1 = Ultra Text (100% Native, Q90, 4:4:4 Chroma)
@@ -416,6 +436,7 @@ pub fn send_remote_input(event: InputEvent) {
 pub fn stop_client_session() {
     CLIENT_SESSION_ACTIVE.store(false, Ordering::SeqCst);
     CLIENT_SESSION_GEN.fetch_add(1, Ordering::SeqCst);
+    set_active_session_target(None);
     if let Ok(mut g) = frame_store().lock() {
         *g = None;
     }

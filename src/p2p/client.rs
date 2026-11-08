@@ -2,6 +2,7 @@ use crate::p2p::state::{
     apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint_port,
     fix_loopback_peer, frame_store, get_active_quality_params, input_notify, input_store,
     lan_broadcast_addrs, normalize_id, resolve_server_addr,
+    set_active_session_target,
     set_session_status, update_client_preferences, wrap_relay_packet, SessionStatus,
     ACTIVE_CHROMA_444, ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED,
     AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
@@ -62,6 +63,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
     let my_gen = CLIENT_SESSION_GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     CLIENT_SESSION_ACTIVE.store(true, Ordering::SeqCst);
+    set_active_session_target(Some(target_id.to_string()));
 
     let my_id_norm = {
         let ident = crate::identity::load_or_create_identity();

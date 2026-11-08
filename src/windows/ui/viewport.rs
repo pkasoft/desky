@@ -13,7 +13,7 @@ use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteDC, DeleteObject, DrawTextW, EndPaint, FillRect, GetDC, GetTextExtentPoint32W,
     InvalidateRect, ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode,
     SetBrushOrgEx, SetStretchBltMode, SetTextColor, StretchDIBits, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS,
+    BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER, DT_END_ELLIPSIS,
     DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HALFTONE, HBRUSH,
     HDC, HGDIOBJ, OPAQUE, PAINTSTRUCT, SRCCOPY, TRANSPARENT,
 };
@@ -173,6 +173,45 @@ fn map_client_to_screen(
             }
         }
     }
+}
+
+unsafe fn draw_toolbar_tooltip(
+    hdc: HDC,
+    client_w: i32,
+    tab_bar_h: i32,
+    text: &str,
+    target_center_x: i32,
+) {
+    let font_tip = create_segoe_font(12, FW_SEMIBOLD);
+    let old_font = SelectObject(hdc, HGDIOBJ(font_tip.0));
+
+    let mut wide_txt: Vec<u16> = text.encode_utf16().collect();
+    let mut calc_rc = RECT::default();
+    let _ = DrawTextW(hdc, &mut wide_txt, &mut calc_rc, DT_CALCRECT | DT_SINGLELINE);
+    let text_w = calc_rc.right - calc_rc.left;
+    let pad_x = 9;
+    let tip_w = text_w + pad_x * 2;
+    let tip_h = 24;
+
+    let tip_x = (target_center_x - tip_w / 2).clamp(4, client_w - tip_w - 4);
+    let tip_y = tab_bar_h + 3;
+
+    let bg_color = COLORREF(0x0018181A);
+    let border_color = PK_GREEN;
+    draw_rounded_box(hdc, tip_x, tip_y, tip_w, tip_h, bg_color, border_color, 4);
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, COLORREF(0x00FFFFFF));
+    let mut txt_rc = RECT {
+        left: tip_x,
+        top: tip_y,
+        right: tip_x + tip_w,
+        bottom: tip_y + tip_h,
+    };
+    let _ = DrawTextW(hdc, &mut wide_txt, &mut txt_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    let _ = SelectObject(hdc, old_font);
+    let _ = DeleteObject(HGDIOBJ(font_tip.0));
 }
 
 pub unsafe fn draw_tab_bar(
@@ -348,7 +387,38 @@ pub unsafe fn draw_tab_bar(
     crate::ui::draw_plus(hdc, plus_x + 8, tab_y + 8, 14, plus_fg, 2);
 
     // Right Side of Toolbar
-    if active_idx == 0 {
+    let mode_y = 5;
+    let btn_w = 32;
+    let is_home = active_idx == 0;
+    let is_settings_open = SHOW_SETTINGS_MODAL.load(Ordering::Relaxed);
+    let is_admin = VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed);
+    let active_mon = ACTIVE_REMOTE_MONITOR.load(Ordering::Relaxed);
+    let is_muted = crate::windows::audio::is_audio_muted();
+    let is_voice = crate::windows::audio::is_intercom_voice_active();
+    let is_privacy = REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
+
+    // Settings icon is placed on the far right, accessible on both Home and Remote tabs
+    let settings_x = client_w - btn_w - 12;
+    let s_hover = hover_state == 9006;
+    let (s_bg, s_border, s_fg) = if is_settings_open {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else if s_hover {
+        (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+    } else {
+        (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, settings_x, mode_y, btn_w, tab_h, s_bg, s_border, 6);
+    let s_icon_sz = 16;
+    crate::ui::draw_settings(
+        hdc,
+        settings_x + (btn_w - s_icon_sz) / 2,
+        mode_y + (tab_h - s_icon_sz) / 2,
+        s_icon_sz,
+        s_fg,
+        2,
+    );
+
+    let (admin_x, desk_x, priv_x, voice_x, audio_x, mon3_x, mon2_x, mon1_x) = if is_home {
         // Server status badge
         let is_online = crate::p2p::is_server_online();
         let ping = crate::p2p::get_server_ping_ms();
@@ -373,7 +443,7 @@ pub unsafe fn draw_tab_bar(
         let gap = 8;
         let pad_x = 12;
         let pill_w = pill_sz.cx + gap + icon_sz + pad_x * 2;
-        let pill_x = client_w - pill_w - 12;
+        let pill_x = settings_x - pill_w - 8;
 
         draw_rounded_box(hdc, pill_x, tab_y, pill_w, tab_h, pill_bg, PK_CARD_BORDER, 6);
         let content_w = icon_sz + gap + pill_sz.cx;
@@ -387,109 +457,110 @@ pub unsafe fn draw_tab_bar(
             bottom: tab_y + tab_h,
         };
         let _ = DrawTextW(hdc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        (0, 0, 0, 0, 0, 0, 0, 0)
     } else {
-        // Mode Switchers & Tools: [ 1 ] [ 2 ] [ 3 ] [ Audio ] [ Voice ] [ Privacy ] [ Desktop ] [ Admin ]
-        let mode_y = 5;
-        let is_admin = VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed);
-        let active_mon = ACTIVE_REMOTE_MONITOR.load(Ordering::Relaxed);
-        let is_muted = crate::windows::audio::is_audio_muted();
-        let is_voice = crate::windows::audio::is_intercom_voice_active();
-        let is_privacy = REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
+        // Mode Switchers & Tools pure vector icons:
+        // [ Mon 1 ] [ Mon 2 ] [ Mon 3 ] | [ Audio ] [ Voice ] [ Privacy ] [ Desktop ] [ Admin ] [ Settings ]
+        let admin_x = settings_x - btn_w - 5;
+        let desk_x = admin_x - btn_w - 5;
+        let priv_x = desk_x - btn_w - 5;
+        let voice_x = priv_x - btn_w - 5;
+        let audio_x = voice_x - btn_w - 5;
+        let div_x = audio_x - 7;
+        let mon3_x = div_x - 7 - btn_w;
+        let mon2_x = mon3_x - btn_w - 4;
+        let mon1_x = mon2_x - btn_w - 4;
 
-        let admin_w = 76;
-        let desk_w = 80;
-        let priv_w = 78;
-        let voice_w = 66;
-        let audio_w = 64;
-        let mon_w = 26;
+        // Divider
+        let div_rc = RECT {
+            left: div_x,
+            top: mode_y + 4,
+            right: div_x + 1,
+            bottom: mode_y + tab_h - 4,
+        };
+        FillRect(hdc, &div_rc, border_brush);
 
-        let admin_x = client_w - admin_w - 10;
-        let desk_x = admin_x - desk_w - 6;
-        let priv_x = desk_x - priv_w - 6;
-        let voice_x = priv_x - voice_w - 6;
-        let audio_x = voice_x - audio_w - 6;
-        let mon3_x = audio_x - mon_w - 6;
-        let mon2_x = mon3_x - mon_w - 4;
-        let mon1_x = mon2_x - mon_w - 4;
-
-        // Mon 1 pill
+        // Mon 1 icon
+        let m1_hover = hover_state == 9101;
         let (m1_bg, m1_border, m1_fg) = if active_mon == 0 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if m1_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
-            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, mon1_x, mode_y, mon_w, tab_h, m1_bg, m1_border, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
-        SetTextColor(hdc, m1_fg);
-        let mut m1_txt: Vec<u16> = "1".encode_utf16().collect();
-        let mut m1_rc = RECT { left: mon1_x, top: mode_y, right: mon1_x + mon_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut m1_txt, &mut m1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, mon1_x, mode_y, btn_w, tab_h, m1_bg, m1_border, 6);
+        crate::ui::draw_monitor_num(hdc, mon1_x + (btn_w - 18) / 2, mode_y + (tab_h - 18) / 2, 18, 1, m1_fg, 2);
 
-        // Mon 2 pill
+        // Mon 2 icon
+        let m2_hover = hover_state == 9102;
         let (m2_bg, m2_border, m2_fg) = if active_mon == 1 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if m2_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
-            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, mon2_x, mode_y, mon_w, tab_h, m2_bg, m2_border, 6);
-        SetTextColor(hdc, m2_fg);
-        let mut m2_txt: Vec<u16> = "2".encode_utf16().collect();
-        let mut m2_rc = RECT { left: mon2_x, top: mode_y, right: mon2_x + mon_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut m2_txt, &mut m2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, mon2_x, mode_y, btn_w, tab_h, m2_bg, m2_border, 6);
+        crate::ui::draw_monitor_num(hdc, mon2_x + (btn_w - 18) / 2, mode_y + (tab_h - 18) / 2, 18, 2, m2_fg, 2);
 
-        // Mon 3 pill
+        // Mon 3 icon
+        let m3_hover = hover_state == 9103;
         let (m3_bg, m3_border, m3_fg) = if active_mon == 2 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if m3_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
-            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, mon3_x, mode_y, mon_w, tab_h, m3_bg, m3_border, 6);
-        SetTextColor(hdc, m3_fg);
-        let mut m3_txt: Vec<u16> = "3".encode_utf16().collect();
-        let mut m3_rc = RECT { left: mon3_x, top: mode_y, right: mon3_x + mon_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut m3_txt, &mut m3_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, mon3_x, mode_y, btn_w, tab_h, m3_bg, m3_border, 6);
+        crate::ui::draw_monitor_num(hdc, mon3_x + (btn_w - 18) / 2, mode_y + (tab_h - 18) / 2, 18, 3, m3_fg, 2);
 
-        // Audio pill
-        let (aud_bg, aud_border, aud_fg, aud_str) = if !is_muted {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK, "Audio")
+        // Audio icon
+        let aud_hover = hover_state == 9003;
+        let (aud_bg, aud_border, aud_fg) = if !is_muted {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if aud_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
-            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED, "Muted")
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, audio_x, mode_y, audio_w, tab_h, aud_bg, aud_border, 6);
-        SetTextColor(hdc, aud_fg);
-        let mut aud_txt: Vec<u16> = aud_str.encode_utf16().collect();
-        let mut aud_rc = RECT { left: audio_x, top: mode_y, right: audio_x + audio_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut aud_txt, &mut aud_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
-        // Voice / Intercom pill
-        let (vox_bg, vox_border, vox_fg, vox_str) = if is_voice {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK, "Voice")
+        draw_rounded_box(hdc, audio_x, mode_y, btn_w, tab_h, aud_bg, aud_border, 6);
+        if !is_muted {
+            crate::ui::draw_volume(hdc, audio_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, aud_fg, 2);
         } else {
-            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED, "Mic Off")
-        };
-        draw_rounded_box(hdc, voice_x, mode_y, voice_w, tab_h, vox_bg, vox_border, 6);
-        SetTextColor(hdc, vox_fg);
-        let mut vox_txt: Vec<u16> = vox_str.encode_utf16().collect();
-        let mut vox_rc = RECT { left: voice_x, top: mode_y, right: voice_x + voice_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut vox_txt, &mut vox_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            crate::ui::draw_volume_x(hdc, audio_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, aud_fg, 2);
+        }
 
-        // Privacy pill
+        // Voice / Intercom icon
+        let vox_hover = hover_state == 9005;
+        let (vox_bg, vox_border, vox_fg) = if is_voice {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if vox_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        } else {
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, voice_x, mode_y, btn_w, tab_h, vox_bg, vox_border, 6);
+        if is_voice {
+            crate::ui::draw_mic(hdc, voice_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, vox_fg, 2);
+        } else {
+            crate::ui::draw_mic_off(hdc, voice_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, vox_fg, 2);
+        }
+
+        // Privacy icon
         let priv_hover = hover_state == 9004;
         let (p_bg, p_border, p_fg) = if is_privacy {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else if priv_hover {
             (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
-            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, priv_x, mode_y, priv_w, tab_h, p_bg, p_border, 6);
-        crate::ui::draw_lock(hdc, priv_x + 6, mode_y + 8, 14, p_fg, 2);
-        SetTextColor(hdc, p_fg);
-        let mut p_txt: Vec<u16> = "Privacy".encode_utf16().collect();
-        let mut p_rc = RECT { left: priv_x + 22, top: mode_y, right: priv_x + priv_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut p_txt, &mut p_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, priv_x, mode_y, btn_w, tab_h, p_bg, p_border, 6);
+        crate::ui::draw_lock(hdc, priv_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, p_fg, 2);
 
-        // Desktop pill
+        // Desktop icon
         let desk_hover = hover_state == 9001;
         let (d_bg, d_border, d_fg) = if !is_admin {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
@@ -498,14 +569,10 @@ pub unsafe fn draw_tab_bar(
         } else {
             (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, desk_x, mode_y, desk_w, tab_h, d_bg, d_border, 6);
-        crate::ui::draw_monitor(hdc, desk_x + 8, mode_y + 7, 16, d_fg, 2);
-        SetTextColor(hdc, d_fg);
-        let mut d_txt: Vec<u16> = "Desktop".encode_utf16().collect();
-        let mut d_rc = RECT { left: desk_x + 22, top: mode_y, right: desk_x + desk_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut d_txt, &mut d_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, desk_x, mode_y, btn_w, tab_h, d_bg, d_border, 6);
+        crate::ui::draw_monitor(hdc, desk_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, d_fg, 2);
 
-        // Admin pill
+        // Admin icon
         let admin_hover = hover_state == 9002;
         let (a_bg, a_border, a_fg) = if is_admin {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
@@ -514,12 +581,40 @@ pub unsafe fn draw_tab_bar(
         } else {
             (PK_CARD, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(hdc, admin_x, mode_y, admin_w, tab_h, a_bg, a_border, 6);
-        crate::ui::draw_terminal(hdc, admin_x + 8, mode_y + 7, 16, a_fg, 2);
-        SetTextColor(hdc, a_fg);
-        let mut a_txt: Vec<u16> = "Admin".encode_utf16().collect();
-        let mut a_rc = RECT { left: admin_x + 20, top: mode_y, right: admin_x + admin_w, bottom: mode_y + tab_h };
-        let _ = DrawTextW(hdc, &mut a_txt, &mut a_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        draw_rounded_box(hdc, admin_x, mode_y, btn_w, tab_h, a_bg, a_border, 6);
+        crate::ui::draw_terminal(hdc, admin_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, a_fg, 2);
+
+        (admin_x, desk_x, priv_x, voice_x, audio_x, mon3_x, mon2_x, mon1_x)
+    };
+
+    // Tooltip for hovered toolbar button
+    let tooltip_data: Option<(&str, i32)> = match hover_state {
+        9006 => Some((
+            if is_settings_open { "Close Settings" } else { "Settings" },
+            settings_x + btn_w / 2,
+        )),
+        9002 if !is_home => Some(("Remote Admin Terminal", admin_x + btn_w / 2)),
+        9001 if !is_home => Some(("Desktop View", desk_x + btn_w / 2)),
+        9004 if !is_home => Some((
+            if is_privacy { "Privacy Mode: ON" } else { "Privacy Mode" },
+            priv_x + btn_w / 2,
+        )),
+        9005 if !is_home => Some((
+            if is_voice { "Intercom: Active" } else { "Intercom Voice" },
+            voice_x + btn_w / 2,
+        )),
+        9003 if !is_home => Some((
+            if is_muted { "Unmute Audio" } else { "Mute Audio" },
+            audio_x + btn_w / 2,
+        )),
+        9103 if !is_home => Some(("Monitor 3", mon3_x + btn_w / 2)),
+        9102 if !is_home => Some(("Monitor 2", mon2_x + btn_w / 2)),
+        9101 if !is_home => Some(("Monitor 1", mon1_x + btn_w / 2)),
+        _ => None,
+    };
+
+    if let Some((text, center_x)) = tooltip_data {
+        draw_toolbar_tooltip(hdc, client_w, tab_h + mode_y, text, center_x);
     }
 
     let _ = SelectObject(hdc, old_font);
@@ -578,48 +673,51 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
         return 999;
     }
 
+    // Settings Hit Testing (available on both Home and Remote tabs)
+    let btn_w = 32;
+    let settings_x = client_w - btn_w - 12;
+    if client_y >= tab_y && client_y < tab_y + tab_h {
+        if client_x >= settings_x && client_x < settings_x + btn_w {
+            return 9006;
+        }
+    }
+
     // Mode Switchers & Tools Hit Testing (only for remote tabs)
     let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
     if active_idx > 0 {
-        let admin_w = 76;
-        let desk_w = 80;
-        let priv_w = 78;
-        let voice_w = 66;
-        let audio_w = 64;
-        let mon_w = 26;
-
-        let admin_x = client_w - admin_w - 10;
-        let desk_x = admin_x - desk_w - 6;
-        let priv_x = desk_x - priv_w - 6;
-        let voice_x = priv_x - voice_w - 6;
-        let audio_x = voice_x - audio_w - 6;
-        let mon3_x = audio_x - mon_w - 6;
-        let mon2_x = mon3_x - mon_w - 4;
-        let mon1_x = mon2_x - mon_w - 4;
+        let admin_x = settings_x - btn_w - 5;
+        let desk_x = admin_x - btn_w - 5;
+        let priv_x = desk_x - btn_w - 5;
+        let voice_x = priv_x - btn_w - 5;
+        let audio_x = voice_x - btn_w - 5;
+        let div_x = audio_x - 7;
+        let mon3_x = div_x - 7 - btn_w;
+        let mon2_x = mon3_x - btn_w - 4;
+        let mon1_x = mon2_x - btn_w - 4;
 
         if client_y >= tab_y && client_y < tab_y + tab_h {
-            if client_x >= desk_x && client_x < desk_x + desk_w {
+            if client_x >= desk_x && client_x < desk_x + btn_w {
                 return 9001;
             }
-            if client_x >= admin_x && client_x < admin_x + admin_w {
+            if client_x >= admin_x && client_x < admin_x + btn_w {
                 return 9002;
             }
-            if client_x >= priv_x && client_x < priv_x + priv_w {
+            if client_x >= priv_x && client_x < priv_x + btn_w {
                 return 9004;
             }
-            if client_x >= voice_x && client_x < voice_x + voice_w {
+            if client_x >= voice_x && client_x < voice_x + btn_w {
                 return 9005;
             }
-            if client_x >= audio_x && client_x < audio_x + audio_w {
+            if client_x >= audio_x && client_x < audio_x + btn_w {
                 return 9003;
             }
-            if client_x >= mon1_x && client_x < mon1_x + mon_w {
+            if client_x >= mon1_x && client_x < mon1_x + btn_w {
                 return 9101;
             }
-            if client_x >= mon2_x && client_x < mon2_x + mon_w {
+            if client_x >= mon2_x && client_x < mon2_x + btn_w {
                 return 9102;
             }
-            if client_x >= mon3_x && client_x < mon3_x + mon_w {
+            if client_x >= mon3_x && client_x < mon3_x + btn_w {
                 return 9103;
             }
         }
@@ -645,11 +743,22 @@ pub fn switch_session_tab(tab_idx: usize) {
                         let title = format!("Desky | [{}]", tab.title);
                         let wide_title: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
                         let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
-                        crate::p2p::start_client_session(
-                            &tab.id,
-                            TARGET_FPS.load(Ordering::Relaxed),
-                            CAPTURE_CURSOR.load(Ordering::Relaxed),
-                        );
+
+                        let current_target = crate::p2p::get_active_session_target();
+                        let is_active = crate::p2p::is_client_session_active();
+                        let norm_tab_target = crate::p2p::normalize_id(&tab.id);
+                        let matches_active = current_target
+                            .as_deref()
+                            .map(|t| crate::p2p::normalize_id(t) == norm_tab_target)
+                            .unwrap_or(false);
+
+                        if !is_active || !matches_active {
+                            crate::p2p::start_client_session(
+                                &tab.id,
+                                TARGET_FPS.load(Ordering::Relaxed),
+                                CAPTURE_CURSOR.load(Ordering::Relaxed),
+                            );
+                        }
                     }
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
@@ -741,11 +850,22 @@ pub fn spawn_or_add_tab_viewport(target: &str) {
             let _ = SetForegroundWindow(hwnd);
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
-        crate::p2p::start_client_session(
-            target,
-            TARGET_FPS.load(Ordering::Relaxed),
-            CAPTURE_CURSOR.load(Ordering::Relaxed),
-        );
+
+        let current_target = crate::p2p::get_active_session_target();
+        let is_active = crate::p2p::is_client_session_active();
+        let norm_target = crate::p2p::normalize_id(target);
+        let matches_active = current_target
+            .as_deref()
+            .map(|t| crate::p2p::normalize_id(t) == norm_target)
+            .unwrap_or(false);
+
+        if !is_active || !matches_active {
+            crate::p2p::start_client_session(
+                target,
+                TARGET_FPS.load(Ordering::Relaxed),
+                CAPTURE_CURSOR.load(Ordering::Relaxed),
+            );
+        }
     }
 }
 
@@ -800,15 +920,16 @@ unsafe fn draw_fullscreen_settings_view(
     client_h: i32,
     mode: u8,
     fps: u32,
+    top_y: i32,
 ) {
     let scale_w = client_w as f32 / 1024.0;
-    let scale_h = client_h as f32 / 640.0;
+    let scale_h = ((client_h - top_y).max(400)) as f32 / 640.0;
     let s = (scale_w.min(scale_h)).clamp(1.0, 1.40);
 
     // 1. Full-Screen Canvas (PK_BG)
     let full_rect = RECT {
         left: 0,
-        top: 0,
+        top: top_y,
         right: client_w,
         bottom: client_h,
     };
@@ -829,16 +950,16 @@ unsafe fn draw_fullscreen_settings_view(
 
     let hdr_rect = RECT {
         left: 0,
-        top: 0,
+        top: top_y,
         right: client_w,
-        bottom: hdr_h,
+        bottom: top_y + hdr_h,
     };
     FillRect(hdc, &hdr_rect, card_brush);
     let hdr_line = RECT {
         left: 0,
-        top: hdr_h - 1,
+        top: top_y + hdr_h - 1,
         right: client_w,
-        bottom: hdr_h,
+        bottom: top_y + hdr_h,
     };
     FillRect(hdc, &hdr_line, line_brush);
 
@@ -859,9 +980,9 @@ unsafe fn draw_fullscreen_settings_view(
     // Brand Label
     let brand_cell_div = RECT {
         left: side_w - 1,
-        top: 0,
+        top: top_y,
         right: side_w,
-        bottom: hdr_h,
+        bottom: top_y + hdr_h,
     };
     FillRect(hdc, &brand_cell_div, line_brush);
 
@@ -870,9 +991,9 @@ unsafe fn draw_fullscreen_settings_view(
     let mut brand_txt: Vec<u16> = "DESKY".encode_utf16().collect();
     let mut brand_rc = RECT {
         left: (18.0 * s) as i32,
-        top: 0,
+        top: top_y,
         right: side_w - 10,
-        bottom: hdr_h,
+        bottom: top_y + hdr_h,
     };
     let _ = DrawTextW(hdc, &mut brand_txt, &mut brand_rc, DT_SINGLELINE | DT_VCENTER);
 
@@ -888,9 +1009,9 @@ unsafe fn draw_fullscreen_settings_view(
     let mut crumb_txt: Vec<u16> = crumb_label.encode_utf16().collect();
     let mut crumb_rc = RECT {
         left: side_w + (20.0 * s) as i32,
-        top: 0,
+        top: top_y,
         right: client_w - (180.0 * s) as i32,
-        bottom: hdr_h,
+        bottom: top_y + hdr_h,
     };
     let _ = DrawTextW(hdc, &mut crumb_txt, &mut crumb_rc, DT_SINGLELINE | DT_VCENTER);
 
@@ -899,14 +1020,14 @@ unsafe fn draw_fullscreen_settings_view(
     let back_x = (client_w - back_w).max(side_w + 20);
     let back_rc = RECT {
         left: back_x,
-        top: 0,
+        top: top_y,
         right: client_w,
-        bottom: hdr_h - 1,
+        bottom: top_y + hdr_h - 1,
     };
     FillRect(hdc, &back_rc, green_brush);
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
     SetTextColor(hdc, COLORREF(0x00FFFFFF));
-    let mut back_txt: Vec<u16> = "< BACK TO STREAM".encode_utf16().collect();
+    let mut back_txt: Vec<u16> = "< BACK".encode_utf16().collect();
     let mut back_txt_rc = back_rc;
     let _ = DrawTextW(
         hdc,
@@ -918,14 +1039,14 @@ unsafe fn draw_fullscreen_settings_view(
     // Left Navigation Dock
     let side_rc = RECT {
         left: 0,
-        top: hdr_h,
+        top: top_y + hdr_h,
         right: side_w,
         bottom: client_h,
     };
     FillRect(hdc, &side_rc, card_brush);
     let side_border = RECT {
         left: side_w - 1,
-        top: hdr_h,
+        top: top_y + hdr_h,
         right: side_w,
         bottom: client_h,
     };
@@ -934,16 +1055,16 @@ unsafe fn draw_fullscreen_settings_view(
     let nav_hdr_h = (32.0 * s) as i32;
     let nav_hdr_bg = RECT {
         left: 0,
-        top: hdr_h,
+        top: top_y + hdr_h,
         right: side_w - 1,
-        bottom: hdr_h + nav_hdr_h,
+        bottom: top_y + hdr_h + nav_hdr_h,
     };
     FillRect(hdc, &nav_hdr_bg, input_brush);
     let nav_hdr_line = RECT {
         left: 0,
-        top: hdr_h + nav_hdr_h - 1,
+        top: top_y + hdr_h + nav_hdr_h - 1,
         right: side_w,
-        bottom: hdr_h + nav_hdr_h,
+        bottom: top_y + hdr_h + nav_hdr_h,
     };
     FillRect(hdc, &nav_hdr_line, line_brush);
 
@@ -952,9 +1073,9 @@ unsafe fn draw_fullscreen_settings_view(
     let mut nav_hdr: Vec<u16> = "CATEGORIES".encode_utf16().collect();
     let mut nav_hdr_rc = RECT {
         left: (18.0 * s) as i32,
-        top: hdr_h,
+        top: top_y + hdr_h,
         right: side_w - 12,
-        bottom: hdr_h + nav_hdr_h,
+        bottom: top_y + hdr_h + nav_hdr_h,
     };
     let _ = DrawTextW(hdc, &mut nav_hdr, &mut nav_hdr_rc, DT_SINGLELINE | DT_VCENTER);
 
@@ -964,7 +1085,7 @@ unsafe fn draw_fullscreen_settings_view(
         ("03", "CONNECTION & REGION"),
     ];
 
-    let tab_start_y = hdr_h + nav_hdr_h;
+    let tab_start_y = top_y + hdr_h + nav_hdr_h;
     let tab_h = (44.0 * s) as i32;
 
     for (i, (num, label)) in categories.iter().enumerate() {
@@ -1094,7 +1215,7 @@ unsafe fn draw_fullscreen_settings_view(
     // Right Workspace Area
     let work_x = side_w + (24.0 * s) as i32;
     let work_w = (client_w - work_x - (24.0 * s) as i32).clamp(360, 960);
-    let work_y = hdr_h + (20.0 * s) as i32;
+    let work_y = top_y + hdr_h + (20.0 * s) as i32;
 
     let mod_hdr_h = (32.0 * s) as i32;
     let badge_w = (84.0 * s) as i32;
@@ -1357,6 +1478,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
 
             let mut last_rendered_frame_id: u32 = 0;
             let mut last_tab_idx: usize = 0;
+            let mut last_hover: i32 = -1;
             let mut last_w: i32 = 0;
             let mut last_h: i32 = 0;
             let mut last_mode: u8 = 255;
@@ -1396,6 +1518,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     let cap_cur = CAPTURE_CURSOR.load(Ordering::Relaxed);
                     let active_idx = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                     let tab_changed = active_idx != last_tab_idx;
+                    let hover_state = TAB_HOVER_STATE.load(Ordering::Relaxed);
+                    let hover_changed = hover_state != last_hover;
 
                     let latest_frame = crate::p2p::get_latest_remote_frame();
                     let cur_frame_id = latest_frame.as_ref().map(|f| f.frame_id).unwrap_or(0);
@@ -1412,6 +1536,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
 
                     let state_changed = frame_changed
                         || tab_changed
+                        || hover_changed
                         || needs_sharp_pass
                         || client_w != last_w
                         || client_h != last_h
@@ -1432,6 +1557,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
 
                     last_rendered_frame_id = cur_frame_id;
                     last_tab_idx = active_idx;
+                    last_hover = hover_state;
                     last_w = client_w;
                     last_h = client_h;
                     last_mode = mode;
@@ -1472,7 +1598,11 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                         let tabs = get_session_tabs();
                         let hover_state = TAB_HOVER_STATE.load(Ordering::Relaxed);
 
-                        if active_idx == 0 {
+                        if modal_open {
+                            super::launcher::set_edit_target_visibility(false);
+                            draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps, TOOLBAR_HEIGHT);
+                            draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
+                        } else if active_idx == 0 {
                             let hp_hover = super::launcher::get_hover_button();
                             super::launcher::draw_homepage_view(mem_dc, client_w, client_h, hp_hover);
                             draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, 0, hover_state);
@@ -1481,10 +1611,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                                 let full_rc = RECT { left: 0, top: 0, right: client_w, bottom: client_h };
                                 FillRect(mem_dc, &full_rc, VIEWPORT_BRUSH);
                             }
-                            if modal_open {
-                                draw_fullscreen_settings_view(mem_dc, client_w, client_h, mode, target_fps);
-                                draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
-                            } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                            if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                                 let hover_admin = ADMIN_HOVER_STATE.load(Ordering::Relaxed);
                                 super::admin::draw_admin_view(mem_dc, client_w, client_h, hover_admin);
                                 draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
@@ -2002,17 +2129,44 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
         WM_LBUTTONDOWN => {
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
-            // Viewport dimensions
 
             let mut rect = RECT::default();
             let _ = unsafe { GetClientRect(hwnd, &mut rect) };
             let client_w = rect.right - rect.left;
             let client_h = rect.bottom - rect.top;
 
-                        // 1. If Full-Screen Settings Page is open, handle settings controls
+            // Tab Bar Interaction (hit testing toolbar buttons and tabs)
+            let hit = get_tab_hit_state(hwnd, client_x, client_y);
+
+            // Settings button (9006) toggles Full-Screen Settings Page
+            if hit == 9006 {
+                let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+                let has_pending = crate::p2p::get_pending_approval().is_some();
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                super::launcher::set_edit_target_visibility(active == 0 && !has_pending && prev);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return LRESULT(0);
+            }
+
+            // 1. If Full-Screen Settings Page is open, handle settings controls
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                if client_y < TOOLBAR_HEIGHT {
+                    // Clicking another tab or close button while in settings
+                    if hit >= 1000 {
+                        let close_idx = (hit - 1000) as usize;
+                        close_session_tab(hwnd, close_idx);
+                        return LRESULT(0);
+                    } else if hit >= 0 {
+                        SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                        let tab_idx = hit as usize;
+                        switch_session_tab(tab_idx);
+                        return LRESULT(0);
+                    }
+                }
+
+                let top_y = TOOLBAR_HEIGHT;
                 let scale_w = client_w as f32 / 1024.0;
-                let scale_h = client_h as f32 / 640.0;
+                let scale_h = ((client_h - top_y).max(400)) as f32 / 640.0;
                 let s = (scale_w.min(scale_h)).clamp(1.0, 1.40);
 
                 let hdr_h = (46.0 * s) as i32;
@@ -2020,21 +2174,26 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 let back_w = (160.0 * s) as i32;
                 let back_x = (client_w - back_w).max(side_w + 20);
 
-                // Top-right [ < BACK TO STREAM ] button
-                if client_x >= back_x && client_x <= client_w && client_y >= 0 && client_y <= hdr_h {
+                // Top-right [ < BACK ] button
+                if client_x >= back_x && client_x <= client_w && client_y >= top_y && client_y <= top_y + hdr_h {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                    let has_pending = crate::p2p::get_pending_approval().is_some();
+                    let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                    super::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+                    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                     return LRESULT(0);
                 }
 
                 // Left Navigation Dock Tabs (0..3)
                 let nav_hdr_h = (32.0 * s) as i32;
-                let tab_start_y = hdr_h + nav_hdr_h;
+                let tab_start_y = top_y + hdr_h + nav_hdr_h;
                 let tab_h = (44.0 * s) as i32;
                 if client_x >= 0 && client_x < side_w {
                     for i in 0..3 {
                         let item_y = tab_start_y + (i as i32) * tab_h;
                         if client_y >= item_y && client_y < item_y + tab_h {
                             SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                             return LRESULT(0);
                         }
                     }
@@ -2043,7 +2202,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 // Right Workspace Geometry
                 let work_x = side_w + (24.0 * s) as i32;
                 let work_w = (client_w - work_x - (24.0 * s) as i32).clamp(360, 960);
-                let work_y = hdr_h + (20.0 * s) as i32;
+                let work_y = top_y + hdr_h + (20.0 * s) as i32;
                 let content_y = work_y + (44.0 * s) as i32;
                 let strip_x = work_x + (16.0 * s) as i32;
                 let strip_w = work_w - (32.0 * s) as i32;
@@ -2079,6 +2238,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                         // Category 0: Display & Quality
                         if let Some(idx) = hit_segment(strip1_y, 3) {
                             DISPLAY_MODE.store(idx as u8, Ordering::Relaxed);
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                             return LRESULT(0);
                         }
                         if let Some(idx) = hit_segment(strip2_y, 4) {
@@ -2090,6 +2250,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                             };
                             crate::p2p::set_quality_mode(target_mode);
                             info!("Settings: Quality preset set to mode {}", target_mode);
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                             return LRESULT(0);
                         }
                     }
@@ -2106,6 +2267,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                                 new_fps,
                                 CAPTURE_CURSOR.load(Ordering::Relaxed),
                             );
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                             return LRESULT(0);
                         }
                         if let Some(idx) = hit_segment(strip2_y, 2) {
@@ -2115,6 +2277,7 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                                 TARGET_FPS.load(Ordering::Relaxed),
                                 enabled,
                             );
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                             return LRESULT(0);
                         }
                     }
@@ -2132,6 +2295,10 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                     && client_y <= footer_y + footer_h
                 {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                    let has_pending = crate::p2p::get_pending_approval().is_some();
+                    let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                    super::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+                    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                     return LRESULT(0);
                 }
 
@@ -2305,9 +2472,18 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 let hit = get_tab_hit_state(hwnd, client_x, client_y);
                 if prev != hit {
                     TAB_HOVER_STATE.store(hit, Ordering::Relaxed);
+                    unsafe {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
                 }
             } else {
-                TAB_HOVER_STATE.store(-1, Ordering::Relaxed);
+                let prev = TAB_HOVER_STATE.load(Ordering::Relaxed);
+                if prev != -1 {
+                    TAB_HOVER_STATE.store(-1, Ordering::Relaxed);
+                    unsafe {
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                 if active == 0 {
                     let mut rect = RECT::default();
