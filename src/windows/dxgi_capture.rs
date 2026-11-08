@@ -26,8 +26,8 @@ use windows::Win32::Graphics::Dxgi::{
     DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits,
+    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DrawIconEx, GetCursorInfo, GetIconInfo, CURSORINFO, CURSOR_SHOWING, DI_NORMAL, HCURSOR, HICON,
@@ -41,9 +41,13 @@ pub struct DxgiCapturer {
     staging_texture: Option<ID3D11Texture2D>,
     width: u32,
     height: u32,
+    screen_x: i32,
+    screen_y: i32,
     cached_frame: Vec<u8>,
     last_capture_time: Instant,
+    last_gdi_refresh: Instant,
     pub monitor_index: u32,
+    has_acquired_gpu_frame: bool,
 }
 
 static DXGI_ENGINE: Mutex<Option<DxgiCapturer>> = Mutex::new(None);
@@ -129,10 +133,15 @@ impl DxgiCapturer {
             let duplication: IDXGIOutputDuplication = output1.DuplicateOutput(&device)?;
 
             let desc = output.GetDesc()?;
+            let screen_x = desc.DesktopCoordinates.left;
+            let screen_y = desc.DesktopCoordinates.top;
             let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).abs() as u32;
             let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).abs() as u32;
 
             info!("DXGI GPU Desktop Duplication initialized: Output #{} ({}x{}) @ Feature Level {:?}", monitor_index, width, height, feature_level);
+
+            let mut cached_frame = vec![0u8; (width * height * 4) as usize];
+            seed_gdi_frame(&mut cached_frame, width, height, screen_x, screen_y);
 
             Ok(Self {
                 device,
@@ -141,9 +150,13 @@ impl DxgiCapturer {
                 staging_texture: None,
                 width,
                 height,
-                cached_frame: vec![0u8; (width * height * 4) as usize],
+                screen_x,
+                screen_y,
+                cached_frame,
                 last_capture_time: Instant::now(),
+                last_gdi_refresh: Instant::now(),
                 monitor_index,
+                has_acquired_gpu_frame: false,
             })
         }
     }
@@ -194,35 +207,43 @@ impl DxgiCapturer {
                     let staging = self.staging_texture.as_ref().unwrap();
 
                     self.context.CopyResource(staging, &desktop_texture);
-                    let _ = self.duplication.ReleaseFrame();
 
                     let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
-                    self.context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))?;
+                    if self.context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_ok() {
+                        let src_ptr = mapped.pData as *const u8;
+                        let row_pitch = mapped.RowPitch as usize;
+                        let row_bytes = (self.width * 4) as usize;
 
-                    let src_ptr = mapped.pData as *const u8;
-                    let row_pitch = mapped.RowPitch as usize;
-                    let row_bytes = (self.width * 4) as usize;
-
-                    if row_pitch == row_bytes {
-                        // Direct full-buffer copy in <0.3ms
-                        let total_bytes = row_bytes * self.height as usize;
-                        std::ptr::copy_nonoverlapping(src_ptr, self.cached_frame.as_mut_ptr(), total_bytes);
-                    } else {
-                        // Scanline-by-scanline copy respecting GPU pitch alignment
-                        for y in 0..self.height as usize {
-                            let src_row = src_ptr.add(y * row_pitch);
-                            let dst_row = self.cached_frame.as_mut_ptr().add(y * row_bytes);
-                            std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
+                        if row_pitch == row_bytes {
+                            // Direct full-buffer copy in <0.3ms
+                            let total_bytes = row_bytes * self.height as usize;
+                            std::ptr::copy_nonoverlapping(src_ptr, self.cached_frame.as_mut_ptr(), total_bytes);
+                        } else {
+                            // Scanline-by-scanline copy respecting GPU pitch alignment
+                            for y in 0..self.height as usize {
+                                let src_row = src_ptr.add(y * row_pitch);
+                                let dst_row = self.cached_frame.as_mut_ptr().add(y * row_bytes);
+                                std::ptr::copy_nonoverlapping(src_row, dst_row, row_bytes);
+                            }
                         }
+
+                        self.context.Unmap(staging, 0);
+                        self.has_acquired_gpu_frame = true;
                     }
 
-                    self.context.Unmap(staging, 0);
+                    // Release frame ONLY after GPU copy and Map/Unmap are complete!
+                    let _ = self.duplication.ReleaseFrame();
+
                     self.last_capture_time = Instant::now();
                     Ok((self.width, self.height, &self.cached_frame))
                 }
                 Err(err) => {
                     if err.code() == DXGI_ERROR_WAIT_TIMEOUT {
-                        // Screen contents haven't changed: return cached previous frame with zero GPU overhead!
+                        // If no GPU frame has arrived yet or screen has been static for >250ms, refresh via GDI
+                        if !self.has_acquired_gpu_frame || self.last_gdi_refresh.elapsed() >= std::time::Duration::from_millis(250) {
+                            seed_gdi_frame(&mut self.cached_frame, self.width, self.height, self.screen_x, self.screen_y);
+                            self.last_gdi_refresh = Instant::now();
+                        }
                         Ok((self.width, self.height, &self.cached_frame))
                     } else if err.code() == DXGI_ERROR_ACCESS_LOST {
                         warn!("DXGI Desktop Duplication access lost (mode switch/UAC). Resetting capturer...");
@@ -362,6 +383,72 @@ fn blend_cursor_if_needed(bgra: &mut [u8], width: u32, height: u32) {
     }
 }
 
+/// Seeds the buffer with an instant GDI capture of the specified screen region so frames never start black
+unsafe fn seed_gdi_frame(buf: &mut [u8], width: u32, height: u32, left: i32, top: i32) {
+    let hdc_screen = GetDC(None);
+    if hdc_screen.0.is_null() {
+        return;
+    }
+    let mem_dc = CreateCompatibleDC(Some(hdc_screen));
+    let mem_bmp = CreateCompatibleBitmap(hdc_screen, width as i32, height as i32);
+    let old = SelectObject(mem_dc, HGDIOBJ(mem_bmp.0));
+
+    let _ = BitBlt(mem_dc, 0, 0, width as i32, height as i32, Some(hdc_screen), left, top, SRCCOPY);
+
+    let mut bmi = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width as i32,
+            biHeight: -(height as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let _ = GetDIBits(
+        mem_dc,
+        mem_bmp,
+        0,
+        height,
+        Some(buf.as_mut_ptr() as *mut _),
+        &mut bmi,
+        DIB_RGB_COLORS,
+    );
+
+    let _ = SelectObject(mem_dc, old);
+    let _ = DeleteObject(HGDIOBJ(mem_bmp.0));
+    let _ = DeleteDC(mem_dc);
+    let _ = ReleaseDC(None, hdc_screen);
+}
+
+/// Detects if a GPU captured frame is entirely unpopulated or black (e.g. driver issue/Optimus)
+fn is_frame_mostly_black(slice: &[u8], width: u32, height: u32) -> bool {
+    if slice.len() < 16 {
+        return true;
+    }
+    let step_x = (width / 8).max(1) as usize;
+    let step_y = (height / 8).max(1) as usize;
+    let mut non_zero = 0;
+    for y in 1..8 {
+        let row_idx = y * step_y * width as usize * 4;
+        for x in 1..8 {
+            let px_idx = row_idx + x * step_x * 4;
+            if px_idx + 3 <= slice.len() {
+                let b = slice[px_idx];
+                let g = slice[px_idx + 1];
+                let r = slice[px_idx + 2];
+                if b > 8 || g > 8 || r > 8 {
+                    non_zero += 1;
+                }
+            }
+        }
+    }
+    non_zero == 0
+}
+
 /// Captures a desktop frame using hardware-accelerated DXGI Desktop Duplication.
 /// Returns Ok(Some((orig_w, orig_h, cap_w, cap_h, bgra_bytes))) on success,
 /// or Ok(None) to fall back to GDI BitBlt if hardware capture is unavailable.
@@ -394,6 +481,11 @@ pub fn try_dxgi_capture(
     let capturer = guard.as_mut().unwrap();
     match capturer.capture_frame() {
         Ok((orig_w, orig_h, bgra_slice)) => {
+            if is_frame_mostly_black(bgra_slice, orig_w, orig_h) {
+                // If DXGI returned black (e.g. Optimus/hybrid GPU or unpopulated surface), fallback to GDI immediately
+                return Ok(None);
+            }
+
             let mut frame_bytes = bgra_slice.to_vec();
             if capture_cursor {
                 blend_cursor_if_needed(&mut frame_bytes, orig_w, orig_h);
