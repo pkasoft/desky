@@ -1,6 +1,7 @@
 mod identity;
 mod p2p;
 mod protocol;
+pub mod ui;
 
 #[cfg(target_os = "windows")]
 pub(crate) mod windows;

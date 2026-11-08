@@ -7,7 +7,8 @@ use crate::p2p::state::{
     AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
     CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
     PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
-    PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH,
+    PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_ADMIN_RESP,
+    admin_notify, pop_outgoing_admin_packet, feed_admin_resp_chunk, store_admin_response,
     clipboard_notify, pop_outgoing_clipboard, file_notify, pop_outgoing_file_packet,
     handle_incoming_file_start, handle_incoming_file_chunk, handle_incoming_file_finish,
     write_clipboard_text, compute_clipboard_hash, LAST_SYNCED_CLIPBOARD_HASH,
@@ -400,6 +401,19 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
+                // Flush outgoing admin packets (Silent Admin mode)
+                while let Some(pkt) = pop_outgoing_admin_packet() {
+                    if let Some(p_addr) = peer_addr {
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&pkt, p_addr).await;
+                        }
+                    }
+                    if !is_direct_peer {
+                        let relay = wrap_relay_packet(&norm_target, &pkt);
+                        let _ = socket.send_to(&relay, server_addr).await;
+                    }
+                }
+
                 // Flush queued remote input events immediately over direct P2P or Relay
                 let queued_inputs: Vec<InputEvent> = {
                     if let Ok(mut q) = input_store().lock() {
@@ -615,6 +629,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     PKT_FILE_FINISH => {
                                         handle_incoming_file_finish();
                                     }
+                                    PKT_ADMIN_RESP => {
+                                        if slice.len() >= 13 {
+                                            let msg_id = u32::from_le_bytes(slice[5..9].try_into().unwrap());
+                                            let chunk_idx = u16::from_le_bytes(slice[9..11].try_into().unwrap());
+                                            let total_chunks = u16::from_le_bytes(slice[11..13].try_into().unwrap());
+                                            if let Some(resp) = feed_admin_resp_chunk(msg_id, chunk_idx, total_chunks, &slice[13..]) {
+                                                store_admin_response(resp);
+                                                crate::platform::ui::request_main_redraw();
+                                            }
+                                        }
+                                    }
                                     _ => {}
                                 }
                             } else if let Ok(sig) = serde_json::from_slice::<SignalMsg>(slice) {
@@ -700,6 +725,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     _ = notify.notified() => {}
                     _ = clipboard_notify().notified() => {}
                     _ = file_notify().notified() => {}
+                    _ = admin_notify().notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(20)) => {}
                 }
 

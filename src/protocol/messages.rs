@@ -48,3 +48,38 @@ pub enum MouseButton {
     Right,
     Middle,
 }
+
+/// Requests sent to host in Silent Admin Mode (running silently without screen takeover)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdminReq {
+    GetProcesses,
+    KillProcess { pid: u32 },
+    ExecuteCommand { command: String },
+    GetSystemInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessItem {
+    pub pid: u32,
+    pub name: String,
+    pub mem_kb: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemStats {
+    pub os_name: String,
+    pub hostname: String,
+    pub uptime_secs: u64,
+    pub cpu_count: usize,
+    pub total_mem_mb: u64,
+    pub free_mem_mb: u64,
+}
+
+/// Responses sent by host back to client in Silent Admin Mode
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum AdminResp {
+    Processes(Vec<ProcessItem>),
+    KillResult { pid: u32, success: bool, msg: String },
+    CommandOutput { output: String, exit_code: i32 },
+    SystemInfo(SystemStats),
+}

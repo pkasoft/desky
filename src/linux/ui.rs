@@ -1,4 +1,4 @@
-﻿use anyhow::Result;
+use anyhow::Result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 use x11rb::connection::Connection;
@@ -15,9 +15,9 @@ pub fn set_assigned_desky_id(id: &str) {
     }
     info!("✅ [LINUX HOST] Permanent Desky ID Approved: {}", id);
     println!("\n\x1b[1;32m==================================================\x1b[0m");
-    println!("\x1b[1;32m  DESKY LINUX ONLINE • pkasoft.com\x1b[0m");
+    println!("\x1b[1;32m  DESKY LINUX ONLINE | pkasoft.com\x1b[0m");
     println!("\x1b[1;37m  YOUR PERMANENT DESKY ID: \x1b[1;32m{}\x1b[0m", id);
-    println!("\x1b[1;37m  STATUS: \x1b[1;36m● Ready for incoming connections\x1b[0m");
+    println!("\x1b[1;37m  STATUS: \x1b[1;36m[Online] Ready for incoming connections\x1b[0m");
     println!("\x1b[1;32m==================================================\x1b[0m\n");
 }
 
@@ -292,7 +292,7 @@ impl LinuxApp {
             &win_aux,
         )?;
 
-        let title = "Desky • pkasoft.com";
+        let title = "Desky | pkasoft.com";
         conn.change_property8(
             PropMode::REPLACE,
             win_id,
