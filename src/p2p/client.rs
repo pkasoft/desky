@@ -1,4 +1,4 @@
-﻿use crate::p2p::state::{
+use crate::p2p::state::{
     apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint_port,
     fix_loopback_peer, frame_store, get_active_quality_params, input_notify, input_store,
     is_same_lan_subnet, lan_broadcast_addrs, normalize_id, resolve_server_addr,
@@ -383,16 +383,22 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
-                // Flush outgoing file transfer packets
-                while let Some(pkt) = pop_outgoing_file_packet() {
-                    if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
-                            let _ = socket.send_to(&pkt, p_addr).await;
+                // Flush outgoing file transfer packets (in smooth batches of 16 chunks to avoid buffer starvation)
+                let mut file_sent = 0;
+                while file_sent < 16 {
+                    if let Some(pkt) = pop_outgoing_file_packet() {
+                        if let Some(p_addr) = peer_addr {
+                            if p_addr != server_addr {
+                                let _ = socket.send_to(&pkt, p_addr).await;
+                            }
                         }
-                    }
-                    if !is_direct_peer {
-                        let relay = wrap_relay_packet(&norm_target, &pkt);
-                        let _ = socket.send_to(&relay, server_addr).await;
+                        if !is_direct_peer {
+                            let relay = wrap_relay_packet(&norm_target, &pkt);
+                            let _ = socket.send_to(&relay, server_addr).await;
+                        }
+                        file_sent += 1;
+                    } else {
+                        break;
                     }
                 }
 

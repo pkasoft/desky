@@ -271,6 +271,24 @@ impl P2PManager {
                                     }
                                 }
 
+                                // Host -> Client File Transfer packets flush
+                                let mut file_pkts_sent = 0;
+                                while file_pkts_sent < 16 {
+                                    if let Some(pkt) = crate::p2p::state::pop_outgoing_file_packet() {
+                                        for sub in &subscribers {
+                                            if sub.is_direct {
+                                                let _ = std_sock_stream.send_to(&pkt, sub.addr);
+                                            } else if !sub.relay_id.is_empty() {
+                                                let relay = wrap_relay_packet(&sub.relay_id, &pkt);
+                                                let _ = std_sock_stream.send_to(&relay, target_server_stream);
+                                            }
+                                        }
+                                        file_pkts_sent += 1;
+                                    } else {
+                                        break;
+                                    }
+                                }
+
                                 if encoder
                                     .encode(
                                         &bgra,
@@ -671,6 +689,15 @@ impl P2PManager {
                                     }
                                 }
                                 PKT_FILE_START => {
+                                    if let Ok(mut map) = clients_recv.lock() {
+                                        for sub in map.values_mut() {
+                                            if (sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server)
+                                                && sub.auth_state == AuthState::Approved
+                                            {
+                                                sub.last_seen = Instant::now();
+                                            }
+                                        }
+                                    }
                                     if slice.len() >= 15 {
                                         let size = u64::from_le_bytes(slice[5..13].try_into().unwrap());
                                         let name_len = u16::from_le_bytes(slice[13..15].try_into().unwrap()) as usize;
@@ -682,12 +709,30 @@ impl P2PManager {
                                     }
                                 }
                                 PKT_FILE_CHUNK => {
+                                    if let Ok(mut map) = clients_recv.lock() {
+                                        for sub in map.values_mut() {
+                                            if (sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server)
+                                                && sub.auth_state == AuthState::Approved
+                                            {
+                                                sub.last_seen = Instant::now();
+                                            }
+                                        }
+                                    }
                                     if slice.len() >= 9 {
                                         let chunk_idx = u32::from_le_bytes(slice[5..9].try_into().unwrap());
                                         crate::p2p::state::handle_incoming_file_chunk(chunk_idx, &slice[9..]);
                                     }
                                 }
                                 PKT_FILE_FINISH => {
+                                    if let Ok(mut map) = clients_recv.lock() {
+                                        for sub in map.values_mut() {
+                                            if (sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server)
+                                                && sub.auth_state == AuthState::Approved
+                                            {
+                                                sub.last_seen = Instant::now();
+                                            }
+                                        }
+                                    }
                                     crate::p2p::state::handle_incoming_file_finish();
                                 }
                                 _ => {}
