@@ -1449,10 +1449,19 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let files = crate::p2p::read_clipboard_files();
                 if !files.is_empty() {
-                    for f in files {
-                        info!("📋 Clipboard contains file for remote transfer: {:?}", f);
-                        crate::p2p::send_file_transfer(f);
-                    }
+                    let desc = if files.len() == 1 {
+                        files[0]
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| "1 file".into())
+                    } else {
+                        format!("{} files", files.len())
+                    };
+                    info!("📋 Clipboard contains file: '{}' (Press Ctrl+V in viewport to paste/transfer)", desc);
+                    super::launcher::append_status_log(&format!(
+                        "📋 Copied '{}' to clipboard (Ctrl+V in viewport to transfer)",
+                        desc
+                    ));
                 } else if let Some(text) = crate::p2p::read_clipboard_text() {
                     crate::p2p::send_remote_clipboard(&text);
                 }
