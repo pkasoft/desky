@@ -18,6 +18,11 @@ pub const PKT_PONG: u8 = 0x06;
 pub const PKT_AUTH_STATUS: u8 = 0x07;
 pub const PKT_RELAY: u8 = 0x08;
 
+pub const PKT_CLIPBOARD: u8 = 0x09;
+pub const PKT_FILE_START: u8 = 0x0A;
+pub const PKT_FILE_CHUNK: u8 = 0x0B;
+pub const PKT_FILE_FINISH: u8 = 0x0C;
+
 pub const AUTH_PENDING: u8 = 0;
 pub const AUTH_APPROVED: u8 = 1;
 pub const AUTH_DECLINED: u8 = 2;
@@ -501,4 +506,266 @@ pub fn decode_jpeg_to_bgra(
         height: h,
         bgra,
     })
+}
+
+
+
+// =========================================================================
+// BI-DIRECTIONAL CLIPBOARD SYNCHRONIZATION & FILE TRANSFER
+// =========================================================================
+
+pub static LAST_SYNCED_CLIPBOARD_HASH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+static OUTGOING_CLIPBOARD: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+static CLIPBOARD_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+
+static OUTGOING_FILE_PACKETS: OnceLock<Mutex<Vec<Vec<u8>>>> = OnceLock::new();
+static FILE_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+
+pub fn compute_clipboard_hash(text: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in text.as_bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+pub fn send_remote_clipboard(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let hash = compute_clipboard_hash(text);
+    let last = LAST_SYNCED_CLIPBOARD_HASH.load(Ordering::Relaxed);
+    if hash == last {
+        return;
+    }
+    LAST_SYNCED_CLIPBOARD_HASH.store(hash, Ordering::Relaxed);
+
+    let store = OUTGOING_CLIPBOARD.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut q) = store.lock() {
+        q.push(text.to_string());
+    }
+    let notify = CLIPBOARD_NOTIFY.get_or_init(|| Arc::new(Notify::new()));
+    notify.notify_waiters();
+}
+
+pub fn pop_outgoing_clipboard() -> Option<String> {
+    let store = OUTGOING_CLIPBOARD.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut q) = store.lock() {
+        if !q.is_empty() {
+            return Some(q.remove(0));
+        }
+    }
+    None
+}
+
+pub fn clipboard_notify() -> &'static Arc<Notify> {
+    CLIPBOARD_NOTIFY.get_or_init(|| Arc::new(Notify::new()))
+}
+
+pub fn send_file_transfer(path: std::path::PathBuf) {
+    tokio::spawn(async move {
+        if let Ok(data) = std::fs::read(&path) {
+            let file_name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "transferred_file.dat".into());
+            let name_bytes = file_name.as_bytes();
+            let total_size = data.len() as u64;
+
+            let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(Vec::new()));
+            let notify = FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()));
+
+            // 1. Send PKT_FILE_START: [MAGIC_DSKY, PKT_FILE_START, 8B size, 2B name_len, name_bytes]
+            let mut start_pkt = Vec::with_capacity(5 + 8 + 2 + name_bytes.len());
+            start_pkt.extend_from_slice(MAGIC_DSKY);
+            start_pkt.push(PKT_FILE_START);
+            start_pkt.extend_from_slice(&total_size.to_le_bytes());
+            start_pkt.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            start_pkt.extend_from_slice(name_bytes);
+
+            if let Ok(mut q) = store.lock() {
+                q.push(start_pkt);
+            }
+            notify.notify_waiters();
+
+            // 2. Send chunks (1024 bytes each)
+            let chunk_size = 1024;
+            let mut chunk_idx: u32 = 0;
+            for chunk in data.chunks(chunk_size) {
+                let mut chunk_pkt = Vec::with_capacity(5 + 4 + chunk.len());
+                chunk_pkt.extend_from_slice(MAGIC_DSKY);
+                chunk_pkt.push(PKT_FILE_CHUNK);
+                chunk_pkt.extend_from_slice(&chunk_idx.to_le_bytes());
+                chunk_pkt.extend_from_slice(chunk);
+
+                if let Ok(mut q) = store.lock() {
+                    q.push(chunk_pkt);
+                }
+                notify.notify_waiters();
+                chunk_idx += 1;
+            }
+
+            // 3. Send PKT_FILE_FINISH
+            let mut finish_pkt = Vec::with_capacity(5);
+            finish_pkt.extend_from_slice(MAGIC_DSKY);
+            finish_pkt.push(PKT_FILE_FINISH);
+
+            if let Ok(mut q) = store.lock() {
+                q.push(finish_pkt);
+            }
+            notify.notify_waiters();
+
+            info!("Transmitting file '{}' ({} bytes, {} chunks)...", file_name, total_size, chunk_idx);
+        }
+    });
+}
+
+pub fn pop_outgoing_file_packet() -> Option<Vec<u8>> {
+    let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut q) = store.lock() {
+        if !q.is_empty() {
+            return Some(q.remove(0));
+        }
+    }
+    None
+}
+
+pub fn file_notify() -> &'static Arc<Notify> {
+    FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()))
+}
+
+#[derive(Default)]
+pub struct IncomingFileTransfer {
+    pub file_name: String,
+    pub total_size: u64,
+    pub received_bytes: u64,
+    pub handle: Option<std::fs::File>,
+    pub save_path: std::path::PathBuf,
+}
+
+static INCOMING_FILE: OnceLock<Mutex<Option<IncomingFileTransfer>>> = OnceLock::new();
+
+pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
+    let mut safe_name = file_name
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .collect::<String>();
+    if safe_name.is_empty() {
+        safe_name = "received_file.dat".into();
+    }
+
+    let dest_dir = if let Ok(profile) = std::env::var("USERPROFILE") {
+        std::path::PathBuf::from(profile).join("Downloads").join("Desky_Transfers")
+    } else {
+        std::path::PathBuf::from("Desky_Transfers")
+    };
+    let _ = std::fs::create_dir_all(&dest_dir);
+    let target_path = dest_dir.join(&safe_name);
+
+    if let Ok(file) = std::fs::File::create(&target_path) {
+        let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
+        if let Ok(mut guard) = store.lock() {
+            *guard = Some(IncomingFileTransfer {
+                file_name: safe_name.clone(),
+                total_size,
+                received_bytes: 0,
+                handle: Some(file),
+                save_path: target_path.clone(),
+            });
+        }
+        info!("📁 Incoming file '{}' ({} KB) starting -> {:?}", safe_name, total_size / 1024, target_path);
+    }
+}
+
+pub fn handle_incoming_file_chunk(_chunk_idx: u32, data: &[u8]) {
+    use std::io::Write;
+    let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = store.lock() {
+        if let Some(transfer) = guard.as_mut() {
+            if let Some(file) = transfer.handle.as_mut() {
+                let _ = file.write_all(data);
+                transfer.received_bytes += data.len() as u64;
+            }
+        }
+    }
+}
+
+pub fn handle_incoming_file_finish() {
+    use std::io::Write;
+    let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = store.lock() {
+        if let Some(mut transfer) = guard.take() {
+            if let Some(mut file) = transfer.handle.take() {
+                let _ = file.flush();
+            }
+            info!("✅ File transfer complete: '{}' ({} KB) saved at {:?}", transfer.file_name, transfer.total_size / 1024, transfer.save_path);
+        }
+    }
+}
+
+#[cfg(windows)]
+pub fn write_clipboard_text(text: &str) {
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
+    unsafe {
+        if OpenClipboard(None).is_ok() {
+            let _ = EmptyClipboard();
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            let bytes_len = wide.len() * 2;
+            if let Ok(handle) = GlobalAlloc(GHND, bytes_len) {
+                let ptr = GlobalLock(handle);
+                if !ptr.is_null() {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr() as *const u8, ptr as *mut u8, bytes_len);
+                    let _ = GlobalUnlock(handle);
+                    let _ = SetClipboardData(13, Some(windows::Win32::Foundation::HANDLE(handle.0)));
+                }
+            }
+            let _ = CloseClipboard();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn write_clipboard_text(_text: &str) {}
+
+#[cfg(windows)]
+pub fn read_clipboard_text() -> Option<String> {
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    unsafe {
+        if OpenClipboard(None).is_ok() {
+            let res = if let Ok(h) = GetClipboardData(13) {
+                if !h.0.is_null() {
+                    let ptr = GlobalLock(windows::Win32::Foundation::HGLOBAL(h.0)) as *const u16;
+                    if !ptr.is_null() {
+                        let mut len = 0;
+                        while *ptr.add(len) != 0 {
+                            len += 1;
+                        }
+                        let slice = std::slice::from_raw_parts(ptr, len);
+                        let s = String::from_utf16_lossy(slice);
+                        let _ = GlobalUnlock(windows::Win32::Foundation::HGLOBAL(h.0));
+                        Some(s)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let _ = CloseClipboard();
+            res
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn read_clipboard_text() -> Option<String> {
+    None
 }
