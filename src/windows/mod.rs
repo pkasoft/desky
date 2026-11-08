@@ -10,6 +10,7 @@
 pub mod admin;
 pub mod capture;
 pub mod clipboard;
+pub mod dxgi_capture;
 pub mod input;
 pub mod server_2012;
 pub mod server_2016_2019;
@@ -139,6 +140,14 @@ pub fn run() -> anyhow::Result<()> {
 
     let p2p = crate::p2p::P2PManager::new(ident.machine_id, ident.desky_id, vds_server);
     p2p.start_host_registration();
+
+    crate::p2p::start_lan_radar(|| {
+        if let Ok(g) = ui::LOCAL_DESKY_ID.lock() {
+            g.clone()
+        } else {
+            String::new()
+        }
+    });
 
     tracing::info!("Spawning native Win32 window and starting message pump...");
     let app = ui::NativeWin32App::new()?;
