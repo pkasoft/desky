@@ -6,6 +6,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
+use std::time::Duration;
 use tracing::info;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, RECT, SIZE, WPARAM};
@@ -77,11 +78,65 @@ pub fn bring_main_window_to_front() {
 pub fn append_status_log(msg: &str) {
     if let Ok(mut logs) = STATUS_LOGS.lock() {
         logs.push(msg.to_string());
-        if logs.len() > 5 {
+        if logs.len() > 12 {
             logs.remove(0);
         }
     }
     request_main_redraw();
+}
+
+/// Retrieves the current system local time formatted as `HH:MM:SS`
+pub fn get_local_time_string() -> String {
+    unsafe {
+        let st = windows::Win32::System::SystemInformation::GetLocalTime();
+        format!("{:02}:{:02}:{:02}", st.wHour, st.wMinute, st.wSecond)
+    }
+}
+
+static LAN_SCAN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+pub fn is_lan_scan_active() -> bool {
+    LAN_SCAN_IN_PROGRESS.load(Ordering::Relaxed)
+}
+
+/// Initiates an active LAN broadcast ping and logs the process, time, and peer discovery results
+pub fn trigger_lan_radar_scan() {
+    if LAN_SCAN_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let start_time = get_local_time_string();
+    append_status_log(&format!("LAN Radar [{}]: Broadcast scan initiated...", start_time));
+    crate::p2p::trigger_lan_ping();
+
+    std::thread::spawn(move || {
+        // Collect UDP broadcast responses over 1.6 seconds
+        std::thread::sleep(Duration::from_millis(1600));
+        LAN_SCAN_IN_PROGRESS.store(false, Ordering::SeqCst);
+
+        let peers = crate::p2p::get_lan_peers();
+        let finish_time = get_local_time_string();
+        if peers.is_empty() {
+            append_status_log(&format!(
+                "LAN Radar [{}]: Scan complete - No devices found on local subnet.",
+                finish_time
+            ));
+        } else {
+            let names: Vec<String> = peers.iter().take(3).map(|p| p.hostname.clone()).collect();
+            let summary = if peers.len() > 3 {
+                format!("{} and {} more", names.join(", "), peers.len() - 3)
+            } else {
+                names.join(", ")
+            };
+            append_status_log(&format!(
+                "LAN Radar [{}]: Scan complete - Found {} device(s) ({})",
+                finish_time,
+                peers.len(),
+                summary
+            ));
+        }
+        request_main_redraw();
+    });
 }
 
 pub fn prompt_incoming_request(client_id: &str) {
@@ -647,11 +702,18 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
 
         // When in Radar mode, show Scan button at top-right
         if is_radar {
-            let scan_w = 54;
+            let is_scanning = is_lan_scan_active();
+            let scan_w = if is_scanning { 74 } else { 54 };
             let scan_x = l.col1_x + l.col_w - scan_w - 18;
-            draw_rounded_box(mem_dc, scan_x, l.col_y + 14, scan_w, tag3_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
-            SetTextColor(mem_dc, PK_MUTED);
-            let mut scan_txt: Vec<u16> = "Scan".encode_utf16().collect();
+            let (scan_bg, scan_border, scan_fg) = if is_scanning {
+                (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+            } else {
+                (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+            };
+            draw_rounded_box(mem_dc, scan_x, l.col_y + 14, scan_w, tag3_h, scan_bg, scan_border, 6);
+            let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
+            SetTextColor(mem_dc, scan_fg);
+            let mut scan_txt: Vec<u16> = (if is_scanning { "Scanning..." } else { "Scan" }).encode_utf16().collect();
             let mut scan_rc = RECT {
                 left: scan_x,
                 top: l.col_y + 14,
@@ -668,7 +730,12 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
 
                 let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                 SetTextColor(mem_dc, PK_TEXT);
-                let mut empty_msg1: Vec<u16> = "Zero-Config LAN Radar active".encode_utf16().collect();
+                let empty_title = if is_lan_scan_active() {
+                    "Scanning local subnet for Desky devices...".to_string()
+                } else {
+                    "No Desky devices found on local network".to_string()
+                };
+                let mut empty_msg1: Vec<u16> = empty_title.encode_utf16().collect();
                 let mut empty_rc1 = RECT {
                     left: l.col1_x + 48,
                     top: l.col_y + 48,
@@ -965,16 +1032,16 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         }
         if x >= tag_radar_x && x <= tag_radar_x + tag_radar_w {
             BOTTOM_TAB_RADAR.store(true, Ordering::Relaxed);
-            crate::p2p::trigger_lan_ping();
+            trigger_lan_radar_scan();
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
         if is_radar {
-            let scan_w = 54;
+            let is_scanning = is_lan_scan_active();
+            let scan_w = if is_scanning { 74 } else { 54 };
             let scan_x = l.col1_x + l.col_w - scan_w - 18;
             if x >= scan_x && x <= scan_x + scan_w {
-                crate::p2p::trigger_lan_ping();
-                append_status_log("LAN Radar: Scanning local network...");
+                trigger_lan_radar_scan();
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return true;
             }
