@@ -1,4 +1,4 @@
-﻿//! Main Win32 Launcher Window & Application Lifecycle
+//! Main Win32 Launcher Window & Application Lifecycle
 
 #![allow(unsafe_op_in_unsafe_fn)]
 use anyhow::Result;
@@ -93,7 +93,7 @@ pub fn append_status_log(msg: &str) {
 
 pub fn prompt_incoming_request(client_id: &str) {
     append_status_log(&format!(
-        "ğŸ”” Incoming request from ID: {} â€” Click Accept or Decline!",
+        "🔔 Incoming request from ID: {} — Click Accept or Decline!",
         client_id
     ));
     bring_main_window_to_front();
@@ -102,7 +102,7 @@ pub fn set_assigned_desky_id(id: &str) {
     if let Ok(mut guard) = LOCAL_DESKY_ID.lock() {
         *guard = id.to_string();
     }
-    append_status_log(&format!("âœ… Online â€¢ ID: {}", id));
+    append_status_log(&format!("✅ Online • ID: {}", id));
     request_main_redraw();
 }
 
@@ -263,7 +263,7 @@ impl NativeWin32App {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 class_name,
-                w!("Desky â€¢ pkasoft.com"),
+                w!("Desky • pkasoft.com"),
                 WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -316,7 +316,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 {
                     let mut logs = STATUS_LOGS.lock().unwrap();
                     if logs.is_empty() {
-                        logs.push("â€¢ Ready to connect".into());
+                        logs.push("• Ready to connect".into());
                     }
                 }
 
@@ -458,13 +458,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let ping = crate::p2p::get_server_ping_ms();
                     let (pill_text_str, pill_bg, pill_fg) = if is_online {
                         let s = if ping > 0 {
-                            format!("â— Online ({}ms)", ping)
+                            format!("● Online ({}ms)", ping)
                         } else {
-                            "â— Online".to_string()
+                            "● Online".to_string()
                         };
                         (s, PK_GREEN_TINT, PK_GREEN)
                     } else {
-                        ("â— Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
+                        ("● Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
                     };
 
                     let pill_w = (118.0 * l.font_scale) as i32;
@@ -496,7 +496,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         draw_rounded_box(mem_dc, badge_x, my + 22, badge_w, 28, PK_GREEN_TINT, PK_GREEN, 14);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
                         SetTextColor(mem_dc, PK_GREEN);
-                        let mut b_txt: Vec<u16> = "ğŸ”” INCOMING CONNECTION REQUEST".encode_utf16().collect();
+                        let mut b_txt: Vec<u16> = "🔔 INCOMING CONNECTION REQUEST".encode_utf16().collect();
                         let mut b_rc = RECT { left: badge_x, top: my + 22, right: badge_x + badge_w, bottom: my + 50 };
                         let _ = DrawTextW(mem_dc, &mut b_txt, &mut b_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
@@ -517,7 +517,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         let mut p_rc = RECT { left: mx + 24, top: my + 124, right: mx + mw - 24, bottom: my + 156 };
                         let _ = DrawTextW(mem_dc, &mut p_txt, &mut p_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-                        // [ âœ“ Accept ] and [ âœ• Decline ] buttons
+                        // [ ✓ Accept ] and [ ✕ Decline ] buttons
                         let btn_w = (mw - 72) / 2;
                         let btn_h = 50;
                         let btn_y = my + 190;
@@ -528,13 +528,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         draw_rounded_box(mem_dc, acc_x, btn_y, btn_w, btn_h, acc_bg, acc_bg, 10);
                         let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                         SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
-                        let mut acc_txt: Vec<u16> = "âœ“  Accept Connection".encode_utf16().collect();
+                        let mut acc_txt: Vec<u16> = "✓  Accept Connection".encode_utf16().collect();
                         let mut acc_rc = RECT { left: acc_x, top: btn_y, right: acc_x + btn_w, bottom: btn_y + btn_h };
                         let _ = DrawTextW(mem_dc, &mut acc_txt, &mut acc_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                         draw_rounded_box(mem_dc, dec_x, btn_y, btn_w, btn_h, PK_RED, PK_RED, 10);
                         SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
-                        let mut dec_txt: Vec<u16> = "âœ•  Decline".encode_utf16().collect();
+                        let mut dec_txt: Vec<u16> = "✕  Decline".encode_utf16().collect();
                         let mut dec_rc = RECT { left: dec_x, top: btn_y, right: dec_x + btn_w, bottom: btn_y + btn_h };
                         let _ = DrawTextW(mem_dc, &mut dec_txt, &mut dec_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
                     } else {
@@ -724,12 +724,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                         let srv_status = if is_online {
                             if ping > 0 {
-                                format!("Istanbul (TR)  â€¢  {}ms", ping)
+                                format!("Istanbul (TR)  •  {}ms", ping)
                             } else {
-                                "Istanbul (TR)  â€¢  Online".to_string()
+                                "Istanbul (TR)  •  Online".to_string()
                             }
                         } else {
-                            "Istanbul (TR)  â€¢  Offline".to_string()
+                            "Istanbul (TR)  •  Offline".to_string()
                         };
 
                         let host_name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows PC".into());
@@ -888,7 +888,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                     if !id_to_copy.is_empty() {
                         copy_to_clipboard(&id_to_copy);
-                        append_status_log(&format!("âœ… Desky ID '{}' copied to Windows Clipboard!", id_to_copy));
+                        append_status_log(&format!("✅ Desky ID '{}' copied to Windows Clipboard!", id_to_copy));
                     }
                 }
 
@@ -905,7 +905,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                     let digits: String = raw_input.chars().filter(|c| c.is_ascii_digit()).collect();
                     if digits.is_empty() {
-                        append_status_log("âš ï¸ Please enter a 9-digit remote Desky ID (e.g. 800 258 756)");
+                        append_status_log("⚠️ Please enter a 9-digit remote Desky ID (e.g. 800 258 756)");
                         return LRESULT(0);
                     }
 
@@ -922,7 +922,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     };
 
                     if !local_id_digits.is_empty() && digits == local_id_digits {
-                        append_status_log("âš ï¸ That is THIS computer's own ID! Please enter the remote computer's ID.");
+                        append_status_log("⚠️ That is THIS computer's own ID! Please enter the remote computer's ID.");
                         return LRESULT(0);
                     }
 
