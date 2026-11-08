@@ -4,7 +4,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
-use tokio::net::UdpSocket;
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -78,7 +77,7 @@ static INPUT_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
 
 static PENDING_APPROVAL: OnceLock<Mutex<Option<PendingApprovalRequest>>> = OnceLock::new();
 static HOST_SUBSCRIBERS: OnceLock<Arc<Mutex<HashMap<String, ClientSubscriber>>>> = OnceLock::new();
-static HOST_SOCKET: OnceLock<Mutex<Option<Arc<UdpSocket>>>> = OnceLock::new();
+static HOST_STD_SOCKET: OnceLock<Mutex<Option<Arc<std::net::UdpSocket>>>> = OnceLock::new();
 
 pub static CLIENT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub static CLIENT_SESSION_GEN: AtomicU32 = AtomicU32::new(0);
@@ -123,8 +122,8 @@ pub fn host_subscribers_store() -> &'static Arc<Mutex<HashMap<String, ClientSubs
     HOST_SUBSCRIBERS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
-pub fn host_socket_store() -> &'static Mutex<Option<Arc<UdpSocket>>> {
-    HOST_SOCKET.get_or_init(|| Mutex::new(None))
+pub fn host_std_socket_store() -> &'static Mutex<Option<Arc<std::net::UdpSocket>>> {
+    HOST_STD_SOCKET.get_or_init(|| Mutex::new(None))
 }
 
 pub fn get_pending_approval() -> Option<PendingApprovalRequest> {
@@ -144,10 +143,22 @@ pub fn detect_local_lan_ip(target_server: SocketAddr) -> Option<Ipv4Addr> {
     None
 }
 
-/// Returns the 6-byte `[ipv4 (4 bytes), port_le (2 bytes)]` of `sock` on the active local LAN
-pub fn encode_lan_endpoint(sock: &UdpSocket, target_server: SocketAddr) -> [u8; 6] {
+/// Returns true if `candidate` is on the exact same `/24` private IPv4 subnet as our local LAN IP
+pub fn is_same_lan_subnet(local_lan_bytes: &[u8; 6], candidate: SocketAddr) -> bool {
+    if local_lan_bytes[0] == 0 {
+        return false;
+    }
+    if let IpAddr::V4(cand_v4) = candidate.ip() {
+        let oct = cand_v4.octets();
+        oct[0] == local_lan_bytes[0] && oct[1] == local_lan_bytes[1] && oct[2] == local_lan_bytes[2]
+    } else {
+        false
+    }
+}
+
+/// Returns the 6-byte `[ipv4 (4 bytes), port_le (2 bytes)]` of `local_port` on the active local LAN
+pub fn encode_lan_endpoint_port(local_port: u16, target_server: SocketAddr) -> [u8; 6] {
     let mut out = [0u8; 6];
-    let local_port = sock.local_addr().ok().map(|a| a.port()).unwrap_or(0);
     if local_port > 0 {
         if let Some(ip) = detect_local_lan_ip(target_server) {
             let octs = ip.octets();
@@ -226,45 +237,34 @@ pub fn respond_to_pending_approval(approved: bool) {
     }
 
     if !acks_to_send.is_empty() {
-        if let Ok(Some(sock)) = host_socket_store().lock().map(|g| g.clone()) {
+        if let Ok(Some(sock)) = host_std_socket_store().lock().map(|g| g.clone()) {
             let server_addr = resolve_server_addr();
-            let lan_bytes = encode_lan_endpoint(&sock, server_addr);
-            std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    rt.block_on(async move {
-                        for (addr, lan_addr, relay_id, status_byte) in acks_to_send {
-                            let mut auth_pkt = Vec::with_capacity(12);
-                            auth_pkt.extend_from_slice(MAGIC_DSKY);
-                            auth_pkt.push(PKT_AUTH_STATUS);
-                            auth_pkt.push(status_byte);
-                            auth_pkt.extend_from_slice(&lan_bytes);
+            let local_port = sock.local_addr().ok().map(|a| a.port()).unwrap_or(0);
+            let lan_bytes = encode_lan_endpoint_port(local_port, server_addr);
+            for (addr, lan_addr, relay_id, status_byte) in acks_to_send {
+                let mut auth_pkt = Vec::with_capacity(12);
+                auth_pkt.extend_from_slice(MAGIC_DSKY);
+                auth_pkt.push(PKT_AUTH_STATUS);
+                auth_pkt.push(status_byte);
+                auth_pkt.extend_from_slice(&lan_bytes);
 
-                            // 1. Send directly to peer's observed address
-                            if addr != server_addr {
-                                for _ in 0..4 {
-                                    let _ = sock.send_to(&auth_pkt, addr).await;
-                                }
-                            }
-                            // 2. Send directly to peer's LAN endpoint (same-router peers)
-                            if let Some(l_addr) = lan_addr {
-                                for _ in 0..4 {
-                                    let _ = sock.send_to(&auth_pkt, l_addr).await;
-                                }
-                            }
-                            // 3. Also send via VDS Relay addressed to the Client's session relay_id!
-                            if !relay_id.is_empty() {
-                                let relay_pkt = wrap_relay_packet(&relay_id, &auth_pkt);
-                                for _ in 0..4 {
-                                    let _ = sock.send_to(&relay_pkt, server_addr).await;
-                                }
-                            }
-                        }
-                    });
+                if addr != server_addr {
+                    for _ in 0..4 {
+                        let _ = sock.send_to(&auth_pkt, addr);
+                    }
                 }
-            });
+                if let Some(l_addr) = lan_addr {
+                    for _ in 0..4 {
+                        let _ = sock.send_to(&auth_pkt, l_addr);
+                    }
+                }
+                if !relay_id.is_empty() {
+                    let relay_pkt = wrap_relay_packet(&relay_id, &auth_pkt);
+                    for _ in 0..4 {
+                        let _ = sock.send_to(&relay_pkt, server_addr);
+                    }
+                }
+            }
         }
     }
 
@@ -365,8 +365,8 @@ pub fn apply_preset_for_mode(mode: u8) {
             ACTIVE_CHROMA_444.store(false, Ordering::Relaxed);
         }
         _ => {
-            // Auto Adaptive initial baseline: 100% 1:1 native capture (zero downscale CPU overhead)
-            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
+            // Auto Adaptive initial baseline
+            ACTIVE_JPEG_QUALITY.store(72, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }

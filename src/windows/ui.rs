@@ -24,15 +24,19 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect, GetCursorPos,
-    GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW, PostQuitMessage,
-    RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow, SetWindowDisplayAffinity,
-    SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU,
-    IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW,
-    WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFONT, WM_SIZE,
-    WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
+    GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindow, LoadCursorW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow,
+    SetWindowDisplayAffinity, SetWindowPos, ShowWindow, TranslateMessage, CS_HREDRAW, CS_VREDRAW,
+    CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE,
+    SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE, WM_CTLCOLOREDIT,
+    WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETCURSOR, WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+    WS_VISIBLE,
 };
+
+const WM_APP_REDRAW: u32 = 0x8001;
+const WM_APP_BRING_FRONT: u32 = 0x8002;
 
 // pkasoft.com White Theme color palette (GDI COLORREF little-endian: 0x00BBGGRR)
 const PK_BG: COLORREF = COLORREF(0x00F5F7F5);          // #f5f7f5 (--paper soft clean canvas)
@@ -73,6 +77,7 @@ pub fn request_main_redraw() {
     unsafe {
         if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
             let _ = InvalidateRect(Some(HWND_MAIN_WINDOW), None, false);
+            let _ = PostMessageW(Some(HWND_MAIN_WINDOW), WM_APP_REDRAW, WPARAM(0), LPARAM(0));
         }
     }
 }
@@ -80,9 +85,13 @@ pub fn request_main_redraw() {
 pub fn bring_main_window_to_front() {
     unsafe {
         if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
-            let _ = ShowWindow(HWND_MAIN_WINDOW, SW_RESTORE);
-            let _ = SetForegroundWindow(HWND_MAIN_WINDOW);
             let _ = InvalidateRect(Some(HWND_MAIN_WINDOW), None, false);
+            let _ = PostMessageW(
+                Some(HWND_MAIN_WINDOW),
+                WM_APP_BRING_FRONT,
+                WPARAM(0),
+                LPARAM(0),
+            );
         }
     }
 }
@@ -2274,6 +2283,38 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
                     spawn_viewport_window(&target_display);
                 }
+            }
+            LRESULT(0)
+        }
+
+        WM_APP_REDRAW => {
+            unsafe {
+                let has_pending = crate::p2p::get_pending_approval().is_some();
+                if !HWND_EDIT_TARGET.0.is_null() && IsWindow(Some(HWND_EDIT_TARGET)).as_bool() {
+                    let _ = ShowWindow(
+                        HWND_EDIT_TARGET,
+                        if has_pending { SW_HIDE } else { SW_SHOW },
+                    );
+                }
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+            LRESULT(0)
+        }
+
+        WM_APP_BRING_FRONT => {
+            unsafe {
+                let has_pending = crate::p2p::get_pending_approval().is_some();
+                if !HWND_EDIT_TARGET.0.is_null() && IsWindow(Some(HWND_EDIT_TARGET)).as_bool() {
+                    let _ = ShowWindow(
+                        HWND_EDIT_TARGET,
+                        if has_pending { SW_HIDE } else { SW_SHOW },
+                    );
+                }
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(hwnd);
+                let _ = InvalidateRect(Some(hwnd), None, false);
             }
             LRESULT(0)
         }
