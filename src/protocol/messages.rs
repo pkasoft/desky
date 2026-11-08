@@ -54,6 +54,8 @@ pub enum MouseButton {
 pub enum AdminReq {
     GetProcesses,
     KillProcess { pid: u32 },
+    GetServices,
+    ControlService { name: String, action: String },
     ExecuteCommand { command: String },
     GetSystemInfo,
     SwitchMonitor { monitor_index: u32 },
@@ -67,6 +69,13 @@ pub struct ProcessItem {
     pub pid: u32,
     pub name: String,
     pub mem_kb: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceItem {
+    pub name: String,
+    pub display_name: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +95,8 @@ pub struct SystemStats {
 pub enum AdminResp {
     Processes(Vec<ProcessItem>),
     KillResult { pid: u32, success: bool, msg: String },
+    Services(Vec<ServiceItem>),
+    ServiceResult { name: String, success: bool, msg: String },
     CommandOutput { output: String, exit_code: i32 },
     SystemInfo(SystemStats),
     MonitorSwitched { monitor_index: u32, count: u32 },

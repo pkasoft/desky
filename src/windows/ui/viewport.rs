@@ -388,24 +388,28 @@ pub unsafe fn draw_tab_bar(
         };
         let _ = DrawTextW(hdc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     } else {
-        // Mode Switchers & Tools: [ 1 ] [ 2 ] [ Audio ] [ Privacy ] [ Desktop ] [ Admin ]
+        // Mode Switchers & Tools: [ 1 ] [ 2 ] [ 3 ] [ Audio ] [ Voice ] [ Privacy ] [ Desktop ] [ Admin ]
         let mode_y = 5;
         let is_admin = VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed);
         let active_mon = ACTIVE_REMOTE_MONITOR.load(Ordering::Relaxed);
         let is_muted = crate::windows::audio::is_audio_muted();
+        let is_voice = crate::windows::audio::is_intercom_voice_active();
         let is_privacy = REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
 
         let admin_w = 76;
         let desk_w = 80;
         let priv_w = 78;
+        let voice_w = 66;
         let audio_w = 64;
         let mon_w = 26;
 
         let admin_x = client_w - admin_w - 10;
         let desk_x = admin_x - desk_w - 6;
         let priv_x = desk_x - priv_w - 6;
-        let audio_x = priv_x - audio_w - 6;
-        let mon2_x = audio_x - mon_w - 6;
+        let voice_x = priv_x - voice_w - 6;
+        let audio_x = voice_x - audio_w - 6;
+        let mon3_x = audio_x - mon_w - 6;
+        let mon2_x = mon3_x - mon_w - 4;
         let mon1_x = mon2_x - mon_w - 4;
 
         // Mon 1 pill
@@ -433,6 +437,18 @@ pub unsafe fn draw_tab_bar(
         let mut m2_rc = RECT { left: mon2_x, top: mode_y, right: mon2_x + mon_w, bottom: mode_y + tab_h };
         let _ = DrawTextW(hdc, &mut m2_txt, &mut m2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
+        // Mon 3 pill
+        let (m3_bg, m3_border, m3_fg) = if active_mon == 2 {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, mon3_x, mode_y, mon_w, tab_h, m3_bg, m3_border, 6);
+        SetTextColor(hdc, m3_fg);
+        let mut m3_txt: Vec<u16> = "3".encode_utf16().collect();
+        let mut m3_rc = RECT { left: mon3_x, top: mode_y, right: mon3_x + mon_w, bottom: mode_y + tab_h };
+        let _ = DrawTextW(hdc, &mut m3_txt, &mut m3_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
         // Audio pill
         let (aud_bg, aud_border, aud_fg, aud_str) = if !is_muted {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK, "Audio")
@@ -444,6 +460,18 @@ pub unsafe fn draw_tab_bar(
         let mut aud_txt: Vec<u16> = aud_str.encode_utf16().collect();
         let mut aud_rc = RECT { left: audio_x, top: mode_y, right: audio_x + audio_w, bottom: mode_y + tab_h };
         let _ = DrawTextW(hdc, &mut aud_txt, &mut aud_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Voice / Intercom pill
+        let (vox_bg, vox_border, vox_fg, vox_str) = if is_voice {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK, "Voice")
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED, "Mic Off")
+        };
+        draw_rounded_box(hdc, voice_x, mode_y, voice_w, tab_h, vox_bg, vox_border, 6);
+        SetTextColor(hdc, vox_fg);
+        let mut vox_txt: Vec<u16> = vox_str.encode_utf16().collect();
+        let mut vox_rc = RECT { left: voice_x, top: mode_y, right: voice_x + voice_w, bottom: mode_y + tab_h };
+        let _ = DrawTextW(hdc, &mut vox_txt, &mut vox_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
         // Privacy pill
         let priv_hover = hover_state == 9004;
@@ -556,14 +584,17 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
         let admin_w = 76;
         let desk_w = 80;
         let priv_w = 78;
+        let voice_w = 66;
         let audio_w = 64;
         let mon_w = 26;
 
         let admin_x = client_w - admin_w - 10;
         let desk_x = admin_x - desk_w - 6;
         let priv_x = desk_x - priv_w - 6;
-        let audio_x = priv_x - audio_w - 6;
-        let mon2_x = audio_x - mon_w - 6;
+        let voice_x = priv_x - voice_w - 6;
+        let audio_x = voice_x - audio_w - 6;
+        let mon3_x = audio_x - mon_w - 6;
+        let mon2_x = mon3_x - mon_w - 4;
         let mon1_x = mon2_x - mon_w - 4;
 
         if client_y >= tab_y && client_y < tab_y + tab_h {
@@ -576,6 +607,9 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
             if client_x >= priv_x && client_x < priv_x + priv_w {
                 return 9004;
             }
+            if client_x >= voice_x && client_x < voice_x + voice_w {
+                return 9005;
+            }
             if client_x >= audio_x && client_x < audio_x + audio_w {
                 return 9003;
             }
@@ -584,6 +618,9 @@ fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
             }
             if client_x >= mon2_x && client_x < mon2_x + mon_w {
                 return 9102;
+            }
+            if client_x >= mon3_x && client_x < mon3_x + mon_w {
+                return 9103;
             }
         }
     }
@@ -2106,6 +2143,11 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
                 let _ = crate::windows::audio::toggle_audio_mute();
                 unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                 return LRESULT(0);
+            } else if hit == 9005 {
+                let is_on = crate::windows::audio::toggle_intercom_voice();
+                info!("Technician Two-Way Voice Intercom toggled: {}", is_on);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return LRESULT(0);
             } else if hit == 9004 {
                 let new_priv = !REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
                 REMOTE_PRIVACY_MODE.store(new_priv, Ordering::Relaxed);
@@ -2120,6 +2162,11 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             } else if hit == 9102 {
                 ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
                 crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 1 });
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return LRESULT(0);
+            } else if hit == 9103 {
+                ACTIVE_REMOTE_MONITOR.store(2, Ordering::Relaxed);
+                crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 2 });
                 unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
                 return LRESULT(0);
             } else if hit >= 1000 {
@@ -2350,6 +2397,28 @@ pub(crate) unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wpar
             } else if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let vk = wparam.0 as u8;
                 let is_ctrl = (unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x11) } as i16) < 0;
+                let is_alt = (unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState(0x12) } as i16) < 0;
+
+                // Multi-Monitor Switcher Hotkeys: Ctrl + Alt + 1/2/3
+                if is_ctrl && is_alt {
+                    if vk == b'1' || vk == 0x31 || vk == 0x61 {
+                        ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
+                        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 0 });
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    } else if vk == b'2' || vk == 0x32 || vk == 0x62 {
+                        ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
+                        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 1 });
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    } else if vk == b'3' || vk == 0x33 || vk == 0x63 {
+                        ACTIVE_REMOTE_MONITOR.store(2, Ordering::Relaxed);
+                        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor { monitor_index: 2 });
+                        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        return LRESULT(0);
+                    }
+                }
+
                 if is_ctrl && (vk == b'V' || vk == b'v') {
                     let files = crate::p2p::read_clipboard_files();
                     if !files.is_empty() {
