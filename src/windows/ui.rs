@@ -27,7 +27,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindow, KillTimer, LoadCursorW,
     PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow,
     SetTimer, SetWindowDisplayAffinity, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-    CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE,
+    MINMAXINFO, WM_GETMINMAXINFO, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE,
     WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
@@ -116,8 +116,9 @@ pub fn set_assigned_desky_id(id: &str) {
 
 unsafe fn create_segoe_font(height: i32, weight: windows::Win32::Graphics::Gdi::FONT_WEIGHT) -> HFONT {
     use windows::Win32::Graphics::Gdi::{FONT_CHARSET, FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY};
+    let safe_height = height.max(12);
     CreateFontW(
-        height,
+        safe_height,
         0,
         0,
         0,
@@ -588,7 +589,7 @@ unsafe fn draw_fullscreen_settings_view(
 ) {
     let scale_w = client_w as f32 / 1024.0;
     let scale_h = client_h as f32 / 640.0;
-    let s = (scale_w.min(scale_h)).clamp(0.80, 1.40);
+    let s = (scale_w.min(scale_h)).clamp(1.0, 1.40);
 
     // 1. Full-Screen Canvas (PK_BG)
     let full_rect = RECT {
@@ -624,11 +625,11 @@ unsafe fn draw_fullscreen_settings_view(
     };
     FillRect(hdc, &hdr_line, line_brush);
 
-    let f_brand = (16.0 * s) as i32;
-    let f_title = (17.0 * s) as i32;
-    let f_sec = (11.0 * s) as i32;
-    let f_btn = (12.0 * s) as i32;
-    let f_info = (12.0 * s) as i32;
+    let f_brand = ((16.0 * s) as i32).max(16);
+    let f_title = ((17.0 * s) as i32).max(17);
+    let f_sec = ((11.0 * s) as i32).max(12);
+    let f_btn = ((12.0 * s) as i32).max(13);
+    let f_info = ((12.0 * s) as i32).max(12);
 
     let font_brand = create_segoe_font(f_brand, FW_BOLD);
     let font_title = create_segoe_font(f_title, FW_BOLD);
@@ -1591,6 +1592,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
 
+        WM_GETMINMAXINFO => {
+            unsafe {
+                if lparam.0 != 0 {
+                    let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+                    mmi.ptMinTrackSize.x = 720;
+                    mmi.ptMinTrackSize.y = 540;
+                }
+            }
+            LRESULT(0)
+        }
         WM_ERASEBKGND => LRESULT(1),
 
         WM_SIZE => {
@@ -1655,12 +1666,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     SetBkMode(mem_dc, TRANSPARENT);
 
                     let l = get_responsive_layout(w, h);
-                    let f_title = (26.0 * l.font_scale) as i32;
-                    let f_sub = (14.0 * l.font_scale) as i32;
-                    let f_badge = (13.0 * l.font_scale) as i32;
-                    let f_id = (34.0 * l.font_scale) as i32;
-                    let f_btn = (16.0 * l.font_scale) as i32;
-                    let f_console = (13.0 * l.font_scale) as i32;
+                    let f_title = ((26.0 * l.font_scale) as i32).max(24);
+                    let f_sub = ((14.0 * l.font_scale) as i32).max(13);
+                    let f_badge = ((13.0 * l.font_scale) as i32).max(12);
+                    let f_id = ((34.0 * l.font_scale) as i32).max(28);
+                    let f_btn = ((16.0 * l.font_scale) as i32).max(14);
+                    let f_console = ((13.0 * l.font_scale) as i32).max(12);
 
                     let font_title = create_segoe_font(f_title, FW_BOLD);
                     let font_sub = create_segoe_font(f_sub, FW_NORMAL);
@@ -2267,6 +2278,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// Window Procedure for the Viewport Remote Stream Canvas
 unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     match msg {
+        WM_GETMINMAXINFO => {
+            unsafe {
+                if lparam.0 != 0 {
+                    let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+                    mmi.ptMinTrackSize.x = 720;
+                    mmi.ptMinTrackSize.y = 540;
+                }
+            }
+            LRESULT(0)
+        }
         WM_ERASEBKGND => LRESULT(1),
         WM_LBUTTONDOWN => {
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
@@ -2282,7 +2303,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let scale_w = client_w as f32 / 1024.0;
                 let scale_h = client_h as f32 / 640.0;
-                let s = (scale_w.min(scale_h)).clamp(0.80, 1.40);
+                let s = (scale_w.min(scale_h)).clamp(1.0, 1.40);
 
                 let hdr_h = (46.0 * s) as i32;
                 let side_w = (210.0 * s) as i32;
