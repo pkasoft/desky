@@ -28,6 +28,11 @@ pub fn handle_admin_request(req: AdminReq) -> AdminResp {
         AdminReq::RebootHost { safe_mode } => AdminResp::RebootScheduled { safe_mode },
         AdminReq::SetPrivacyMode { enabled } => AdminResp::PrivacyModeChanged { enabled },
         AdminReq::WakeOnLan { mac } => AdminResp::WakeOnLanSent { mac, success: false },
+        AdminReq::TriggerSystemAction { action } => AdminResp::SystemActionResult {
+            action,
+            success: false,
+            msg: "System action not supported on Linux".into(),
+        },
     }
 }
 

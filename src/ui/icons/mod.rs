@@ -26,6 +26,8 @@ pub mod trash;
 pub mod volume;
 pub mod wifi;
 pub mod x;
+pub mod pen;
+pub mod record;
 pub mod zap;
 
 pub use arrow_right::draw_arrow_right;
@@ -51,6 +53,8 @@ pub use trash::draw_trash;
 pub use volume::{draw_volume, draw_volume_x};
 pub use wifi::draw_wifi;
 pub use x::draw_x;
+pub use pen::draw_pen;
+pub use record::draw_record;
 pub use zap::draw_zap;
 
 use std::sync::Once;

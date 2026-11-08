@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Windows OS Platform Modules & Runtime Architecture
 //!
 //! Subdivided by OS family:
@@ -14,6 +15,7 @@ pub mod clipboard;
 pub mod cursor;
 pub mod dxgi_capture;
 pub mod input;
+pub mod recorder;
 pub mod server_2012;
 pub mod server_2016_2019;
 pub mod server_2022;

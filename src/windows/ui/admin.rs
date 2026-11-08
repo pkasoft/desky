@@ -141,6 +141,9 @@ pub fn poll_admin_responses() {
                 AdminResp::WakeOnLanSent { mac, success } => {
                     state.status_msg = Some((if success { format!("Magic packet broadcasted to {}", mac) } else { format!("Failed to send WoL packet to {}", mac) }, Instant::now()));
                 }
+                AdminResp::SystemActionResult { action: _, success: _, msg } => {
+                    state.status_msg = Some((msg, Instant::now()));
+                }
             }
         }
     }

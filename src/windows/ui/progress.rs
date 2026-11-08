@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Dedicated File Transfer Progress Window (Win32)
 
 #![allow(unsafe_op_in_unsafe_fn)]

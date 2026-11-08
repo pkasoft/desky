@@ -3,7 +3,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use crate::protocol::{AdminReq, AdminResp, ProcessItem, ServiceItem, SystemStats};
+use crate::protocol::{AdminReq, AdminResp, ProcessItem, ServiceItem, SystemAction, SystemStats};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -75,6 +75,82 @@ pub fn handle_admin_request(req: AdminReq) -> AdminResp {
                 false
             };
             AdminResp::WakeOnLanSent { mac, success }
+        }
+        AdminReq::TriggerSystemAction { action } => {
+            let (success, msg) = trigger_system_action(action);
+            AdminResp::SystemActionResult { action, success, msg }
+        }
+    }
+}
+
+pub fn trigger_system_action(action: SystemAction) -> (bool, String) {
+    match action {
+        SystemAction::LockWorkstation => {
+            let res = unsafe {
+                use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+                use windows::core::s;
+                if let Ok(h) = LoadLibraryA(s!("user32.dll")) {
+                    if let Some(proc) = GetProcAddress(h, s!("LockWorkStation")) {
+                        let lock_fn: extern "system" fn() -> i32 = std::mem::transmute(proc);
+                        lock_fn() != 0
+                    } else { false }
+                } else { false }
+            };
+            (res, if res { "Workstation locked".into() } else { "Failed to lock workstation".into() })
+        }
+        SystemAction::TaskManager => {
+            let res = Command::new("taskmgr.exe")
+                .creation_flags(0x08000000)
+                .spawn()
+                .is_ok();
+            (res, if res { "Task Manager launched".into() } else { "Failed to launch Task Manager".into() })
+        }
+        SystemAction::ShowDesktop => {
+            let res = Command::new("powershell")
+                .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", "(New-Object -ComObject Shell.Application).ToggleDesktop()"])
+                .creation_flags(0x08000000)
+                .spawn()
+                .is_ok();
+            (res, "Show Desktop toggled".into())
+        }
+        SystemAction::OpenRun => {
+            let res = Command::new("powershell")
+                .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", "(New-Object -ComObject Shell.Application).FileRun()"])
+                .creation_flags(0x08000000)
+                .spawn()
+                .is_ok();
+            (res, "Run Dialog opened".into())
+        }
+        SystemAction::CtrlAltDel => {
+            let success = unsafe {
+                use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
+                use windows::core::s;
+                if let Ok(h) = LoadLibraryA(s!("sas.dll")) {
+                    if let Some(proc) = GetProcAddress(h, s!("SendSAS")) {
+                        let sendsas: extern "system" fn(i32) = std::mem::transmute(proc);
+                        sendsas(0);
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+            if success {
+                (true, "SAS Ctrl+Alt+Del triggered".into())
+            } else {
+                let _ = Command::new("taskmgr.exe").creation_flags(0x08000000).spawn();
+                (true, "Security/Task Manager triggered (SAS requires sas.dll policy)".into())
+            }
+        }
+        SystemAction::RebootNormal => {
+            schedule_remote_reboot(false);
+            (true, "Host reboot scheduled".into())
+        }
+        SystemAction::RebootSafe => {
+            schedule_remote_reboot(true);
+            (true, "Host Safe Mode reboot scheduled".into())
         }
     }
 }
@@ -489,3 +565,4 @@ unsafe extern "system" fn privacy_curtain_wndproc(
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
+

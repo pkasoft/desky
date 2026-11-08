@@ -209,6 +209,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         };
 
                         if let Some((f_id, orig_w, orig_h, jpeg_bytes)) = job {
+                            #[cfg(target_os = "windows")]
+                            crate::windows::recorder::push_frame(&jpeg_bytes);
+
                             if let Some(decoded) =
                                 decode_jpeg_to_bgra(f_id, orig_w, orig_h, &jpeg_bytes)
                             {

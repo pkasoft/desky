@@ -62,6 +62,18 @@ pub enum AdminReq {
     RebootHost { safe_mode: bool },
     SetPrivacyMode { enabled: bool },
     WakeOnLan { mac: String },
+    TriggerSystemAction { action: SystemAction },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SystemAction {
+    CtrlAltDel,
+    LockWorkstation,
+    TaskManager,
+    ShowDesktop,
+    OpenRun,
+    RebootNormal,
+    RebootSafe,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,4 +115,5 @@ pub enum AdminResp {
     RebootScheduled { safe_mode: bool },
     PrivacyModeChanged { enabled: bool },
     WakeOnLanSent { mac: String, success: bool },
+    SystemActionResult { action: SystemAction, success: bool, msg: String },
 }
