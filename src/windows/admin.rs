@@ -26,12 +26,13 @@ use windows::Win32::System::SystemInformation::{
 use windows::Win32::System::Threading::{
     OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::BlockInput;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetSystemMetrics, LoadCursorW, RegisterClassExW,
-    SetWindowDisplayAffinity, IDC_ARROW, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, WINDOW_DISPLAY_AFFINITY, WM_ERASEBKGND, WM_PAINT,
-    WNDCLASSEXW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, GetSystemMetrics,
+    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetWindowDisplayAffinity,
+    TranslateMessage, IDC_ARROW, MSG, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+    SM_YVIRTUALSCREEN, WINDOW_DISPLAY_AFFINITY, WM_CLOSE, WM_DESTROY, WM_ERASEBKGND, WM_NCHITTEST,
+    WM_PAINT, WNDCLASSEXW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP, WS_VISIBLE,
 };
 
 static PRIVACY_CURTAIN_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -353,57 +354,72 @@ pub fn get_system_info() -> SystemStats {
 }
 
 pub fn set_privacy_curtain(enabled: bool) {
-    unsafe {
-        let _ = BlockInput(enabled);
-        if enabled {
-            let existing = PRIVACY_CURTAIN_HWND.load(Ordering::Relaxed);
-            if existing != 0 {
-                return;
-            }
+    if enabled {
+        let existing = PRIVACY_CURTAIN_HWND.load(Ordering::SeqCst);
+        if existing != 0 {
+            return;
+        }
 
-            let h_module = GetModuleHandleW(None).unwrap_or_default();
-            let h_instance: HINSTANCE = h_module.into();
-            let class_name = w!("DeskyPrivacyCurtain");
+        // Dedicated thread running a message pump to keep the curtain responsive and prevent desktop ghosting
+        std::thread::Builder::new()
+            .name("desky_privacy_curtain".to_string())
+            .spawn(move || unsafe {
+                let h_module = GetModuleHandleW(None).unwrap_or_default();
+                let h_instance: HINSTANCE = h_module.into();
+                let class_name = w!("DeskyPrivacyCurtain");
 
-            let mut wc = WNDCLASSEXW::default();
-            wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
-            wc.lpfnWndProc = Some(privacy_curtain_wndproc);
-            wc.hInstance = h_instance;
-            wc.lpszClassName = class_name;
-            wc.hCursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
-            let _ = RegisterClassExW(&wc);
+                let mut wc = WNDCLASSEXW::default();
+                wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
+                wc.lpfnWndProc = Some(privacy_curtain_wndproc);
+                wc.hInstance = h_instance;
+                wc.lpszClassName = class_name;
+                wc.hCursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+                let _ = RegisterClassExW(&wc);
 
-            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+                let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+                let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+                let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
 
-            if let Ok(hwnd) = CreateWindowExW(
-                WS_EX_TOPMOST,
-                class_name,
-                w!("Desky Privacy Curtain"),
-                WS_POPUP | WS_VISIBLE,
-                vx,
-                vy,
-                vw,
-                vh,
-                None,
-                None,
-                Some(h_instance),
-                None,
-            ) {
-                // WDA_EXCLUDEFROMCAPTURE (0x00000011): visible on physical screen, hidden from DXGI capture
-                let _ = SetWindowDisplayAffinity(hwnd, WINDOW_DISPLAY_AFFINITY(0x00000011));
-                PRIVACY_CURTAIN_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
-                info!("🔒 Host Privacy Curtain window activated ({}x{} at {},{})", vw, vh, vx, vy);
-            }
-        } else {
-            let old = PRIVACY_CURTAIN_HWND.swap(0, Ordering::Relaxed);
-            if old != 0 {
+                if let Ok(hwnd) = CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+                    class_name,
+                    w!("Desky Privacy Curtain"),
+                    WS_POPUP | WS_VISIBLE,
+                    vx,
+                    vy,
+                    vw,
+                    vh,
+                    None,
+                    None,
+                    Some(h_instance),
+                    None,
+                ) {
+                    // WDA_EXCLUDEFROMCAPTURE (0x00000011): visible on physical screen, hidden from DXGI capture
+                    let _ = SetWindowDisplayAffinity(hwnd, WINDOW_DISPLAY_AFFINITY(0x00000011));
+                    PRIVACY_CURTAIN_HWND.store(hwnd.0 as isize, Ordering::SeqCst);
+                    info!("🔒 Host Privacy Curtain window activated ({}x{} at {},{})", vw, vh, vx, vy);
+
+                    // Win32 message loop to prevent Windows DWM from marking the window or desktop as unresponsive
+                    let mut msg = MSG::default();
+                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                    PRIVACY_CURTAIN_HWND.store(0, Ordering::SeqCst);
+                    info!("🔓 Host Privacy Curtain thread exited cleanly");
+                }
+            })
+            .ok();
+    } else {
+        let old = PRIVACY_CURTAIN_HWND.swap(0, Ordering::SeqCst);
+        if old != 0 {
+            unsafe {
                 let hwnd = HWND(old as *mut _);
-                let _ = DestroyWindow(hwnd);
-                info!("🔓 Host Privacy Curtain window dismissed");
+                // Cross-thread safe dismissal via WM_CLOSE message to the owning thread
+                let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
             }
+            info!("🔓 Host Privacy Curtain dismissal posted");
         }
     }
 }
@@ -416,6 +432,15 @@ unsafe extern "system" fn privacy_curtain_wndproc(
 ) -> LRESULT {
     match msg {
         WM_ERASEBKGND => LRESULT(1),
+        WM_NCHITTEST => LRESULT(-1), // HTTRANSPARENT: clicks pass directly through to apps underneath
+        WM_CLOSE => {
+            let _ = DestroyWindow(hwnd);
+            LRESULT(0)
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            LRESULT(0)
+        }
         WM_PAINT => {
             let mut ps = PAINTSTRUCT::default();
             let hdc = BeginPaint(hwnd, &mut ps);
@@ -443,7 +468,7 @@ unsafe extern "system" fn privacy_curtain_wndproc(
             let font_sub = super::ui::theme::create_segoe_font(16, FW_NORMAL);
             let _ = SelectObject(hdc, HGDIOBJ(font_sub.0));
             SetTextColor(hdc, COLORREF(0x0094A3B8));
-            let mut t_sub: Vec<u16> = "This computer is being remotely serviced. Physical display & input are locked for privacy."
+            let mut t_sub: Vec<u16> = "This computer is being remotely serviced. Physical display is masked for privacy."
                 .encode_utf16()
                 .collect();
             let mut rc_sub = RECT {
