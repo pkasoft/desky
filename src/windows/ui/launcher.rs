@@ -477,7 +477,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let icon_sz = 14;
                     let gap = 8;
                     let pad_x = 14;
-                    let pill_w = (pill_sz.cx + gap + icon_sz + pad_x * 2).max(114);
+                    let pill_w = (pill_sz.cx + gap + icon_sz + pad_x * 2).max(116);
                     let pill_h = (30.0 * l.font_scale) as i32;
                     let pill_x = (w - pill_w - 24).max(24);
 
@@ -487,11 +487,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     let start_x = pill_x + (pill_w - content_w) / 2;
                     let icon_y = 16 + (pill_h - icon_sz) / 2;
 
-                    if is_online {
-                        crate::ui::draw_wifi(mem_dc, start_x, icon_y, icon_sz, pill_fg, 2);
-                    } else {
-                        crate::ui::draw_radio(mem_dc, start_x, icon_y, icon_sz, pill_fg, 2);
-                    }
+                    crate::ui::draw_server(mem_dc, start_x, icon_y, icon_sz, pill_fg, 2);
 
                     let mut pill_rect = RECT {
                         left: start_x + icon_sz + gap,
