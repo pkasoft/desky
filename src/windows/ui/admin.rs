@@ -4,7 +4,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use crate::protocol::{AdminReq, AdminResp, ProcessItem, SystemStats};
+use crate::protocol::{AdminReq, AdminResp, ProcessItem, ServiceItem, SystemStats};
 use super::theme::{
     create_mono_font, create_segoe_font, draw_rounded_box, PK_BG, PK_BTN_HOVER, PK_CARD,
     PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED,
@@ -24,6 +24,7 @@ use windows::Win32::Graphics::Gdi::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminSubTab {
     Processes,
+    Services,
     Terminal,
     SystemInfo,
 }
@@ -40,6 +41,10 @@ pub struct AdminState {
     pub process_filter: String,
     pub filter_active: bool,
     pub scroll_y: i32,
+    pub services: Vec<ServiceItem>,
+    pub service_filter: String,
+    pub service_filter_active: bool,
+    pub service_scroll_y: i32,
     pub terminal_lines: Vec<String>,
     pub terminal_input: String,
     pub terminal_scroll_y: i32,
@@ -58,6 +63,10 @@ impl Default for AdminState {
             process_filter: String::new(),
             filter_active: false,
             scroll_y: 0,
+            services: Vec::new(),
+            service_filter: String::new(),
+            service_filter_active: false,
+            service_scroll_y: 0,
             terminal_lines: vec![
                 "[Admin] Desky Silent Remote Management Console - PowerShell Engine".into(),
                 "Commands execute with zero remote screen or mouse interruption.".into(),
@@ -96,6 +105,15 @@ pub fn poll_admin_responses() {
                         state.processes.retain(|p| p.pid != pid);
                         crate::p2p::send_admin_request(AdminReq::GetProcesses);
                     }
+                }
+                AdminResp::Services(list) => {
+                    let count = list.len();
+                    state.services = list;
+                    state.status_msg = Some((format!("Loaded {} Windows services", count), Instant::now()));
+                }
+                AdminResp::ServiceResult { name: _, success: _, msg } => {
+                    state.status_msg = Some((msg, Instant::now()));
+                    crate::p2p::send_admin_request(AdminReq::GetServices);
                 }
                 AdminResp::CommandOutput { output, exit_code } => {
                     for line in output.lines() {
@@ -145,6 +163,7 @@ pub unsafe fn draw_admin_view(hdc: HDC, width: i32, height: i32, hover_state: i3
 
     match sub_tab {
         AdminSubTab::Processes => draw_processes_view(hdc, width, height, hover_state),
+        AdminSubTab::Services => draw_services_view(hdc, width, height, hover_state),
         AdminSubTab::Terminal => draw_terminal_view(hdc, width, height),
         AdminSubTab::SystemInfo => draw_system_info_view(hdc, width, height, hover_state),
     }
@@ -167,8 +186,9 @@ unsafe fn draw_sub_tab_bar(hdc: HDC, width: i32, current_tab: AdminSubTab, hover
 
     let tabs = [
         (AdminSubTab::Processes, "Processes"),
-        (AdminSubTab::Terminal, "PowerShell Terminal"),
-        (AdminSubTab::SystemInfo, "System Telemetry"),
+        (AdminSubTab::Services, "Services"),
+        (AdminSubTab::Terminal, "PowerShell"),
+        (AdminSubTab::SystemInfo, "Telemetry"),
     ];
 
     let font = create_segoe_font(13, FW_SEMIBOLD);
@@ -179,7 +199,7 @@ unsafe fn draw_sub_tab_bar(hdc: HDC, width: i32, current_tab: AdminSubTab, hover
     for (i, (tab_kind, label)) in tabs.iter().enumerate() {
         let is_active = *tab_kind == current_tab;
         let is_hover = hover_state == (2000 + i as i32);
-        let tab_w = 160;
+        let tab_w = 120;
 
         let bg = if is_active {
             PK_GREEN_TINT
@@ -200,17 +220,18 @@ unsafe fn draw_sub_tab_bar(hdc: HDC, width: i32, current_tab: AdminSubTab, hover
 
         // Render Lucide Vector Icon for Sub-Tab
         match tab_kind {
-            AdminSubTab::Processes => crate::ui::draw_cpu(hdc, cur_x + 10, bar_y + 10, 16, fg, 2),
-            AdminSubTab::Terminal => crate::ui::draw_terminal(hdc, cur_x + 10, bar_y + 10, 16, fg, 2),
-            AdminSubTab::SystemInfo => crate::ui::draw_info(hdc, cur_x + 10, bar_y + 10, 16, fg, 2),
+            AdminSubTab::Processes => crate::ui::draw_cpu(hdc, cur_x + 8, bar_y + 10, 16, fg, 2),
+            AdminSubTab::Services => crate::ui::draw_server(hdc, cur_x + 8, bar_y + 10, 16, fg, 2),
+            AdminSubTab::Terminal => crate::ui::draw_terminal(hdc, cur_x + 8, bar_y + 10, 16, fg, 2),
+            AdminSubTab::SystemInfo => crate::ui::draw_info(hdc, cur_x + 8, bar_y + 10, 16, fg, 2),
         }
 
         SetTextColor(hdc, fg);
         let mut txt: Vec<u16> = label.encode_utf16().collect();
-        let mut rc = RECT { left: cur_x + 28, top: bar_y + 4, right: cur_x + tab_w - 4, bottom: bar_y + 32 };
+        let mut rc = RECT { left: cur_x + 24, top: bar_y + 4, right: cur_x + tab_w - 4, bottom: bar_y + 32 };
         let _ = DrawTextW(hdc, &mut txt, &mut rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        cur_x += tab_w + 12;
+        cur_x += tab_w + 8;
     }
 
     // Power Actions & Refresh on the far right
@@ -421,6 +442,188 @@ unsafe fn draw_processes_view(hdc: HDC, width: i32, height: i32, hover_state: i3
         let mut kill_txt: Vec<u16> = "End Task".encode_utf16().collect();
         let mut kill_rc = RECT { left: btn_x + 24, top: ry + 3, right: btn_x + btn_w, bottom: ry + row_h - 3 };
         let _ = DrawTextW(hdc, &mut kill_txt, &mut kill_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    let _ = SelectObject(hdc, old_font);
+    let _ = DeleteObject(HGDIOBJ(font_body.0));
+    let _ = DeleteObject(HGDIOBJ(font_bold.0));
+    let _ = DeleteObject(HGDIOBJ(font_mono.0));
+}
+
+unsafe fn draw_services_view(hdc: HDC, width: i32, height: i32, hover_state: i32) {
+    let top_y = 96;
+    let table_w = width - 48;
+    let table_h = height - top_y - 24;
+    if table_h <= 60 {
+        return;
+    }
+
+    // Search bar box
+    let search_h = 32;
+    let search_rc = RECT { left: 24, top: top_y, right: width - 24, bottom: top_y + search_h };
+    let s_brush = CreateSolidBrush(PK_INPUT_BG);
+    FillRect(hdc, &search_rc, s_brush);
+    let _ = DeleteObject(HGDIOBJ(s_brush.0));
+    let s_border = CreateSolidBrush(PK_CARD_BORDER);
+    FrameRect(hdc, &search_rc, s_border);
+    let _ = DeleteObject(HGDIOBJ(s_border.0));
+
+    let font_body = create_segoe_font(13, FW_NORMAL);
+    let font_bold = create_segoe_font(13, FW_SEMIBOLD);
+    let font_mono = create_mono_font(12, FW_NORMAL);
+    let old_font = SelectObject(hdc, HGDIOBJ(font_body.0));
+    SetBkMode(hdc, TRANSPARENT);
+
+    let (filter_text, filter_active, services, scroll_y) = {
+        let state = get_admin_state().lock().unwrap();
+        (
+            state.service_filter.clone(),
+            state.service_filter_active,
+            state.services.clone(),
+            state.service_scroll_y,
+        )
+    };
+
+    crate::ui::draw_search(hdc, 34, top_y + 8, 16, PK_MUTED, 2);
+
+    SetTextColor(hdc, if filter_text.is_empty() { PK_MUTED } else { PK_TEXT });
+    let disp_filter = if filter_text.is_empty() {
+        "Filter Windows services by name, display name, or status (type to search)...".to_string()
+    } else {
+        format!("Filter: {}{}", filter_text, if filter_active { "_" } else { "" })
+    };
+    let mut f_txt: Vec<u16> = disp_filter.encode_utf16().collect();
+    let mut f_rc = RECT { left: 58, top: top_y, right: width - 36, bottom: top_y + search_h };
+    let _ = DrawTextW(hdc, &mut f_txt, &mut f_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    // Table Header
+    let head_y = top_y + search_h + 8;
+    let head_h = 30;
+    let head_rc = RECT { left: 24, top: head_y, right: 24 + table_w, bottom: head_y + head_h };
+    let head_brush = CreateSolidBrush(PK_CARD_BORDER);
+    FillRect(hdc, &head_rc, head_brush);
+    let _ = DeleteObject(HGDIOBJ(head_brush.0));
+
+    let _ = SelectObject(hdc, HGDIOBJ(font_bold.0));
+    SetTextColor(hdc, PK_TEXT);
+
+    let cols = [
+        (36, 180, "Service Name"),
+        (226, table_w - 530, "Display Name"),
+        (table_w - 294, 90, "Status"),
+        (table_w - 194, 180, "Actions"),
+    ];
+
+    for (cx, cw, title) in cols {
+        let mut t: Vec<u16> = title.encode_utf16().collect();
+        let mut rc = RECT { left: cx, top: head_y, right: cx + cw, bottom: head_y + head_h };
+        let _ = DrawTextW(hdc, &mut t, &mut rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // Filter services
+    let lower_filter = filter_text.to_lowercase();
+    let filtered: Vec<&ServiceItem> = services
+        .iter()
+        .filter(|s| {
+            if lower_filter.is_empty() {
+                true
+            } else {
+                s.name.to_lowercase().contains(&lower_filter)
+                    || s.display_name.to_lowercase().contains(&lower_filter)
+                    || s.status.to_lowercase().contains(&lower_filter)
+            }
+        })
+        .collect();
+
+    // Table rows
+    let rows_y = head_y + head_h;
+    let max_rows_h = height - rows_y - 20;
+    let row_h = 30;
+    let visible_rows = (max_rows_h / row_h).max(1);
+
+    let start_idx = (scroll_y / row_h).max(0) as usize;
+    let end_idx = (start_idx + visible_rows as usize + 1).min(filtered.len());
+
+    for (i, s) in filtered.iter().enumerate().skip(start_idx).take(end_idx - start_idx) {
+        let ry = rows_y + ((i as i32) * row_h - scroll_y);
+        if ry + row_h > height - 16 || ry < rows_y {
+            continue;
+        }
+
+        let is_hover = hover_state == (5000 + i as i32);
+        let row_bg = if is_hover {
+            PK_GREEN_TINT
+        } else if i % 2 == 0 {
+            PK_CARD
+        } else {
+            PK_INPUT_BG
+        };
+
+        let row_rc = RECT { left: 24, top: ry, right: 24 + table_w, bottom: ry + row_h };
+        let r_brush = CreateSolidBrush(row_bg);
+        FillRect(hdc, &row_rc, r_brush);
+        let _ = DeleteObject(HGDIOBJ(r_brush.0));
+
+        // Name
+        let _ = SelectObject(hdc, HGDIOBJ(font_mono.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut name_txt: Vec<u16> = s.name.encode_utf16().collect();
+        let mut name_rc = RECT { left: 36, top: ry, right: 216, bottom: ry + row_h };
+        let _ = DrawTextW(hdc, &mut name_txt, &mut name_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+        // Display Name
+        let _ = SelectObject(hdc, HGDIOBJ(font_body.0));
+        SetTextColor(hdc, PK_MUTED);
+        let mut disp_txt: Vec<u16> = s.display_name.encode_utf16().collect();
+        let mut disp_rc = RECT { left: 226, top: ry, right: table_w - 304, bottom: ry + row_h };
+        let _ = DrawTextW(hdc, &mut disp_txt, &mut disp_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+        // Status Badge
+        let is_running = s.status.eq_ignore_ascii_case("running");
+        let (st_bg, st_border, st_fg) = if is_running {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        let st_w = 72;
+        let st_x = table_w - 294;
+        draw_rounded_box(hdc, st_x, ry + 4, st_w, row_h - 8, st_bg, st_border, 4);
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_bold.0));
+        SetTextColor(hdc, st_fg);
+        let mut st_txt: Vec<u16> = (if is_running { "RUNNING" } else { "STOPPED" }).encode_utf16().collect();
+        let mut st_rc = RECT { left: st_x, top: ry + 4, right: st_x + st_w, bottom: ry + row_h - 4 };
+        let _ = DrawTextW(hdc, &mut st_txt, &mut st_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+        // Actions: [ Start / Stop ] and [ Restart ]
+        let act_x = table_w - 194;
+        let btn1_w = 56;
+        let btn2_w = 64;
+
+        let is_b1_hover = hover_state == (6000 + i as i32);
+        let is_b2_hover = hover_state == (7000 + i as i32);
+
+        // Button 1: Start (if stopped) or Stop (if running)
+        let (b1_txt_str, b1_fg, b1_border) = if is_running {
+            ("Stop", PK_RED, PK_RED)
+        } else {
+            ("Start", PK_GREEN_DARK, PK_GREEN)
+        };
+        let b1_bg = if is_b1_hover { PK_BTN_HOVER } else { PK_CARD };
+        draw_rounded_box(hdc, act_x, ry + 3, btn1_w, row_h - 6, b1_bg, b1_border, 4);
+        SetTextColor(hdc, b1_fg);
+        let mut b1_txt: Vec<u16> = b1_txt_str.encode_utf16().collect();
+        let mut b1_rc = RECT { left: act_x, top: ry + 3, right: act_x + btn1_w, bottom: ry + row_h - 3 };
+        let _ = DrawTextW(hdc, &mut b1_txt, &mut b1_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+        // Button 2: Restart
+        let b2_x = act_x + btn1_w + 6;
+        let b2_bg = if is_b2_hover { PK_BTN_HOVER } else { PK_CARD };
+        draw_rounded_box(hdc, b2_x, ry + 3, btn2_w, row_h - 6, b2_bg, PK_CARD_BORDER, 4);
+        SetTextColor(hdc, PK_TEXT);
+        let mut b2_txt: Vec<u16> = "Restart".encode_utf16().collect();
+        let mut b2_rc = RECT { left: b2_x, top: ry + 3, right: b2_x + btn2_w, bottom: ry + row_h - 3 };
+        let _ = DrawTextW(hdc, &mut b2_txt, &mut b2_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
 
     let _ = SelectObject(hdc, old_font);
@@ -831,21 +1034,23 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
     let bar_y = 48;
     if y >= bar_y && y < bar_y + 36 {
         let mut cur_x = 32;
-        let tabs = [AdminSubTab::Processes, AdminSubTab::Terminal, AdminSubTab::SystemInfo];
+        let tabs = [AdminSubTab::Processes, AdminSubTab::Services, AdminSubTab::Terminal, AdminSubTab::SystemInfo];
         for tab in tabs {
-            let tab_w = 160;
+            let tab_w = 120;
             if x >= cur_x && x < cur_x + tab_w {
                 if let Ok(mut state) = get_admin_state().lock() {
                     state.sub_tab = tab;
                     if tab == AdminSubTab::Processes && state.processes.is_empty() {
                         crate::p2p::send_admin_request(AdminReq::GetProcesses);
+                    } else if tab == AdminSubTab::Services && state.services.is_empty() {
+                        crate::p2p::send_admin_request(AdminReq::GetServices);
                     } else if tab == AdminSubTab::SystemInfo && state.system_stats.is_none() {
                         crate::p2p::send_admin_request(AdminReq::GetSystemInfo);
                     }
                 }
                 return true;
             }
-            cur_x += tab_w + 12;
+            cur_x += tab_w + 8;
         }
 
         // Refresh button
@@ -857,6 +1062,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
                 state.last_req_time = Some(Instant::now());
                 match state.sub_tab {
                     AdminSubTab::Processes => crate::p2p::send_admin_request(AdminReq::GetProcesses),
+                    AdminSubTab::Services => crate::p2p::send_admin_request(AdminReq::GetServices),
                     AdminSubTab::Terminal => state.terminal_lines.push(">> Console ready.".into()),
                     AdminSubTab::SystemInfo => crate::p2p::send_admin_request(AdminReq::GetSystemInfo),
                 }
@@ -911,6 +1117,80 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
                 }
             }
             return true;
+        }
+    }
+
+    if sub_tab == AdminSubTab::Services {
+        let top_y = 96;
+        let search_h = 32;
+        if x >= 24 && x < width - 24 && y >= top_y && y < top_y + search_h {
+            if let Ok(mut state) = get_admin_state().lock() {
+                state.service_filter_active = true;
+                state.filter_active = false;
+            }
+            return true;
+        } else {
+            if let Ok(mut state) = get_admin_state().lock() {
+                state.service_filter_active = false;
+            }
+        }
+
+        let table_w = width - 48;
+        let head_y = top_y + search_h + 8;
+        let rows_y = head_y + 30;
+        let row_h = 30;
+        if y >= rows_y && y < height - 20 {
+            let (filter_text, services, scroll_y) = {
+                let state = get_admin_state().lock().unwrap();
+                (state.service_filter.clone(), state.services.clone(), state.service_scroll_y)
+            };
+            let lower_filter = filter_text.to_lowercase();
+            let filtered: Vec<&ServiceItem> = services
+                .iter()
+                .filter(|s| {
+                    if lower_filter.is_empty() {
+                        true
+                    } else {
+                        s.name.to_lowercase().contains(&lower_filter)
+                            || s.display_name.to_lowercase().contains(&lower_filter)
+                            || s.status.to_lowercase().contains(&lower_filter)
+                    }
+                })
+                .collect();
+
+            let clicked_idx = ((y - rows_y + scroll_y) / row_h) as usize;
+            if clicked_idx < filtered.len() {
+                let s = filtered[clicked_idx];
+                let act_x = table_w - 194;
+                let btn1_w = 56;
+                let btn2_w = 64;
+
+                // Button 1: Start / Stop
+                if x >= act_x && x < act_x + btn1_w {
+                    let is_running = s.status.eq_ignore_ascii_case("running");
+                    let action = if is_running { "stop" } else { "start" };
+                    crate::p2p::send_admin_request(AdminReq::ControlService {
+                        name: s.name.clone(),
+                        action: action.into(),
+                    });
+                    if let Ok(mut state) = get_admin_state().lock() {
+                        state.status_msg = Some((format!("Sending {} command to '{}'...", action, s.name), Instant::now()));
+                    }
+                    return true;
+                }
+                // Button 2: Restart
+                let b2_x = act_x + btn1_w + 6;
+                if x >= b2_x && x < b2_x + btn2_w {
+                    crate::p2p::send_admin_request(AdminReq::ControlService {
+                        name: s.name.clone(),
+                        action: "restart".into(),
+                    });
+                    if let Ok(mut state) = get_admin_state().lock() {
+                        state.status_msg = Some((format!("Restarting service '{}'...", s.name), Instant::now()));
+                    }
+                    return true;
+                }
+            }
         }
     }
 
@@ -989,6 +1269,19 @@ pub fn handle_admin_char(c: char) -> bool {
                 }
             }
         }
+        AdminSubTab::Services => {
+            if let Ok(mut state) = get_admin_state().lock() {
+                if state.service_filter_active {
+                    if c == '\x08' {
+                        state.service_filter.pop();
+                    } else if !c.is_control() {
+                        state.service_filter.push(c);
+                    }
+                    state.service_scroll_y = 0;
+                    return true;
+                }
+            }
+        }
         AdminSubTab::Terminal => {
             if let Ok(mut state) = get_admin_state().lock() {
                 if c == '\r' || c == '\n' {
@@ -1047,6 +1340,10 @@ pub fn handle_admin_scroll(delta: i32) {
                 let lines_to_scroll = (delta / 120) * 36;
                 state.scroll_y = (state.scroll_y - lines_to_scroll).max(0);
             }
+            AdminSubTab::Services => {
+                let lines_to_scroll = (delta / 120) * 36;
+                state.service_scroll_y = (state.service_scroll_y - lines_to_scroll).max(0);
+            }
             AdminSubTab::Terminal => {
                 let lines_to_scroll = (delta / 120) * 3;
                 state.terminal_scroll_y = (state.terminal_scroll_y + lines_to_scroll).max(0);
@@ -1084,12 +1381,12 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
     let bar_y = 48;
     if y >= bar_y && y < bar_y + 36 {
         let mut cur_x = 32;
-        for i in 0..3 {
-            let tab_w = 160;
+        for i in 0..4 {
+            let tab_w = 120;
             if x >= cur_x && x < cur_x + tab_w {
                 return 2000 + i;
             }
-            cur_x += tab_w + 12;
+            cur_x += tab_w + 8;
         }
         let ref_w = 92;
         let ref_x = width - 24 - ref_w - 6;
@@ -1112,6 +1409,31 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
         let state = get_admin_state().lock().unwrap();
         state.sub_tab
     };
+
+    if sub_tab == AdminSubTab::Services {
+        let top_y = 96;
+        let table_w = width - 48;
+        let search_h = 32;
+        let head_y = top_y + search_h + 8;
+        let rows_y = head_y + 30;
+        let row_h = 30;
+        if y >= rows_y && y < height - 20 {
+            let scroll_y = {
+                let state = get_admin_state().lock().unwrap();
+                state.service_scroll_y
+            };
+            let i = ((y - rows_y + scroll_y) / row_h) as i32;
+            let act_x = table_w - 194;
+            let btn1_w = 56;
+            let btn2_w = 64;
+            if x >= act_x && x < act_x + btn1_w {
+                return 6000 + i;
+            } else if x >= act_x + btn1_w + 6 && x < act_x + btn1_w + 6 + btn2_w {
+                return 7000 + i;
+            }
+            return 5000 + i;
+        }
+    }
 
     if sub_tab == AdminSubTab::Processes {
         let top_y = 96;

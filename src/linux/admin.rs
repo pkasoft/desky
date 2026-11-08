@@ -15,6 +15,19 @@ pub fn handle_admin_request(req: AdminReq) -> AdminResp {
             AdminResp::CommandOutput { output, exit_code }
         }
         AdminReq::GetSystemInfo => AdminResp::SystemInfo(get_system_info()),
+        AdminReq::GetServices => AdminResp::Services(Vec::new()),
+        AdminReq::ControlService { name, .. } => AdminResp::ServiceResult {
+            name,
+            success: false,
+            msg: "Service control unsupported on Linux".into(),
+        },
+        AdminReq::SwitchMonitor { monitor_index } => AdminResp::MonitorSwitched {
+            monitor_index,
+            count: 1,
+        },
+        AdminReq::RebootHost { safe_mode } => AdminResp::RebootScheduled { safe_mode },
+        AdminReq::SetPrivacyMode { enabled } => AdminResp::PrivacyModeChanged { enabled },
+        AdminReq::WakeOnLan { mac } => AdminResp::WakeOnLanSent { mac, success: false },
     }
 }
 
@@ -81,5 +94,6 @@ pub fn get_system_info() -> SystemStats {
         cpu_count,
         total_mem_mb: 0,
         free_mem_mb: 0,
+        mac_addr: String::new(),
     }
 }

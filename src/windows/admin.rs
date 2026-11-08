@@ -3,7 +3,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use crate::protocol::{AdminReq, AdminResp, ProcessItem, SystemStats};
+use crate::protocol::{AdminReq, AdminResp, ProcessItem, ServiceItem, SystemStats};
 use std::os::windows::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -42,6 +42,11 @@ pub fn handle_admin_request(req: AdminReq) -> AdminResp {
         AdminReq::KillProcess { pid } => {
             let (success, msg) = kill_process(pid);
             AdminResp::KillResult { pid, success, msg }
+        }
+        AdminReq::GetServices => AdminResp::Services(get_service_list()),
+        AdminReq::ControlService { name, action } => {
+            let (success, msg) = control_service(&name, &action);
+            AdminResp::ServiceResult { name, success, msg }
         }
         AdminReq::ExecuteCommand { command } => {
             let (output, exit_code) = execute_shell_command(&command);
@@ -186,6 +191,95 @@ pub fn kill_process(pid: u32) -> (bool, String) {
                 format!("Failed to open process PID {}: {:?}", pid, e),
             ),
         }
+    }
+}
+
+pub fn get_service_list() -> Vec<ServiceItem> {
+    let mut list = Vec::new();
+    let mut cmd = Command::new("sc.exe");
+    cmd.args(["query", "type=", "service", "state=", "all"]);
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    if let Ok(out) = cmd.output() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut cur_name = String::new();
+        let mut cur_display = String::new();
+        let mut cur_status = String::new();
+
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("SERVICE_NAME:") {
+                if !cur_name.is_empty() {
+                    list.push(ServiceItem {
+                        name: cur_name,
+                        display_name: if cur_display.is_empty() { cur_display } else { cur_display },
+                        status: if cur_status.is_empty() { "STOPPED".into() } else { cur_status },
+                    });
+                    cur_display = String::new();
+                    cur_status = String::new();
+                }
+                cur_name = trimmed.trim_start_matches("SERVICE_NAME:").trim().to_string();
+            } else if trimmed.starts_with("DISPLAY_NAME:") {
+                cur_display = trimmed.trim_start_matches("DISPLAY_NAME:").trim().to_string();
+            } else if trimmed.starts_with("STATE") && trimmed.contains(':') {
+                if let Some(pos) = trimmed.find(':') {
+                    let st = trimmed[pos + 1..].trim();
+                    let parts: Vec<&str> = st.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        cur_status = parts[1].to_string();
+                    } else if !parts.is_empty() {
+                        cur_status = parts[0].to_string();
+                    }
+                }
+            }
+        }
+        if !cur_name.is_empty() {
+            list.push(ServiceItem {
+                name: cur_name.clone(),
+                display_name: if cur_display.is_empty() { cur_name } else { cur_display },
+                status: if cur_status.is_empty() { "STOPPED".into() } else { cur_status },
+            });
+        }
+    }
+    list.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    list
+}
+
+pub fn control_service(name: &str, action: &str) -> (bool, String) {
+    let action_lower = action.to_lowercase();
+    match action_lower.as_str() {
+        "start" => {
+            let mut cmd = Command::new("sc.exe");
+            cmd.args(["start", name]);
+            cmd.creation_flags(0x08000000);
+            match cmd.output() {
+                Ok(o) => (o.status.success(), format!("Started service '{}'", name)),
+                Err(e) => (false, format!("Failed to start service '{}': {}", name, e)),
+            }
+        }
+        "stop" => {
+            let mut cmd = Command::new("sc.exe");
+            cmd.args(["stop", name]);
+            cmd.creation_flags(0x08000000);
+            match cmd.output() {
+                Ok(o) => (o.status.success(), format!("Stopped service '{}'", name)),
+                Err(e) => (false, format!("Failed to stop service '{}': {}", name, e)),
+            }
+        }
+        "restart" => {
+            let mut cmd_stop = Command::new("sc.exe");
+            cmd_stop.args(["stop", name]);
+            cmd_stop.creation_flags(0x08000000);
+            let _ = cmd_stop.output();
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            let mut cmd_start = Command::new("sc.exe");
+            cmd_start.args(["start", name]);
+            cmd_start.creation_flags(0x08000000);
+            match cmd_start.output() {
+                Ok(o) => (o.status.success(), format!("Restarted service '{}'", name)),
+                Err(e) => (false, format!("Failed to restart service '{}': {}", name, e)),
+            }
+        }
+        _ => (false, format!("Unknown service action '{}'", action)),
     }
 }
 

@@ -242,3 +242,15 @@ pub fn toggle_audio_mute() -> bool {
 pub fn is_audio_muted() -> bool {
     CLIENT_AUDIO_MUTED.load(Ordering::Relaxed)
 }
+
+pub static INTERCOM_VOICE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Toggles technician two-way voice intercom stream state
+pub fn toggle_intercom_voice() -> bool {
+    let prev = INTERCOM_VOICE_ACTIVE.fetch_xor(true, Ordering::SeqCst);
+    !prev
+}
+
+pub fn is_intercom_voice_active() -> bool {
+    INTERCOM_VOICE_ACTIVE.load(Ordering::Relaxed)
+}
