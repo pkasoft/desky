@@ -18,8 +18,10 @@ use windows::Win32::Graphics::Gdi::{
     TRANSPARENT,
 };
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    AddClipboardFormatListener, CloseClipboard, EmptyClipboard, OpenClipboard,
+    RemoveClipboardFormatListener, SetClipboardData,
 };
+use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -27,7 +29,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetMessageW, GetWindowTextLengthW, GetWindowTextW, IsIconic, IsWindow, KillTimer, LoadCursorW,
     PostMessageW, PostQuitMessage, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow,
     SetTimer, SetWindowDisplayAffinity, SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
-    MINMAXINFO, WM_GETMINMAXINFO, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE,
+    MINMAXINFO, WM_GETMINMAXINFO, WM_CLIPBOARDUPDATE, WM_DROPFILES, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, HMENU, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_HIDE, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WM_CREATE,
     WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
@@ -1156,6 +1158,8 @@ unsafe fn spawn_viewport_window(target: &str) {
             &dark_mode as *const _ as *const _,
             std::mem::size_of::<i32>() as u32,
         );
+        let _ = AddClipboardFormatListener(hwnd);
+        DragAcceptFiles(hwnd, true);
 
         let _ = SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE);
         let _ = ShowWindow(hwnd, SW_SHOW);
@@ -2288,6 +2292,34 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             }
             LRESULT(0)
         }
+        WM_CLIPBOARDUPDATE => {
+            if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                if let Some(text) = crate::p2p::read_clipboard_text() {
+                    crate::p2p::send_remote_clipboard(&text);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_DROPFILES => {
+            unsafe {
+                let hdrop = HDROP(wparam.0 as *mut _);
+                let count = DragQueryFileW(hdrop, 0xFFFFFFFF, None);
+                for i in 0..count {
+                    let mut buf = [0u16; 512];
+                    let len = DragQueryFileW(hdrop, i, Some(&mut buf));
+                    if len > 0 {
+                        let path_str = String::from_utf16_lossy(&buf[..len as usize]);
+                        let path = std::path::PathBuf::from(path_str);
+                        if path.is_file() {
+                            info!("Dragging & dropping file for remote transfer: {:?}", path);
+                            crate::p2p::send_file_transfer(path);
+                        }
+                    }
+                }
+                DragFinish(hdrop);
+            }
+            LRESULT(0)
+        }
         WM_ERASEBKGND => LRESULT(1),
         WM_LBUTTONDOWN => {
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
@@ -2589,6 +2621,7 @@ unsafe extern "system" fn viewport_wndproc(hwnd: HWND, msg: u32, wparam: WPARAM,
             LRESULT(0)
         }
         WM_DESTROY => {
+            let _ = RemoveClipboardFormatListener(hwnd);
             VIEWPORT_RUNNING.store(false, Ordering::SeqCst);
             crate::p2p::stop_client_session();
             LRESULT(0)

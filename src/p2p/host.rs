@@ -3,7 +3,7 @@ use crate::p2p::state::{
     host_std_socket_store, host_subscribers_store, is_same_lan_subnet, normalize_id,
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
-    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
+    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
     PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS,
 };
 use crate::protocol::{InputEvent, SignalMsg};
@@ -244,6 +244,32 @@ impl P2PManager {
                                 } else {
                                     jpeg_encoder::SamplingFactor::R_4_2_0
                                 });
+
+                                // Host -> Client Clipboard Synchronization check
+                                if frame_id % 30 == 0 {
+                                    if let Some(text) = crate::p2p::state::read_clipboard_text() {
+                                        if !text.is_empty() {
+                                            let hash = crate::p2p::state::compute_clipboard_hash(&text);
+                                            let last = crate::p2p::state::LAST_SYNCED_CLIPBOARD_HASH.load(Ordering::Relaxed);
+                                            if hash != last {
+                                                crate::p2p::state::LAST_SYNCED_CLIPBOARD_HASH.store(hash, Ordering::Relaxed);
+                                                let text_bytes = text.as_bytes();
+                                                let mut pkt = Vec::with_capacity(5 + text_bytes.len());
+                                                pkt.extend_from_slice(MAGIC_DSKY);
+                                                pkt.push(PKT_CLIPBOARD);
+                                                pkt.extend_from_slice(text_bytes);
+                                                for sub in &subscribers {
+                                                    if sub.is_direct {
+                                                        let _ = std_sock_stream.send_to(&pkt, sub.addr);
+                                                    } else if !sub.relay_id.is_empty() {
+                                                        let relay = wrap_relay_packet(&sub.relay_id, &pkt);
+                                                        let _ = std_sock_stream.send_to(&relay, target_server_stream);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 if encoder
                                     .encode(
@@ -633,6 +659,36 @@ impl P2PManager {
                                     #[cfg(target_os = "windows")]
                                     crate::windows::ui::request_main_redraw();
                                     info!("Client {} disconnected from host stream.", from_addr);
+                                }
+                                PKT_CLIPBOARD => {
+                                    if slice.len() > 5 {
+                                        if let Ok(text) = std::str::from_utf8(&slice[5..]) {
+                                            let hash = crate::p2p::state::compute_clipboard_hash(text);
+                                            crate::p2p::state::LAST_SYNCED_CLIPBOARD_HASH.store(hash, Ordering::Relaxed);
+                                            crate::p2p::state::write_clipboard_text(text);
+                                            info!("📋 [HOST] Clipboard synced from peer ({} chars)", text.chars().count());
+                                        }
+                                    }
+                                }
+                                PKT_FILE_START => {
+                                    if slice.len() >= 15 {
+                                        let size = u64::from_le_bytes(slice[5..13].try_into().unwrap());
+                                        let name_len = u16::from_le_bytes(slice[13..15].try_into().unwrap()) as usize;
+                                        if slice.len() >= 15 + name_len {
+                                            if let Ok(name) = std::str::from_utf8(&slice[15..15 + name_len]) {
+                                                crate::p2p::state::handle_incoming_file_start(size, name);
+                                            }
+                                        }
+                                    }
+                                }
+                                PKT_FILE_CHUNK => {
+                                    if slice.len() >= 9 {
+                                        let chunk_idx = u32::from_le_bytes(slice[5..9].try_into().unwrap());
+                                        crate::p2p::state::handle_incoming_file_chunk(chunk_idx, &slice[9..]);
+                                    }
+                                }
+                                PKT_FILE_FINISH => {
+                                    crate::p2p::state::handle_incoming_file_finish();
                                 }
                                 _ => {}
                             }

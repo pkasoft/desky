@@ -7,6 +7,10 @@
     AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
     CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
     PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
+    PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH,
+    clipboard_notify, pop_outgoing_clipboard, file_notify, pop_outgoing_file_packet,
+    handle_incoming_file_start, handle_incoming_file_chunk, handle_incoming_file_finish,
+    write_clipboard_text, compute_clipboard_hash, LAST_SYNCED_CLIPBOARD_HASH,
     SESSION_BITRATE_KBPS, SESSION_RTT_MS,
 };
 use crate::protocol::{InputEvent, SignalMsg};
@@ -360,6 +364,38 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_hello = Instant::now();
                 }
 
+                // Flush outgoing clipboard text
+                while let Some(text) = pop_outgoing_clipboard() {
+                    let text_bytes = text.as_bytes();
+                    let mut pkt = Vec::with_capacity(5 + text_bytes.len());
+                    pkt.extend_from_slice(MAGIC_DSKY);
+                    pkt.push(PKT_CLIPBOARD);
+                    pkt.extend_from_slice(text_bytes);
+
+                    if let Some(p_addr) = peer_addr {
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&pkt, p_addr).await;
+                        }
+                    }
+                    if !is_direct_peer {
+                        let relay = wrap_relay_packet(&norm_target, &pkt);
+                        let _ = socket.send_to(&relay, server_addr).await;
+                    }
+                }
+
+                // Flush outgoing file transfer packets
+                while let Some(pkt) = pop_outgoing_file_packet() {
+                    if let Some(p_addr) = peer_addr {
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&pkt, p_addr).await;
+                        }
+                    }
+                    if !is_direct_peer {
+                        let relay = wrap_relay_packet(&norm_target, &pkt);
+                        let _ = socket.send_to(&relay, server_addr).await;
+                    }
+                }
+
                 // Flush queued remote input events immediately over direct P2P or Relay
                 let queued_inputs: Vec<InputEvent> = {
                     if let Ok(mut q) = input_store().lock() {
@@ -546,6 +582,36 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
                                         }
                                     }
+                                    PKT_CLIPBOARD => {
+                                        if slice.len() > 5 {
+                                            if let Ok(text) = std::str::from_utf8(&slice[5..]) {
+                                                let hash = compute_clipboard_hash(text);
+                                                LAST_SYNCED_CLIPBOARD_HASH.store(hash, Ordering::Relaxed);
+                                                write_clipboard_text(text);
+                                                info!("📋 Received remote clipboard text ({} chars)", text.chars().count());
+                                            }
+                                        }
+                                    }
+                                    PKT_FILE_START => {
+                                        if slice.len() >= 15 {
+                                            let size = u64::from_le_bytes(slice[5..13].try_into().unwrap());
+                                            let name_len = u16::from_le_bytes(slice[13..15].try_into().unwrap()) as usize;
+                                            if slice.len() >= 15 + name_len {
+                                                if let Ok(name) = std::str::from_utf8(&slice[15..15 + name_len]) {
+                                                    handle_incoming_file_start(size, name);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    PKT_FILE_CHUNK => {
+                                        if slice.len() >= 9 {
+                                            let chunk_idx = u32::from_le_bytes(slice[5..9].try_into().unwrap());
+                                            handle_incoming_file_chunk(chunk_idx, &slice[9..]);
+                                        }
+                                    }
+                                    PKT_FILE_FINISH => {
+                                        handle_incoming_file_finish();
+                                    }
                                     _ => {}
                                 }
                             } else if let Ok(sig) = serde_json::from_slice::<SignalMsg>(slice) {
@@ -629,9 +695,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             }
                         }
                     }
-                    _ = notify.notified() => {
-                        // Woken immediately to flush mouse/keyboard input!
-                    }
+                    _ = notify.notified() => {}
+                    _ = clipboard_notify().notified() => {}
+                    _ = file_notify().notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(20)) => {}
                 }
 
