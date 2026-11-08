@@ -1,6 +1,8 @@
 //! Lucide Arrow Right Vector Icon (Official Lucide `arrow-right.svg`)
-//! <path d="M5 12h14"/>
-//! <path d="m12 5 7 7-7 7"/>
+//!
+//! Vector paths:
+//! - `<path d="M5 12h14"/>`
+//! - `<path d="m12 5 7 7-7 7"/>`
 
 use super::{
     draw_line, draw_polyline, draw_smooth_line, draw_smooth_polyline, GraphicsScope, IconContext,

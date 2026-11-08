@@ -48,6 +48,7 @@ static HOVER_BUTTON: AtomicU8 = AtomicU8::new(0); // 0 = none, 1 = copy, 2 = con
 static CURRENT_EDIT_FONT: AtomicIsize = AtomicIsize::new(0);
 
 pub static LOCAL_DESKY_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+pub static BOTTOM_TAB_RADAR: AtomicBool = AtomicBool::new(false);
 static STATUS_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub fn request_main_redraw() {
@@ -594,14 +595,23 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         let conn_icon_x = conn_start_x + conn_sz.cx + gap;
         crate::ui::draw_arrow_right(mem_dc, conn_icon_x, conn_icon_y, icon_sz, COLORREF(0x00FFFFFF), 2);
 
-        // 3. Card 3: RECENT SESSIONS (Bottom Left)
+        // 3. Card 3: RECENT SESSIONS & LAN RADAR (Bottom Left)
         draw_rounded_box(mem_dc, l.col1_x, l.col_y, l.col_w, l.col_h, PK_CARD, PK_CARD_BORDER, 12);
 
-        let tag3_w = (128.0 * l.font_scale) as i32;
+        let is_radar = BOTTOM_TAB_RADAR.load(Ordering::Relaxed);
+        let lan_peers = crate::p2p::get_lan_peers();
+
+        // Tag 1: RECENT SESSIONS
+        let tag3_w = (124.0 * l.font_scale) as i32;
         let tag3_h = (22.0 * l.font_scale) as i32;
-        draw_rounded_box(mem_dc, l.col1_x + 18, l.col_y + 14, tag3_w, tag3_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
+        let (t1_bg, t1_border, t1_fg) = if !is_radar {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(mem_dc, l.col1_x + 18, l.col_y + 14, tag3_w, tag3_h, t1_bg, t1_border, 6);
         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
-        SetTextColor(mem_dc, PK_MUTED);
+        SetTextColor(mem_dc, t1_fg);
         let mut tag3: Vec<u16> = "RECENT SESSIONS".encode_utf16().collect();
         let mut tag3_rect = RECT {
             left: l.col1_x + 18,
@@ -611,66 +621,200 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         };
         let _ = DrawTextW(mem_dc, &mut tag3, &mut tag3_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        let recent_sessions = crate::identity::get_recent_sessions();
-        if recent_sessions.is_empty() {
-            let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
-            SetTextColor(mem_dc, PK_MUTED);
-            let mut empty_msg1: Vec<u16> = "No recent sessions yet.".encode_utf16().collect();
-            let mut empty_rc1 = RECT {
-                left: l.col1_x + 20,
-                top: l.col_y + 48,
-                right: l.col1_x + l.col_w - 20,
-                bottom: l.col_y + 70,
-            };
-            let _ = DrawTextW(mem_dc, &mut empty_msg1, &mut empty_rc1, DT_SINGLELINE | DT_VCENTER);
-
-            let mut empty_msg2: Vec<u16> =
-                "Remote desks you connect to will appear here for fast 1-click reconnect."
-                    .encode_utf16()
-                    .collect();
-            let mut empty_rc2 = RECT {
-                left: l.col1_x + 20,
-                top: l.col_y + 72,
-                right: l.col1_x + l.col_w - 20,
-                bottom: l.col_y + 112,
-            };
-            let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
+        // Tag 2: LAN RADAR (with peer count)
+        let tag_radar_x = l.col1_x + 18 + tag3_w + 8;
+        let tag_radar_w = (116.0 * l.font_scale) as i32;
+        let (t2_bg, t2_border, t2_fg) = if is_radar {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
-            let item_h = (36.0 * l.font_scale) as i32;
-            let item_w = l.col_w - 36;
-            for (idx, session) in recent_sessions.iter().take(2).enumerate() {
-                let item_x = l.col1_x + 18;
-                let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(mem_dc, tag_radar_x, l.col_y + 14, tag_radar_w, tag3_h, t2_bg, t2_border, 6);
+        SetTextColor(mem_dc, t2_fg);
+        let radar_tag_text = if !lan_peers.is_empty() {
+            format!("LAN RADAR ({})", lan_peers.len())
+        } else {
+            "LAN RADAR".to_string()
+        };
+        let mut tag_radar_utf16: Vec<u16> = radar_tag_text.encode_utf16().collect();
+        let mut tag_radar_rc = RECT {
+            left: tag_radar_x,
+            top: l.col_y + 14,
+            right: tag_radar_x + tag_radar_w,
+            bottom: l.col_y + 14 + tag3_h,
+        };
+        let _ = DrawTextW(mem_dc, &mut tag_radar_utf16, &mut tag_radar_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-                draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
+        // When in Radar mode, show Scan button at top-right
+        if is_radar {
+            let scan_w = 54;
+            let scan_x = l.col1_x + l.col_w - scan_w - 18;
+            draw_rounded_box(mem_dc, scan_x, l.col_y + 14, scan_w, tag3_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
+            SetTextColor(mem_dc, PK_MUTED);
+            let mut scan_txt: Vec<u16> = "Scan".encode_utf16().collect();
+            let mut scan_rc = RECT {
+                left: scan_x,
+                top: l.col_y + 14,
+                right: scan_x + scan_w,
+                bottom: l.col_y + 14 + tag3_h,
+            };
+            let _ = DrawTextW(mem_dc, &mut scan_txt, &mut scan_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        if is_radar {
+            // Render LAN Radar View
+            if lan_peers.is_empty() {
+                crate::ui::draw_radio(mem_dc, l.col1_x + 22, l.col_y + 50, 18, PK_GREEN, 2);
 
                 let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                 SetTextColor(mem_dc, PK_TEXT);
-                let mut id_txt: Vec<u16> = session.encode_utf16().collect();
-                let mut id_rc = RECT {
-                    left: item_x + 14,
-                    top: item_y,
-                    right: item_x + item_w - 86,
-                    bottom: item_y + item_h,
+                let mut empty_msg1: Vec<u16> = "Zero-Config LAN Radar active".encode_utf16().collect();
+                let mut empty_rc1 = RECT {
+                    left: l.col1_x + 48,
+                    top: l.col_y + 48,
+                    right: l.col1_x + l.col_w - 20,
+                    bottom: l.col_y + 70,
                 };
-                let _ = DrawTextW(mem_dc, &mut id_txt, &mut id_rc, DT_SINGLELINE | DT_VCENTER);
+                let _ = DrawTextW(mem_dc, &mut empty_msg1, &mut empty_rc1, DT_SINGLELINE | DT_VCENTER);
 
-                let pill_btn_w = 72;
-                let pill_btn_h = item_h - 10;
-                let pill_btn_x = item_x + item_w - pill_btn_w - 6;
-                let pill_btn_y = item_y + 5;
-                draw_rounded_box(mem_dc, pill_btn_x, pill_btn_y, pill_btn_w, pill_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
-
-                let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
-                SetTextColor(mem_dc, PK_GREEN);
-                let mut c_txt: Vec<u16> = "Connect".encode_utf16().collect();
-                let mut c_rc = RECT {
-                    left: pill_btn_x,
-                    top: pill_btn_y,
-                    right: pill_btn_x + pill_btn_w,
-                    bottom: pill_btn_y + pill_btn_h,
+                let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
+                SetTextColor(mem_dc, PK_MUTED);
+                let mut empty_msg2: Vec<u16> =
+                    "Desky instances on your local Wi-Fi or subnet appear here with 1-click zero-cloud connect."
+                        .encode_utf16()
+                        .collect();
+                let mut empty_rc2 = RECT {
+                    left: l.col1_x + 20,
+                    top: l.col_y + 74,
+                    right: l.col1_x + l.col_w - 20,
+                    bottom: l.col_y + 114,
                 };
-                let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
+            } else {
+                let item_h = (44.0 * l.font_scale) as i32;
+                let item_w = l.col_w - 36;
+                for (idx, peer) in lan_peers.iter().take(2).enumerate() {
+                    let item_x = l.col1_x + 18;
+                    let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+
+                    draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
+
+                    crate::ui::draw_radio(mem_dc, item_x + 10, item_y + 12, 18, PK_GREEN, 2);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
+                    SetTextColor(mem_dc, PK_TEXT);
+                    let title_text = if !peer.user.is_empty() {
+                        format!("{} ({})", peer.hostname, peer.user)
+                    } else {
+                        peer.hostname.clone()
+                    };
+                    let mut title_txt: Vec<u16> = title_text.encode_utf16().collect();
+                    let mut title_rc = RECT {
+                        left: item_x + 36,
+                        top: item_y + 4,
+                        right: item_x + item_w - 86,
+                        bottom: item_y + 24,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut title_txt, &mut title_rc, DT_SINGLELINE | DT_VCENTER);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
+                    SetTextColor(mem_dc, PK_MUTED);
+                    let sub_text = format!(
+                        "ID: {} | <{}ms | {}",
+                        peer.id,
+                        peer.latency_ms,
+                        peer.ip.map(|i| i.to_string()).unwrap_or_default()
+                    );
+                    let mut sub_txt: Vec<u16> = sub_text.encode_utf16().collect();
+                    let mut sub_rc = RECT {
+                        left: item_x + 36,
+                        top: item_y + 24,
+                        right: item_x + item_w - 86,
+                        bottom: item_y + item_h - 4,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut sub_txt, &mut sub_rc, DT_SINGLELINE | DT_VCENTER);
+
+                    let pill_btn_w = 72;
+                    let pill_btn_h = 28;
+                    let pill_btn_x = item_x + item_w - pill_btn_w - 6;
+                    let pill_btn_y = item_y + (item_h - pill_btn_h) / 2;
+                    draw_rounded_box(mem_dc, pill_btn_x, pill_btn_y, pill_btn_w, pill_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
+                    SetTextColor(mem_dc, PK_GREEN);
+                    let mut c_txt: Vec<u16> = "Connect".encode_utf16().collect();
+                    let mut c_rc = RECT {
+                        left: pill_btn_x,
+                        top: pill_btn_y,
+                        right: pill_btn_x + pill_btn_w,
+                        bottom: pill_btn_y + pill_btn_h,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                }
+            }
+        } else {
+            // Render Recent Sessions View
+            let recent_sessions = crate::identity::get_recent_sessions();
+            if recent_sessions.is_empty() {
+                let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
+                SetTextColor(mem_dc, PK_MUTED);
+                let mut empty_msg1: Vec<u16> = "No recent sessions yet.".encode_utf16().collect();
+                let mut empty_rc1 = RECT {
+                    left: l.col1_x + 20,
+                    top: l.col_y + 48,
+                    right: l.col1_x + l.col_w - 20,
+                    bottom: l.col_y + 70,
+                };
+                let _ = DrawTextW(mem_dc, &mut empty_msg1, &mut empty_rc1, DT_SINGLELINE | DT_VCENTER);
+
+                let mut empty_msg2: Vec<u16> =
+                    "Remote desks you connect to will appear here for fast 1-click reconnect."
+                        .encode_utf16()
+                        .collect();
+                let mut empty_rc2 = RECT {
+                    left: l.col1_x + 20,
+                    top: l.col_y + 72,
+                    right: l.col1_x + l.col_w - 20,
+                    bottom: l.col_y + 112,
+                };
+                let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
+            } else {
+                let item_h = (36.0 * l.font_scale) as i32;
+                let item_w = l.col_w - 36;
+                for (idx, session) in recent_sessions.iter().take(2).enumerate() {
+                    let item_x = l.col1_x + 18;
+                    let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+
+                    draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
+                    SetTextColor(mem_dc, PK_TEXT);
+                    let mut id_txt: Vec<u16> = session.encode_utf16().collect();
+                    let mut id_rc = RECT {
+                        left: item_x + 14,
+                        top: item_y,
+                        right: item_x + item_w - 86,
+                        bottom: item_y + item_h,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut id_txt, &mut id_rc, DT_SINGLELINE | DT_VCENTER);
+
+                    let pill_btn_w = 72;
+                    let pill_btn_h = item_h - 10;
+                    let pill_btn_x = item_x + item_w - pill_btn_w - 6;
+                    let pill_btn_y = item_y + 5;
+                    draw_rounded_box(mem_dc, pill_btn_x, pill_btn_y, pill_btn_w, pill_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
+                    SetTextColor(mem_dc, PK_GREEN);
+                    let mut c_txt: Vec<u16> = "Connect".encode_utf16().collect();
+                    let mut c_rc = RECT {
+                        left: pill_btn_x,
+                        top: pill_btn_y,
+                        right: pill_btn_x + pill_btn_w,
+                        bottom: pill_btn_y + pill_btn_h,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                }
             }
         }
 
@@ -806,34 +950,98 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         return true;
     }
 
-    // 4. Recent Sessions item clicked
-    let recents = crate::identity::get_recent_sessions();
-    let item_h = (36.0 * l.font_scale) as i32;
-    let item_w = l.col_w - 36;
-    for (idx, session) in recents.iter().take(2).enumerate() {
-        let item_x = l.col1_x + 18;
-        let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+    // 4. Card 3 Header Tabs: RECENT SESSIONS vs LAN RADAR
+    let tag3_w = (124.0 * l.font_scale) as i32;
+    let tag3_h = (22.0 * l.font_scale) as i32;
+    let tag_radar_x = l.col1_x + 18 + tag3_w + 8;
+    let tag_radar_w = (116.0 * l.font_scale) as i32;
+    let is_radar = BOTTOM_TAB_RADAR.load(Ordering::Relaxed);
 
-        if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
-            let wide_id: Vec<u16> = session.encode_utf16().chain(std::iter::once(0)).collect();
-            let _ = SetWindowTextW(HWND_EDIT_TARGET, PCWSTR(wide_id.as_ptr()));
-
-            let pill_btn_w = 72;
-            let pill_btn_x = item_x + item_w - pill_btn_w - 6;
-            if x >= pill_btn_x {
-                let target_display = session.clone();
-                info!("Initiating P2P session to remote Desky ID: {}", target_display);
-                crate::identity::save_recent_session(&target_display);
-                append_status_log(&format!(
-                    "Requesting session with Remote Desky ID: {}...",
-                    target_display
-                ));
-
-                super::viewport::spawn_or_add_tab_viewport(&target_display);
-            } else {
-                let _ = InvalidateRect(Some(hwnd), None, false);
-            }
+    if y >= l.col_y + 14 && y <= l.col_y + 14 + tag3_h {
+        if x >= l.col1_x + 18 && x <= l.col1_x + 18 + tag3_w {
+            BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
+            let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
+        }
+        if x >= tag_radar_x && x <= tag_radar_x + tag_radar_w {
+            BOTTOM_TAB_RADAR.store(true, Ordering::Relaxed);
+            crate::p2p::trigger_lan_ping();
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            return true;
+        }
+        if is_radar {
+            let scan_w = 54;
+            let scan_x = l.col1_x + l.col_w - scan_w - 18;
+            if x >= scan_x && x <= scan_x + scan_w {
+                crate::p2p::trigger_lan_ping();
+                append_status_log("LAN Radar: Scanning local network...");
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return true;
+            }
+        }
+    }
+
+    // 5. Card 3 Content: LAN Radar peers or Recent Sessions
+    if is_radar {
+        let lan_peers = crate::p2p::get_lan_peers();
+        let item_h = (44.0 * l.font_scale) as i32;
+        let item_w = l.col_w - 36;
+        for (idx, peer) in lan_peers.iter().take(2).enumerate() {
+            let item_x = l.col1_x + 18;
+            let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+
+            if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
+                let wide_id: Vec<u16> = peer.id.encode_utf16().chain(std::iter::once(0)).collect();
+                let _ = SetWindowTextW(HWND_EDIT_TARGET, PCWSTR(wide_id.as_ptr()));
+
+                let pill_btn_w = 72;
+                let pill_btn_x = item_x + item_w - pill_btn_w - 6;
+                if x >= pill_btn_x {
+                    let target_display = peer.id.clone();
+                    info!("Initiating direct LAN P2P session to: {} ({})", target_display, peer.hostname);
+                    crate::identity::save_recent_session(&target_display);
+                    append_status_log(&format!(
+                        "Initiating LAN connection to {} ({}) at {}...",
+                        peer.hostname,
+                        target_display,
+                        peer.ip.map(|i| i.to_string()).unwrap_or_default()
+                    ));
+                    super::viewport::spawn_or_add_tab_viewport(&target_display);
+                } else {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
+        }
+    } else {
+        let recents = crate::identity::get_recent_sessions();
+        let item_h = (36.0 * l.font_scale) as i32;
+        let item_w = l.col_w - 36;
+        for (idx, session) in recents.iter().take(2).enumerate() {
+            let item_x = l.col1_x + 18;
+            let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+
+            if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
+                let wide_id: Vec<u16> = session.encode_utf16().chain(std::iter::once(0)).collect();
+                let _ = SetWindowTextW(HWND_EDIT_TARGET, PCWSTR(wide_id.as_ptr()));
+
+                let pill_btn_w = 72;
+                let pill_btn_x = item_x + item_w - pill_btn_w - 6;
+                if x >= pill_btn_x {
+                    let target_display = session.clone();
+                    info!("Initiating P2P session to remote Desky ID: {}", target_display);
+                    crate::identity::save_recent_session(&target_display);
+                    append_status_log(&format!(
+                        "Requesting session with Remote Desky ID: {}...",
+                        target_display
+                    ));
+
+                    super::viewport::spawn_or_add_tab_viewport(&target_display);
+                } else {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
         }
     }
 
