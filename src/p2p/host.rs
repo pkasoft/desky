@@ -1,9 +1,9 @@
 use crate::p2p::state::{
-    fix_loopback_peer, format_id_display, host_socket_store, host_subscribers_store,
-    normalize_id, pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
-    PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
-    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
-    PKT_LAN_DISCOVERY, PKT_PONG,
+    decode_lan_endpoint, encode_lan_endpoint, fix_loopback_peer, format_id_display,
+    host_socket_store, host_subscribers_store, normalize_id, pending_approval_store,
+    wrap_relay_packet, AuthState, ClientSubscriber, PendingApprovalRequest, AUTH_APPROVED,
+    AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
+    PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -58,6 +58,7 @@ impl P2PManager {
             rt.block_on(async move {
                 let socket = match UdpSocket::bind("0.0.0.0:0").await {
                     Ok(s) => {
+                        let _ = s.set_broadcast(true);
                         let arc_s = Arc::new(s);
                         if let Ok(mut g) = host_socket_store().lock() {
                             *g = Some(Arc::clone(&arc_s));
@@ -100,7 +101,7 @@ impl P2PManager {
                     cached_id.clone().unwrap_or_default(),
                 ));
 
-                // Optional LAN discovery responder on UDP 21117
+                // LAN discovery responder on UDP 21117
                 {
                     let socket_lan_main = Arc::clone(&socket);
                     let id_lan = Arc::clone(&current_id);
@@ -119,7 +120,9 @@ impl P2PManager {
                                         info!("⚡ [LAN DISCOVERY] Peer at {} requested our Desky ID! Punching directly...", src);
                                         let punch = SignalMsg::Punch { from_id: my_id };
                                         if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                            let _ = socket_lan_main.send_to(&pbytes, src).await;
+                                            for _ in 0..3 {
+                                                let _ = socket_lan_main.send_to(&pbytes, src).await;
+                                            }
                                         }
                                     }
                                 }
@@ -133,7 +136,6 @@ impl P2PManager {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
                     let socket_stream = Arc::clone(&socket);
-                    let current_id_stream = Arc::clone(&current_id);
                     let target_server_stream = target_server;
 
                     std::thread::spawn(move || {
@@ -267,11 +269,23 @@ impl P2PManager {
                                                             .send_to(&pkt, sub.addr)
                                                             .await;
                                                     } else {
-                                                        let my_id = current_id_stream.read().await;
-                                                        let relay_pkt = wrap_relay_packet(&my_id, &pkt);
-                                                        let _ = socket_stream
-                                                            .send_to(&relay_pkt, target_server_stream)
-                                                            .await;
+                                                        if let Some(l_addr) = sub.lan_addr {
+                                                            let _ = socket_stream
+                                                                .send_to(&pkt, l_addr)
+                                                                .await;
+                                                        }
+                                                        if !sub.relay_id.is_empty() {
+                                                            let relay_pkt = wrap_relay_packet(
+                                                                &sub.relay_id,
+                                                                &pkt,
+                                                            );
+                                                            let _ = socket_stream
+                                                                .send_to(
+                                                                    &relay_pkt,
+                                                                    target_server_stream,
+                                                                )
+                                                                .await;
+                                                        }
                                                     }
                                                 }
 
@@ -312,7 +326,10 @@ impl P2PManager {
                     #[cfg(target_os = "linux")]
                     let injector = crate::linux::input::InputInjector::new();
 
+                    let host_lan_bytes = encode_lan_endpoint(&socket_recv, target_server);
+                    let mut last_incoming_punch: Option<(SocketAddr, Instant)> = None;
                     let mut buf = vec![0u8; 8192];
+
                     while let Ok((len, from_addr)) = socket_recv.recv_from(&mut buf).await {
                         let slice = &buf[..len];
 
@@ -334,7 +351,7 @@ impl P2PManager {
                                     let sc_val = if slice.len() > 12 {
                                         slice[12].clamp(50, 100)
                                     } else {
-                                        90
+                                        100
                                     };
                                     let c444 = if slice.len() > 13 { slice[13] != 0 } else { true };
                                     let raw_cid = if slice.len() >= 23 {
@@ -342,16 +359,42 @@ impl P2PManager {
                                     } else {
                                         String::new()
                                     };
+                                    let relay_id = if slice.len() >= 32 {
+                                        normalize_id(&String::from_utf8_lossy(&slice[23..32]))
+                                    } else {
+                                        String::new()
+                                    };
+                                    let client_lan_addr = if slice.len() >= 38 {
+                                        decode_lan_endpoint(&slice[32..38])
+                                    } else {
+                                        None
+                                    };
+
                                     let norm_cid = normalize_id(&raw_cid);
+                                    let my_own_id = normalize_id(&current_id_clone.read().await);
+
+                                    // Ignore self-bounced legacy packets from VDS if client_id equals our own Host ID and has no session relay_id
+                                    if from_addr == target_server
+                                        && relay_id.is_empty()
+                                        && !norm_cid.is_empty()
+                                        && norm_cid == my_own_id
+                                    {
+                                        continue;
+                                    }
+
                                     let client_key =
                                         if !norm_cid.is_empty() && norm_cid != "000000000" {
                                             norm_cid
+                                        } else if !relay_id.is_empty() {
+                                            relay_id.clone()
                                         } else {
                                             from_addr.to_string()
                                         };
                                     let client_id_disp = format_id_display(&raw_cid);
+                                    let is_from_server = from_addr == target_server;
 
                                     let mut need_ui_prompt = false;
+                                    let mut should_punch_lan = false;
                                     let auth_status_byte = {
                                         if let Ok(mut map) = clients_recv.lock() {
                                             // Reset expired declines after 4 seconds so user can retry connecting
@@ -369,23 +412,30 @@ impl P2PManager {
                                             if client_key != addr_key {
                                                 if let Some(mut pre_sub) = map.remove(&addr_key) {
                                                     pre_sub.client_id = client_id_disp.clone();
-                                                    pre_sub.addr = from_addr;
+                                                    if !is_from_server {
+                                                        pre_sub.addr = from_addr;
+                                                        pre_sub.is_direct = true;
+                                                    }
                                                     pre_sub.last_seen = Instant::now();
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
                                             }
-                                            let is_from_server = from_addr == target_server;
+
                                             let entry = map
                                                 .entry(client_key.clone())
                                                 .or_insert_with(|| {
                                                     info!(
                                                         "🔔 [HOST APPROVAL] Incoming connection request from {} ({})",
-                                                        client_id_disp, from_addr
+                                                        client_id_disp,
+                                                        client_lan_addr.unwrap_or(from_addr)
                                                     );
                                                     need_ui_prompt = true;
+                                                    should_punch_lan = true;
                                                     ClientSubscriber {
                                                         client_id: client_id_disp.clone(),
-                                                        addr: from_addr,
+                                                        relay_id: relay_id.clone(),
+                                                        addr: client_lan_addr.unwrap_or(from_addr),
+                                                        lan_addr: client_lan_addr,
                                                         auth_state: AuthState::Pending,
                                                         last_seen: Instant::now(),
                                                         target_fps: fps,
@@ -397,6 +447,15 @@ impl P2PManager {
                                                     }
                                                 });
                                             entry.client_id = client_id_disp.clone();
+                                            if !relay_id.is_empty() {
+                                                entry.relay_id = relay_id.clone();
+                                            }
+                                            if let Some(l_addr) = client_lan_addr {
+                                                if entry.lan_addr != Some(l_addr) {
+                                                    entry.lan_addr = Some(l_addr);
+                                                    should_punch_lan = true;
+                                                }
+                                            }
                                             if !is_from_server {
                                                 entry.is_direct = true;
                                                 entry.addr = from_addr;
@@ -439,16 +498,35 @@ impl P2PManager {
                                         }
                                     }
 
-                                    // Send Auth Status packet back to Client (directly and via relay fallback)
-                                    let mut auth_pkt = Vec::with_capacity(6);
+                                    // If client advertised a local LAN address, punch directly to it on the LAN!
+                                    if let Some(l_addr) = client_lan_addr {
+                                        if should_punch_lan || is_from_server {
+                                            let punch = SignalMsg::Punch {
+                                                from_id: my_own_id.clone(),
+                                            };
+                                            if let Ok(pbytes) = serde_json::to_vec(&punch) {
+                                                let _ = socket_recv.send_to(&pbytes, l_addr).await;
+                                            }
+                                        }
+                                    }
+
+                                    // Send 12-byte Auth Status packet (including Host's local LAN endpoint!)
+                                    let mut auth_pkt = Vec::with_capacity(12);
                                     auth_pkt.extend_from_slice(MAGIC_DSKY);
                                     auth_pkt.push(PKT_AUTH_STATUS);
                                     auth_pkt.push(auth_status_byte);
-                                    let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
+                                    auth_pkt.extend_from_slice(&host_lan_bytes);
 
-                                    let my_id = current_id_clone.read().await.clone();
-                                    let relay_auth = wrap_relay_packet(&my_id, &auth_pkt);
-                                    let _ = socket_recv.send_to(&relay_auth, target_server).await;
+                                    if !is_from_server {
+                                        let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
+                                    }
+                                    if let Some(l_addr) = client_lan_addr {
+                                        let _ = socket_recv.send_to(&auth_pkt, l_addr).await;
+                                    }
+                                    if !relay_id.is_empty() {
+                                        let relay_auth = wrap_relay_packet(&relay_id, &auth_pkt);
+                                        let _ = socket_recv.send_to(&relay_auth, target_server).await;
+                                    }
 
                                     // Reply with Pong if timestamp included
                                     if slice.len() >= 11 {
@@ -456,9 +534,10 @@ impl P2PManager {
                                         pong.extend_from_slice(MAGIC_DSKY);
                                         pong.push(PKT_PONG);
                                         pong.extend_from_slice(&slice[7..11]);
-                                        let _ = socket_recv.send_to(&pong, from_addr).await;
-                                        if from_addr == target_server {
-                                            let relay_pong = wrap_relay_packet(&my_id, &pong);
+                                        if !is_from_server {
+                                            let _ = socket_recv.send_to(&pong, from_addr).await;
+                                        } else if !relay_id.is_empty() {
+                                            let relay_pong = wrap_relay_packet(&relay_id, &pong);
                                             let _ = socket_recv.send_to(&relay_pong, target_server).await;
                                         }
                                     }
@@ -468,7 +547,9 @@ impl P2PManager {
                                         if let Ok(mut map) = clients_recv.lock() {
                                             let mut approved = false;
                                             for sub in map.values_mut() {
-                                                if sub.addr == from_addr
+                                                if (sub.addr == from_addr
+                                                    || sub.lan_addr == Some(from_addr)
+                                                    || from_addr == target_server)
                                                     && sub.auth_state == AuthState::Approved
                                                 {
                                                     sub.last_seen = Instant::now();
@@ -490,7 +571,14 @@ impl P2PManager {
                                 }
                                 PKT_DISCONNECT => {
                                     if let Ok(mut map) = clients_recv.lock() {
-                                        map.retain(|_, sub| sub.addr != from_addr);
+                                        if from_addr == target_server {
+                                            map.clear();
+                                        } else {
+                                            map.retain(|_, sub| {
+                                                sub.addr != from_addr
+                                                    && sub.lan_addr != Some(from_addr)
+                                            });
+                                        }
                                     }
                                     if let Ok(mut pg) = pending_approval_store().lock() {
                                         *pg = None;
@@ -524,132 +612,67 @@ impl P2PManager {
                                     *id_w = desky_id;
                                 }
                                 SignalMsg::IncomingPeer { client_public_addr } => {
-                                    info!(
-                                        "⚡ [P2P INCOMING] Peer connecting from {}! Firing Direct UDP hole-punch packets...",
-                                        client_public_addr
-                                    );
                                     if let Ok(parsed_addr) =
                                         client_public_addr.parse::<SocketAddr>()
                                     {
                                         let client_addr =
                                             fix_loopback_peer(parsed_addr, target_server);
-                                        let client_key = client_addr.to_string();
 
-                                        // Immediately register incoming peer & show Accept/Decline dialog on Host!
-                                        // (Even before direct UDP hole-punch completes across symmetric/same-IP NATs)
-                                        let mut need_ui_prompt = false;
-                                        let mut is_already_approved = false;
-                                        if let Ok(mut map) = clients_recv.lock() {
-                                            for sub in map.values_mut() {
-                                                if sub.auth_state == AuthState::Approved {
-                                                    is_already_approved = true;
-                                                    sub.addr = client_addr;
-                                                    sub.last_seen = Instant::now();
-                                                }
+                                        let should_spawn = match last_incoming_punch {
+                                            Some((prev_addr, when))
+                                                if prev_addr == client_addr
+                                                    && when.elapsed() < Duration::from_secs(4) =>
+                                            {
+                                                false
                                             }
+                                            _ => true,
+                                        };
 
-                                            let already_active = map.values().any(|sub| {
-                                                sub.addr == client_addr
-                                                    || (sub.auth_state == AuthState::Pending
-                                                        && sub.last_seen.elapsed()
-                                                            < Duration::from_secs(12))
-                                            });
-                                            if !already_active && !is_already_approved {
-                                                need_ui_prompt = true;
-                                                map.insert(
-                                                    client_key.clone(),
-                                                    ClientSubscriber {
-                                                        client_id: format!(
-                                                            "Peer ({})",
-                                                            client_addr.ip()
-                                                        ),
-                                                        addr: client_addr,
-                                                        auth_state: AuthState::Pending,
-                                                        last_seen: Instant::now(),
-                                                        target_fps: 60,
-                                                        capture_cursor: true,
-                                                        jpeg_quality: 76,
-                                                        scale_pct: 100,
-                                                        chroma_444: true,
-                                                        is_direct: true,
-                                                    },
-                                                );
-                                            }
-                                        }
+                                        if should_spawn {
+                                            last_incoming_punch =
+                                                Some((client_addr, Instant::now()));
+                                            info!(
+                                                "⚡ [P2P INCOMING] Peer connecting from {}! Firing Direct UDP hole-punch packets...",
+                                                client_addr
+                                            );
 
-                                        let my_id = current_id_clone.read().await.clone();
-
-                                        // If already approved, immediately resend approval to new endpoint and via relay!
-                                        if is_already_approved {
-                                            let mut auth_pkt = Vec::with_capacity(6);
-                                            auth_pkt.extend_from_slice(MAGIC_DSKY);
-                                            auth_pkt.push(PKT_AUTH_STATUS);
-                                            auth_pkt.push(AUTH_APPROVED);
-                                            for _ in 0..3 {
-                                                let _ = socket_recv.send_to(&auth_pkt, client_addr).await;
-                                            }
-                                            let relay_auth = wrap_relay_packet(&my_id, &auth_pkt);
-                                            for _ in 0..3 {
-                                                let _ = socket_recv.send_to(&relay_auth, target_server).await;
-                                            }
-                                        }
-
-                                        if need_ui_prompt {
-                                            let display_cid =
-                                                format!("Peer ({})", client_addr.ip());
-                                            if let Ok(mut pg) = pending_approval_store().lock() {
-                                                *pg = Some(PendingApprovalRequest {
-                                                    client_key,
-                                                    client_id: display_cid.clone(),
+                                            let my_id = current_id_clone.read().await.clone();
+                                            let punch = SignalMsg::Punch { from_id: my_id };
+                                            if let Ok(pbytes) = serde_json::to_vec(&punch) {
+                                                let sock_punch = Arc::clone(&socket_recv);
+                                                tokio::spawn(async move {
+                                                    let base_ip = client_addr.ip();
+                                                    let base_port = client_addr.port();
+                                                    for _ in 0..35 {
+                                                        let _ = sock_punch
+                                                            .send_to(&pbytes, client_addr)
+                                                            .await;
+                                                        for offset in -6i32..=6i32 {
+                                                            let p =
+                                                                (base_port as i32 + offset) as u16;
+                                                            if p > 1024 {
+                                                                let _ = sock_punch
+                                                                    .send_to(
+                                                                        &pbytes,
+                                                                        SocketAddr::new(base_ip, p),
+                                                                    )
+                                                                    .await;
+                                                            }
+                                                        }
+                                                        tokio::time::sleep(Duration::from_millis(
+                                                            50,
+                                                        ))
+                                                        .await;
+                                                    }
                                                 });
                                             }
-                                            #[cfg(target_os = "windows")]
-                                            {
-                                                crate::windows::ui::append_status_log(&format!(
-                                                    "🔔 Incoming request from {} — Click Accept or Decline!",
-                                                    display_cid
-                                                ));
-                                                crate::windows::ui::bring_main_window_to_front();
-                                            }
-                                            #[cfg(target_os = "linux")]
-                                            {
-                                                trigger_linux_approval_dialog(display_cid);
-                                            }
-                                        }
-
-                                        let punch = SignalMsg::Punch { from_id: my_id.clone() };
-                                        if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                            let sock_punch = Arc::clone(&socket_recv);
-                                            tokio::spawn(async move {
-                                                let base_ip = client_addr.ip();
-                                                let base_port = client_addr.port();
-                                                for _ in 0..50 {
-                                                    let _ = sock_punch
-                                                        .send_to(&pbytes, client_addr)
-                                                        .await;
-                                                    for offset in -6i32..=6i32 {
-                                                        let p = (base_port as i32 + offset) as u16;
-                                                        if p > 1024 {
-                                                            let _ = sock_punch
-                                                                .send_to(
-                                                                    &pbytes,
-                                                                    SocketAddr::new(base_ip, p),
-                                                                )
-                                                                .await;
-                                                        }
-                                                    }
-                                                    tokio::time::sleep(Duration::from_millis(50))
-                                                        .await;
-                                                }
-                                            });
                                         }
                                     }
                                 }
                                 SignalMsg::Punch { from_id } => {
-                                    info!(
-                                        "🎉 [DIRECT P2P ESTABLISHED] Received direct hole-punch from peer ID '{}' ({})!",
-                                        from_id, from_addr
-                                    );
+                                    if from_addr == target_server {
+                                        continue;
+                                    }
                                     let norm_cid = normalize_id(&from_id);
                                     let client_key =
                                         if !norm_cid.is_empty() && norm_cid != "000000000" {
@@ -660,14 +683,15 @@ impl P2PManager {
                                     let client_id_disp = format_id_display(&from_id);
 
                                     let mut need_ui_prompt = false;
+                                    let mut first_direct = false;
                                     let auth_status_byte =
                                         if let Ok(mut map) = clients_recv.lock() {
-                                            // Upgrade any IP-based entry created by IncomingPeer to the peer's real 9-digit Desky ID
                                             let addr_key = from_addr.to_string();
                                             if client_key != addr_key {
                                                 if let Some(mut pre_sub) = map.remove(&addr_key) {
                                                     pre_sub.client_id = client_id_disp.clone();
                                                     pre_sub.addr = from_addr;
+                                                    pre_sub.is_direct = true;
                                                     pre_sub.last_seen = Instant::now();
                                                     map.insert(client_key.clone(), pre_sub);
                                                 }
@@ -676,9 +700,12 @@ impl P2PManager {
                                                 .entry(client_key.clone())
                                                 .or_insert_with(|| {
                                                     need_ui_prompt = true;
+                                                    first_direct = true;
                                                     ClientSubscriber {
                                                         client_id: client_id_disp.clone(),
+                                                        relay_id: String::new(),
                                                         addr: from_addr,
+                                                        lan_addr: None,
                                                         auth_state: AuthState::Pending,
                                                         last_seen: Instant::now(),
                                                         target_fps: 60,
@@ -689,6 +716,9 @@ impl P2PManager {
                                                         is_direct: true,
                                                     }
                                                 });
+                                            if !entry.is_direct || entry.addr != from_addr {
+                                                first_direct = true;
+                                            }
                                             entry.client_id = client_id_disp.clone();
                                             entry.is_direct = true;
                                             entry.addr = from_addr;
@@ -703,15 +733,20 @@ impl P2PManager {
                                             AUTH_PENDING
                                         };
 
-                                    if let Ok(mut pg) = pending_approval_store().lock() {
-                                        if pg.is_some() || need_ui_prompt {
+                                    if first_direct {
+                                        info!(
+                                            "🎉 [DIRECT P2P ESTABLISHED] Direct UDP link active with peer '{}' ({})!",
+                                            client_id_disp, from_addr
+                                        );
+                                    }
+
+                                    if need_ui_prompt {
+                                        if let Ok(mut pg) = pending_approval_store().lock() {
                                             *pg = Some(PendingApprovalRequest {
                                                 client_key: client_key.clone(),
                                                 client_id: client_id_disp.clone(),
                                             });
                                         }
-                                    }
-                                    if need_ui_prompt {
                                         #[cfg(target_os = "windows")]
                                         {
                                             crate::windows::ui::append_status_log(&format!(
@@ -724,26 +759,37 @@ impl P2PManager {
                                         {
                                             trigger_linux_approval_dialog(client_id_disp);
                                         }
-                                    } else {
-                                        #[cfg(target_os = "windows")]
-                                        crate::windows::ui::request_main_redraw();
                                     }
 
                                     let ack = SignalMsg::PunchAck;
                                     if let Ok(abytes) = serde_json::to_vec(&ack) {
                                         let _ = socket_recv.send_to(&abytes, from_addr).await;
                                     }
-                                    let mut auth_pkt = Vec::with_capacity(6);
+                                    let mut auth_pkt = Vec::with_capacity(12);
                                     auth_pkt.extend_from_slice(MAGIC_DSKY);
                                     auth_pkt.push(PKT_AUTH_STATUS);
                                     auth_pkt.push(auth_status_byte);
+                                    auth_pkt.extend_from_slice(&host_lan_bytes);
                                     let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
                                 }
                                 SignalMsg::PunchAck => {
-                                    info!(
-                                        "🎉 [DIRECT P2P VERIFIED] Received punch acknowledgement from peer at {}!",
-                                        from_addr
-                                    );
+                                    if from_addr != target_server {
+                                        if let Ok(mut map) = clients_recv.lock() {
+                                            for sub in map.values_mut() {
+                                                if sub.addr == from_addr
+                                                    || sub.lan_addr == Some(from_addr)
+                                                {
+                                                    sub.is_direct = true;
+                                                    sub.addr = from_addr;
+                                                    sub.last_seen = Instant::now();
+                                                }
+                                            }
+                                        }
+                                        info!(
+                                            "🎉 [DIRECT P2P VERIFIED] Received punch acknowledgement from peer at {}!",
+                                            from_addr
+                                        );
+                                    }
                                 }
                                 _ => {}
                             }

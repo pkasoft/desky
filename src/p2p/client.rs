@@ -1,18 +1,19 @@
 use crate::p2p::state::{
-    apply_preset_for_mode, decode_jpeg_to_bgra, fix_loopback_peer, frame_store,
-    get_active_quality_params, input_notify, input_store, normalize_id, resolve_server_addr,
-    set_session_status, update_client_preferences, wrap_relay_packet, SessionStatus,
-    ACTIVE_CHROMA_444, ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED,
-    AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
-    CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
-    PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
-    SESSION_BITRATE_KBPS, SESSION_RTT_MS,
+    apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint,
+    fix_loopback_peer, frame_store, get_active_quality_params, input_notify, input_store,
+    lan_broadcast_addrs, normalize_id, resolve_server_addr, set_session_status,
+    update_client_preferences, wrap_relay_packet, SessionStatus, ACTIVE_CHROMA_444,
+    ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING,
+    CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN, CLIENT_TARGET_FPS,
+    MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK,
+    PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE, SESSION_BITRATE_KBPS,
+    SESSION_RTT_MS,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tracing::{error, info, warn};
 
@@ -26,8 +27,7 @@ struct PartialFrame {
     created_at: Instant,
 }
 
-/// Starts a remote desktop client session connecting directly to `target_id`
-/// (VDS is used ONLY for address lookup & UDP hole-punching; all screen/input traffic is direct P2P)
+/// Starts a remote desktop client session connecting to `target_id`
 pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: bool) {
     let norm_target = normalize_id(target_id);
     let display_target = if norm_target.len() == 9 {
@@ -67,6 +67,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
         "000000000".to_string()
     };
 
+    // Unique 9-digit session relay ID prefixed with '0' so VDS can route Host -> Client replies
+    // directly to this client socket without colliding with 100M..999M Host Desky IDs.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let my_relay_id = format!(
+        "0{:08}",
+        ((nanos ^ (my_gen.wrapping_mul(1_664_525))) % 89_999_999) + 10_000_000
+    );
+
     let notify = Arc::clone(input_notify());
 
     std::thread::spawn(move || {
@@ -94,22 +105,29 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             };
 
             let server_addr = resolve_server_addr();
+            let lan_bcast_targets = lan_broadcast_addrs(server_addr, 21117);
+            let my_lan_bytes = encode_lan_endpoint(&socket, server_addr);
 
-            // 1. Fire LAN discovery broadcast on port 21117 (for same-router / LAN peers)
+            // 0. Register this client socket's session relay ID on VDS for instant Host -> Client return routing
+            let relay_hb = SignalMsg::Heartbeat {
+                desky_id: my_relay_id.clone(),
+            };
+            if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
+                let _ = socket.send_to(&hb_bytes, server_addr).await;
+            }
+
+            // 1. Fire LAN discovery broadcast on port 21117 (subnet broadcast + global broadcast + localhost)
             let mut lan_pkt = Vec::with_capacity(14);
             if norm_target.len() == 9 {
                 lan_pkt.extend_from_slice(MAGIC_DSKY);
                 lan_pkt.push(PKT_LAN_DISCOVERY);
                 lan_pkt.extend_from_slice(norm_target.as_bytes());
-                let _ = socket
-                    .send_to(&lan_pkt, "255.255.255.255:21117".parse::<SocketAddr>().unwrap())
-                    .await;
-                let _ = socket
-                    .send_to(&lan_pkt, "127.0.0.1:21117".parse::<SocketAddr>().unwrap())
-                    .await;
+                for bcast in &lan_bcast_targets {
+                    let _ = socket.send_to(&lan_pkt, *bcast).await;
+                }
             }
 
-            // 2. Send ConnectRequest to VDS Matchmaker (Strictly for IP:Port lookup & hole-punching)
+            // 2. Send ConnectRequest to VDS Matchmaker
             let req = SignalMsg::ConnectRequest {
                 target_id: display_target.clone(),
             };
@@ -118,7 +136,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             }
 
             let mut peer_addr: Option<SocketAddr> = None;
+            let mut peer_lan_addr: Option<SocketAddr> = None;
+            let mut last_punched_peer: Option<SocketAddr> = None;
             let mut is_direct_peer = false;
+            let mut logged_direct_peer = false;
             let mut host_contacted = false;
             let mut buf = vec![0u8; 65536];
             let mut partial_frame: Option<PartialFrame> = None;
@@ -127,6 +148,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let session_start = Instant::now();
             let mut last_hello = Instant::now() - Duration::from_secs(10);
             let mut last_matchmaker_retry = Instant::now();
+            let mut last_relay_hb = Instant::now();
             let mut received_any_frame = false;
 
             // Dedicated Latest-Frame JPEG Decoder Thread so UDP recv_from NEVER blocks on CPU decoding!
@@ -228,11 +250,18 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     abr_frames_dropped = 0;
                 }
 
+                // Keep VDS relay return route alive if direct P2P hasn't been established yet
+                if !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(8) {
+                    if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
+                        let _ = socket.send_to(&hb_bytes, server_addr).await;
+                    }
+                    last_relay_hb = Instant::now();
+                }
+
                 // Retry ConnectRequest + LAN discovery every 1.2s until host responds
                 if !host_contacted
                     && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200)
                 {
-                    // Generous 90s connection window giving remote user ample time to click Accept
                     if session_start.elapsed() > Duration::from_secs(90) {
                         let msg = format!(
                             "Timed out connecting to Desky ID '{}'",
@@ -244,18 +273,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         break;
                     }
                     if !lan_pkt.is_empty() {
-                        let _ = socket
-                            .send_to(
-                                &lan_pkt,
-                                "255.255.255.255:21117".parse::<SocketAddr>().unwrap(),
-                            )
-                            .await;
-                        let _ = socket
-                            .send_to(
-                                &lan_pkt,
-                                "127.0.0.1:21117".parse::<SocketAddr>().unwrap(),
-                            )
-                            .await;
+                        for bcast in &lan_bcast_targets {
+                            let _ = socket.send_to(&lan_pkt, *bcast).await;
+                        }
+                    }
+                    if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
+                        let _ = socket.send_to(&hb_bytes, server_addr).await;
                     }
                     if let Ok(req_bytes) = serde_json::to_vec(&req) {
                         let _ = socket.send_to(&req_bytes, server_addr).await;
@@ -263,7 +286,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_matchmaker_retry = Instant::now();
                 }
 
-                // Periodically send ClientHello with ABR quality parameters (Dual-Path: Direct P2P + VDS Relay)
+                // Periodically send ClientHello with ABR quality parameters, relay_id, and LAN endpoint
                 let hello_interval = if received_any_frame {
                     Duration::from_millis(350)
                 } else {
@@ -280,7 +303,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
                     let (q_val, sc_val, c444) = get_active_quality_params();
 
-                    let mut hello = Vec::with_capacity(23);
+                    let mut hello = Vec::with_capacity(38);
                     hello.extend_from_slice(MAGIC_DSKY);
                     hello.push(PKT_CLIENT_HELLO);
                     hello.push(fps);
@@ -290,24 +313,35 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     hello.push(sc_val);
                     hello.push(if c444 { 1u8 } else { 0u8 });
                     hello.extend_from_slice(my_id_padded.as_bytes());
+                    hello.extend_from_slice(my_relay_id.as_bytes());
+                    hello.extend_from_slice(&my_lan_bytes);
 
-                    // 1. Direct path
+                    // 1. Direct WAN / Active Peer path
                     if let Some(p_addr) = peer_addr {
-                        let _ = socket.send_to(&hello, p_addr).await;
-                        if !is_direct_peer {
-                            let base_ip = p_addr.ip();
-                            let base_port = p_addr.port();
-                            for offset in 1..=6u16 {
-                                if let Some(p) = base_port.checked_add(offset) {
-                                    let _ = socket
-                                        .send_to(&hello, SocketAddr::new(base_ip, p))
-                                        .await;
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&hello, p_addr).await;
+                            if !is_direct_peer {
+                                let base_ip = p_addr.ip();
+                                let base_port = p_addr.port();
+                                for offset in 1..=6u16 {
+                                    if let Some(p) = base_port.checked_add(offset) {
+                                        let _ = socket
+                                            .send_to(&hello, SocketAddr::new(base_ip, p))
+                                            .await;
+                                    }
                                 }
                             }
                         }
                     }
 
-                    // 2. Relay fallback (Always works across Symmetric CGNAT / Restricted NAT)
+                    // 2. Direct LAN path (learned from Host's PKT_AUTH_STATUS on same router!)
+                    if !is_direct_peer {
+                        if let Some(l_addr) = peer_lan_addr {
+                            let _ = socket.send_to(&hello, l_addr).await;
+                        }
+                    }
+
+                    // 3. VDS Relay fallback (used only while direct UDP hole-punching is not yet active)
                     if !is_direct_peer {
                         let relay_hello = wrap_relay_packet(&norm_target, &hello);
                         let _ = socket.send_to(&relay_hello, server_addr).await;
@@ -333,9 +367,14 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             pkt.extend_from_slice(&ev_bytes);
 
                             if let Some(p_addr) = peer_addr {
-                                let _ = socket.send_to(&pkt, p_addr).await;
+                                if p_addr != server_addr {
+                                    let _ = socket.send_to(&pkt, p_addr).await;
+                                }
                             }
                             if !is_direct_peer {
+                                if let Some(l_addr) = peer_lan_addr {
+                                    let _ = socket.send_to(&pkt, l_addr).await;
+                                }
                                 let relay_input = wrap_relay_packet(&norm_target, &pkt);
                                 let _ = socket.send_to(&relay_input, server_addr).await;
                             }
@@ -357,8 +396,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 if from_addr != server_addr {
                                     is_direct_peer = true;
                                     peer_addr = Some(from_addr);
-                                } else if peer_addr.is_none() {
-                                    peer_addr = Some(server_addr);
+                                    if !logged_direct_peer {
+                                        logged_direct_peer = true;
+                                        info!("🎉 Direct P2P tunnel established with {}!", from_addr);
+                                    }
                                 }
 
                                 match pkt_type {
@@ -375,6 +416,22 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         }
                                     }
                                     PKT_AUTH_STATUS => {
+                                        if slice.len() >= 12 && !is_direct_peer {
+                                            if let Some(h_lan) = decode_lan_endpoint(&slice[6..12]) {
+                                                if peer_lan_addr != Some(h_lan) {
+                                                    peer_lan_addr = Some(h_lan);
+                                                    let punch = SignalMsg::Punch {
+                                                        from_id: my_id_padded.clone(),
+                                                    };
+                                                    if let Ok(pbytes) = serde_json::to_vec(&punch) {
+                                                        for _ in 0..3 {
+                                                            let _ = socket.send_to(&pbytes, h_lan).await;
+                                                        }
+                                                    }
+                                                    last_hello = Instant::now() - Duration::from_secs(10);
+                                                }
+                                            }
+                                        }
                                         if slice.len() >= 6 {
                                             match slice[5] {
                                                 AUTH_PENDING => {
@@ -478,7 +535,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 received_any_frame = true;
 
                                                 // Hand off JPEG buffer to dedicated decoder thread in <1µs
-                                                // so UDP recv_from never pauses and never drops incoming chunks!
                                                 let (lock, cvar) = &*decode_slot;
                                                 if let Ok(mut slot) = lock.lock() {
                                                     *slot = Some((frame_id, orig_w, orig_h, jpeg_data));
@@ -497,41 +553,45 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     } => {
                                         if let Ok(parsed) = peer_public_addr.parse::<SocketAddr>() {
                                             let resolved = fix_loopback_peer(parsed, server_addr);
-                                            info!(
-                                                "⚡ Peer '{}' resolved at {}. Starting Direct UDP Hole-Punching & Relay fallback...",
-                                                display_target, resolved
-                                            );
-                                            if peer_addr.is_none() {
+                                            if !is_direct_peer && peer_addr.is_none() {
                                                 peer_addr = Some(resolved);
                                             }
 
-                                            // Continuous hole-puncher probe task
-                                            let sock_punch = Arc::clone(&socket);
-                                            let my_punch_id = my_id_padded.clone();
-                                            tokio::spawn(async move {
-                                                let punch = SignalMsg::Punch {
-                                                    from_id: my_punch_id,
-                                                };
-                                                if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                                    let base_ip = resolved.ip();
-                                                    let base_port = resolved.port();
-                                                    for _ in 0..50 {
-                                                        let _ = sock_punch.send_to(&pbytes, resolved).await;
-                                                        for offset in -6i32..=6i32 {
-                                                            let target_p = (base_port as i32 + offset) as u16;
-                                                            if target_p > 1024 {
-                                                                let _ = sock_punch
-                                                                    .send_to(&pbytes, SocketAddr::new(base_ip, target_p))
-                                                                    .await;
-                                                            }
-                                                        }
-                                                        tokio::time::sleep(Duration::from_millis(50)).await;
-                                                    }
-                                                }
-                                            });
+                                            if last_punched_peer != Some(resolved) {
+                                                last_punched_peer = Some(resolved);
+                                                info!(
+                                                    "⚡ Peer '{}' resolved at {}. Starting Direct UDP Hole-Punching & Relay fallback...",
+                                                    display_target, resolved
+                                                );
 
-                                            // Also immediately fire a ClientHello so the host sees the request right away
-                                            last_hello = Instant::now() - Duration::from_secs(10);
+                                                // Continuous hole-puncher probe task
+                                                let sock_punch = Arc::clone(&socket);
+                                                let my_punch_id = my_id_padded.clone();
+                                                tokio::spawn(async move {
+                                                    let punch = SignalMsg::Punch {
+                                                        from_id: my_punch_id,
+                                                    };
+                                                    if let Ok(pbytes) = serde_json::to_vec(&punch) {
+                                                        let base_ip = resolved.ip();
+                                                        let base_port = resolved.port();
+                                                        for _ in 0..40 {
+                                                            let _ = sock_punch.send_to(&pbytes, resolved).await;
+                                                            for offset in -6i32..=6i32 {
+                                                                let target_p = (base_port as i32 + offset) as u16;
+                                                                if target_p > 1024 {
+                                                                    let _ = sock_punch
+                                                                        .send_to(&pbytes, SocketAddr::new(base_ip, target_p))
+                                                                        .await;
+                                                                }
+                                                            }
+                                                            tokio::time::sleep(Duration::from_millis(50)).await;
+                                                        }
+                                                    }
+                                                });
+
+                                                // Immediately fire a ClientHello so the host sees the request right away
+                                                last_hello = Instant::now() - Duration::from_secs(10);
+                                            }
                                         }
                                     }
                                     SignalMsg::PeerNotFound { target_id } => {
@@ -546,12 +606,20 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         break;
                                     }
                                     SignalMsg::Punch { .. } | SignalMsg::PunchAck => {
-                                        peer_addr = Some(from_addr);
-                                        let ack = SignalMsg::PunchAck;
-                                        if let Ok(abytes) = serde_json::to_vec(&ack) {
-                                            let _ = socket.send_to(&abytes, from_addr).await;
+                                        if from_addr != server_addr {
+                                            peer_addr = Some(from_addr);
+                                            is_direct_peer = true;
+                                            host_contacted = true;
+                                            if !logged_direct_peer {
+                                                logged_direct_peer = true;
+                                                info!("🎉 Direct P2P tunnel established with {}!", from_addr);
+                                            }
+                                            let ack = SignalMsg::PunchAck;
+                                            if let Ok(abytes) = serde_json::to_vec(&ack) {
+                                                let _ = socket.send_to(&abytes, from_addr).await;
+                                            }
+                                            last_hello = Instant::now() - Duration::from_secs(10);
                                         }
-                                        last_hello = Instant::now() - Duration::from_secs(10);
                                     }
                                     _ => {}
                                 }
@@ -572,11 +640,15 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 }
             }
 
+            let mut disc = Vec::with_capacity(5);
+            disc.extend_from_slice(MAGIC_DSKY);
+            disc.push(PKT_DISCONNECT);
             if let Some(p_addr) = peer_addr {
-                let mut disc = Vec::with_capacity(5);
-                disc.extend_from_slice(MAGIC_DSKY);
-                disc.push(PKT_DISCONNECT);
                 let _ = socket.send_to(&disc, p_addr).await;
+            }
+            if !is_direct_peer {
+                let relay_disc = wrap_relay_packet(&norm_target, &disc);
+                let _ = socket.send_to(&relay_disc, server_addr).await;
             }
         });
     });

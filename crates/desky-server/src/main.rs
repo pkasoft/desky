@@ -271,30 +271,35 @@ async fn main() -> Result<()> {
             let sessions_relay = Arc::clone(&client_sessions);
 
             tokio::spawn(async move {
-                // 1. Is target a registered Host? (Client -> Host relay)
+                // 1. Is target a registered endpoint?
                 let host_target = {
                     let table = hosts_relay.read().await;
                     table.get(&norm_target).map(|e| e.addr)
                 };
 
                 if let Some(h_addr) = host_target {
-                    {
-                        let mut s_table = sessions_relay.write().await;
-                        s_table.insert(norm_target, src_addr);
+                    // Only forward to h_addr if the packet is NOT coming from h_addr itself!
+                    // (Prevents self-echo when a Host wraps a reply with its own ID)
+                    if src_addr != h_addr {
+                        {
+                            let mut s_table = sessions_relay.write().await;
+                            s_table.insert(norm_target, src_addr);
+                        }
+                        let _ = socket_relay.send_to(&payload, h_addr).await;
+                        return;
                     }
-                    let _ = socket_relay.send_to(&payload, h_addr).await;
-                    return;
                 }
 
-                // 2. Is target from Host replying to Client? (Host -> Client relay)
+                // 2. Host replying to Client via session table
                 let client_target = {
                     let s_table = sessions_relay.read().await;
                     s_table.get(&norm_target).copied()
                 };
 
                 if let Some(c_addr) = client_target {
-                    let _ = socket_relay.send_to(&payload, c_addr).await;
-                    return;
+                    if c_addr != src_addr {
+                        let _ = socket_relay.send_to(&payload, c_addr).await;
+                    }
                 }
             });
             continue;
