@@ -29,7 +29,7 @@ pub use clipboard::{
 };
 pub use cursor::{get_current_cursor_shape, get_hcursor_for_shape};
 pub use input::InputInjector;
-pub use system::{get_desktop_dir, get_identity_dir, get_machine_id, notify_file_received};
+pub use system::{get_desktop_dir, get_identity_dir, get_machine_id, notify_file_received, trim_process_working_set};
 pub use ui::set_assigned_desky_id;
 
 use std::sync::OnceLock;
