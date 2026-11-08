@@ -251,6 +251,11 @@ impl P2PManager {
                                         for sub in &subscribers {
                                             if sub.is_direct || sub.addr != target_server_stream {
                                                 let _ = std_sock_stream_capture.send_to(&cur_pkt, sub.addr);
+                                                if let Some(l_addr) = sub.lan_addr {
+                                                    if l_addr != sub.addr {
+                                                        let _ = std_sock_stream_capture.send_to(&cur_pkt, l_addr);
+                                                    }
+                                                }
                                             } else if !sub.relay_id.is_empty() {
                                                 let relay = wrap_relay_packet(&sub.relay_id, &cur_pkt);
                                                 let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
@@ -275,6 +280,11 @@ impl P2PManager {
                                                 for sub in &subscribers {
                                                     if sub.is_direct || sub.addr != target_server_stream {
                                                         let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
+                                                        if let Some(l_addr) = sub.lan_addr {
+                                                            if l_addr != sub.addr {
+                                                                let _ = std_sock_stream_capture.send_to(&pkt, l_addr);
+                                                            }
+                                                        }
                                                     } else if !sub.relay_id.is_empty() {
                                                         let relay = wrap_relay_packet(&sub.relay_id, &pkt);
                                                         let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
@@ -337,6 +347,11 @@ impl P2PManager {
                                                 if sub.is_direct || sub.addr != target_server_stream {
                                                     let _ =
                                                         std_sock_stream_capture.send_to(&pkt, sub.addr);
+                                                    if let Some(l_addr) = sub.lan_addr {
+                                                        if l_addr != sub.addr {
+                                                            let _ = std_sock_stream_capture.send_to(&pkt, l_addr);
+                                                        }
+                                                    }
                                                 } else if !sub.relay_id.is_empty() {
                                                     let relay_pkt =
                                                         wrap_relay_packet(&sub.relay_id, &pkt);
@@ -417,6 +432,11 @@ impl P2PManager {
                                             for sub in &subscribers {
                                                 if sub.is_direct || sub.addr != target_server_audio {
                                                     let _ = sock_audio.send_to(&pkt, sub.addr);
+                                                    if let Some(l_addr) = sub.lan_addr {
+                                                        if l_addr != sub.addr {
+                                                            let _ = sock_audio.send_to(&pkt, l_addr);
+                                                        }
+                                                    }
                                                 } else if !sub.relay_id.is_empty() {
                                                     let relay = wrap_relay_packet(&sub.relay_id, &pkt);
                                                     let _ = sock_audio.send_to(&relay, target_server_audio);
