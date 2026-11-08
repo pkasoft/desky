@@ -15,7 +15,7 @@ pub fn set_assigned_desky_id(id: &str) {
     }
     info!("✅ [LINUX HOST] Permanent Desky ID Approved: {}", id);
     println!("\n\x1b[1;32m==================================================\x1b[0m");
-    println!("\x1b[1;32m  ⚡ DESKY LINUX ONLINE • pkasoft.com\x1b[0m");
+    println!("\x1b[1;32m  DESKY LINUX ONLINE • pkasoft.com\x1b[0m");
     println!("\x1b[1;37m  YOUR PERMANENT DESKY ID: \x1b[1;32m{}\x1b[0m", id);
     println!("\x1b[1;37m  STATUS: \x1b[1;36m● Ready for incoming connections\x1b[0m");
     println!("\x1b[1;32m==================================================\x1b[0m\n");
@@ -226,7 +226,7 @@ impl LinuxApp {
         };
 
         println!("\x1b[1;32m==================================================\x1b[0m");
-        println!("\x1b[1;32m  ⚡ DESKY REMOTE DESKTOP (Linux / Lubuntu)\x1b[0m");
+        println!("\x1b[1;32m  DESKY REMOTE DESKTOP (Linux / Lubuntu)\x1b[0m");
         println!("\x1b[1;37m  Permanent Desky ID: \x1b[1;32m{}\x1b[0m", current_id);
         println!("\x1b[1;37m  Theme: \x1b[0;32mpkasoft.com White & Emerald\x1b[0m");
         println!("\x1b[1;37m  Input Injection: \x1b[0;36mPure Rust X11 / XTest Active\x1b[0m");

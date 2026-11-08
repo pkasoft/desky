@@ -4,7 +4,7 @@ use crate::p2p::state::{
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
-    PKT_LAN_DISCOVERY, PKT_PONG,
+    PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -325,6 +325,11 @@ impl P2PManager {
                 let current_id_clone = Arc::clone(&current_id);
                 let clients_recv = Arc::clone(&active_clients);
 
+                let last_hb_send = Arc::new(std::sync::Mutex::new(Instant::now()));
+                let last_hb_ack = Arc::new(std::sync::Mutex::new(Instant::now()));
+                let last_hb_send_clone = Arc::clone(&last_hb_send);
+                let last_hb_ack_clone = Arc::clone(&last_hb_ack);
+
                 // Receiver task: listens for VDS matchmaking acks, peer hole-punching, and direct client packets
                 tokio::spawn(async move {
                     #[cfg(target_os = "windows")]
@@ -640,6 +645,10 @@ impl P2PManager {
                                     desky_id,
                                     your_public_addr,
                                 } => {
+                                    SERVER_ONLINE.store(true, Ordering::Relaxed);
+                                    if let Ok(mut g) = last_hb_ack_clone.lock() {
+                                        *g = Instant::now();
+                                    }
                                     info!(
                                         "✅ [VDS APPROVED] Permanent Desky ID '{}' assigned! Public NAT endpoint: {}",
                                         desky_id, your_public_addr
@@ -652,6 +661,16 @@ impl P2PManager {
 
                                     let mut id_w = current_id_clone.write().await;
                                     *id_w = desky_id;
+                                }
+                                SignalMsg::HeartbeatAck => {
+                                    SERVER_ONLINE.store(true, Ordering::Relaxed);
+                                    if let Ok(g) = last_hb_send_clone.lock() {
+                                        let rtt = g.elapsed().as_millis() as u32;
+                                        SERVER_PING_MS.store(rtt.clamp(1, 999), Ordering::Relaxed);
+                                    }
+                                    if let Ok(mut g) = last_hb_ack_clone.lock() {
+                                        *g = Instant::now();
+                                    }
                                 }
                                 SignalMsg::IncomingPeer { client_public_addr } => {
                                     if let Ok(parsed_addr) =
@@ -848,10 +867,20 @@ impl P2PManager {
                     }
                 });
 
-                // Keepalive heartbeat loop (every 10 seconds to keep router NAT mapping open)
-                let mut interval = tokio::time::interval(Duration::from_secs(10));
+                // Keepalive heartbeat loop (every 5 seconds with live ping calculation)
+                let mut interval = tokio::time::interval(Duration::from_secs(5));
                 while running.load(Ordering::Relaxed) {
                     interval.tick().await;
+
+                    if let Ok(g) = last_hb_ack.lock() {
+                        if g.elapsed() > Duration::from_secs(12) {
+                            SERVER_ONLINE.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    if let Ok(mut g) = last_hb_send.lock() {
+                        *g = Instant::now();
+                    }
+
                     let my_id = current_id.read().await.clone();
                     if !my_id.is_empty() {
                         let hb = SignalMsg::Heartbeat { desky_id: my_id };

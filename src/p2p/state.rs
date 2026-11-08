@@ -97,6 +97,8 @@ pub static ACTIVE_SCALE_PCT: AtomicU8 = AtomicU8::new(100);
 pub static ACTIVE_CHROMA_444: AtomicBool = AtomicBool::new(true);
 pub static SESSION_RTT_MS: AtomicU32 = AtomicU32::new(0);
 pub static SESSION_BITRATE_KBPS: AtomicU32 = AtomicU32::new(0);
+pub static SERVER_ONLINE: AtomicBool = AtomicBool::new(false);
+pub static SERVER_PING_MS: AtomicU32 = AtomicU32::new(0);
 
 pub fn frame_store() -> &'static Mutex<Option<Arc<RemoteFrame>>> {
     LATEST_REMOTE_FRAME.get_or_init(|| Mutex::new(None))
@@ -318,6 +320,14 @@ pub fn get_session_rtt_ms() -> u32 {
 
 pub fn get_session_bitrate_kbps() -> u32 {
     SESSION_BITRATE_KBPS.load(Ordering::Relaxed)
+}
+
+pub fn is_server_online() -> bool {
+    SERVER_ONLINE.load(Ordering::Relaxed)
+}
+
+pub fn get_server_ping_ms() -> u32 {
+    SERVER_PING_MS.load(Ordering::Relaxed)
 }
 
 pub fn get_quality_mode() -> u8 {
