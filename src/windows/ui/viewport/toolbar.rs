@@ -494,10 +494,8 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
 
     let tab_0_w = 96;
     let start_x = brand_w + 8;
-    let tab_y = 5;
-    let tab_h = 30;
 
-    if client_x >= start_x && client_x < start_x + tab_0_w && client_y >= tab_y && client_y < tab_y + tab_h {
+    if client_x >= start_x && client_x < start_x + tab_0_w {
         return 0;
     }
 
@@ -507,9 +505,9 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
 
     for (i, _) in tabs.iter().enumerate().skip(1) {
         let tx = rem_start_x + ((i - 1) as i32) * (tab_w + 4);
-        if client_x >= tx && client_x < tx + tab_w && client_y >= tab_y && client_y < tab_y + tab_h {
-            let close_x = tx + tab_w - 22;
-            let close_sz = 18;
+        if client_x >= tx && client_x < tx + tab_w {
+            let close_x = tx + tab_w - 24;
+            let close_sz = 20;
             if client_x >= close_x && client_x < close_x + close_sz {
                 return 1000 + i as i32;
             }
@@ -522,12 +520,14 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
     } else {
         rem_start_x + ((tabs.len() - 1) as i32) * (tab_w + 4)
     };
-    if client_x >= plus_x && client_x < plus_x + 30 && client_y >= tab_y && client_y < tab_y + tab_h {
+    if client_x >= plus_x && client_x < plus_x + 32 {
         return 999;
     }
 
     let btn_w = 32;
     let settings_x = client_w - btn_w - 12;
+    let tab_y = 5;
+    let tab_h = 30;
     if client_y >= tab_y && client_y < tab_y + tab_h {
         if client_x >= settings_x && client_x < settings_x + btn_w {
             return 9006;

@@ -29,8 +29,10 @@ pub mod x;
 pub mod pen;
 pub mod record;
 pub mod zap;
+pub mod alert_triangle;
 
 pub use arrow_right::draw_arrow_right;
+pub use alert_triangle::draw_alert_triangle;
 pub use bell::draw_bell;
 pub use check::draw_check;
 pub use copy::draw_copy;

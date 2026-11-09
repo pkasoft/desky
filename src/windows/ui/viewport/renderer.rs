@@ -59,6 +59,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
         let mut last_toolbar: bool = true;
         let mut last_modal: bool = false;
         let mut last_cat: u8 = 255;
+        let mut last_session_status = crate::p2p::SessionStatus::Idle;
+        let mut last_status_hover: i32 = -1;
         let mut last_ui_refresh = Instant::now();
 
         let mut cached_mem_dc: Option<HDC> = None;
@@ -92,6 +94,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                 let toolbar_visible = SHOW_TOOLBAR.load(Ordering::Relaxed);
                 let modal_open = SHOW_SETTINGS_MODAL.load(Ordering::Relaxed);
                 let cat_val = SETTINGS_CATEGORY.load(Ordering::Relaxed);
+                let session_status = crate::p2p::get_session_status();
+                let status_hover = super::session_status_view::get_status_hover_state();
                 let tabs = get_session_tabs();
 
                 let latest_frame = crate::p2p::get_latest_remote_frame();
@@ -108,7 +112,9 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     || cursor_on != last_cur
                     || toolbar_visible != last_toolbar
                     || modal_open != last_modal
-                    || cat_val != last_cat;
+                    || cat_val != last_cat
+                    || session_status != last_session_status
+                    || status_hover != last_status_hover;
 
                 let periodic_refresh = last_ui_refresh.elapsed() >= Duration::from_millis(50);
 
@@ -125,6 +131,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     last_toolbar = toolbar_visible;
                     last_modal = modal_open;
                     last_cat = cat_val;
+                    last_session_status = session_status.clone();
+                    last_status_hover = status_hover;
                     last_ui_refresh = Instant::now();
 
                     let toolbar_h = if toolbar_visible { TOOLBAR_HEIGHT } else { 0 };
@@ -175,6 +183,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                             crate::windows::ui::launcher::draw_homepage_view(mem_dc, client_w, client_h, hp_hover);
                             draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, 0, hover_state);
                         } else {
+                            let is_err = matches!(session_status, crate::p2p::SessionStatus::Error(_));
                             if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                                 crate::windows::ui::admin::draw_admin_view(
                                     mem_dc,
@@ -182,7 +191,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                                     client_h - toolbar_h,
                                     ADMIN_HOVER_STATE.load(Ordering::Relaxed),
                                 );
-                            } else if let Some(ref remote_frame) = latest_frame {
+                            } else if !is_err && latest_frame.is_some() {
+                                let remote_frame = latest_frame.as_ref().unwrap();
                                 REMOTE_ORIG_W.store(remote_frame.orig_width, Ordering::Relaxed);
                                 REMOTE_ORIG_H.store(remote_frame.orig_height, Ordering::Relaxed);
 
@@ -293,6 +303,17 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                                 }
 
                                 draw_whiteboard_overlay(mem_dc, render_x, render_y, render_w, render_h);
+                            } else {
+                                let tab_target = tabs.get(active_idx).map(|t| t.id.as_str()).unwrap_or("Unknown");
+                                super::session_status_view::draw_session_status_view(
+                                    mem_dc,
+                                    client_w,
+                                    client_h,
+                                    toolbar_h,
+                                    tab_target,
+                                    &session_status,
+                                    status_hover,
+                                );
                             }
 
                             if toolbar_visible {

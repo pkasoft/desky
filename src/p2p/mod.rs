@@ -12,8 +12,8 @@ pub use radar::{get_lan_peers, parse_mac_address, send_wake_on_lan, start_lan_ra
 pub use state::{
     get_active_quality_params, get_active_session_target, get_latest_remote_frame,
     get_pending_approval, get_quality_mode, get_remote_cursor_shape, get_server_ping_ms,
-    get_session_bitrate_kbps, get_session_rtt_ms, get_transfer_progress,
+    get_session_bitrate_kbps, get_session_rtt_ms, get_session_status, get_transfer_progress,
     is_client_session_active, is_server_online, normalize_id, read_clipboard_files, read_clipboard_text, respond_to_pending_approval, send_admin_request, send_file_transfer,
-    send_remote_clipboard, send_remote_input, set_quality_mode, set_remote_cursor_shape,
-    stop_client_session, take_admin_response, update_client_preferences,
+    send_remote_clipboard, send_remote_input, set_quality_mode, set_remote_cursor_shape, set_session_status,
+    stop_client_session, take_admin_response, update_client_preferences, SessionStatus,
 };

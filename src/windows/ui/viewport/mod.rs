@@ -4,6 +4,7 @@
 //! - `window.rs`: Native Win32 window procedure, message dispatch & lifecycle
 //! - `tabs.rs`: Multi-session tabs, switching, closing & window detachment
 //! - `renderer.rs`: Double-buffered 60-120 FPS video frame canvas renderer
+//! - `session_status_view.rs`: Dedicated session connecting, waiting & error/alert card renderer
 //! - `toolbar.rs`: Compact floating top toolbar pill & Lucide vector icons
 //! - `whiteboard.rs`: Interactive screen pen & real-time GDI+ polyline annotations
 //! - `quick_actions.rs`: Instant system hotkeys & admin shortcuts dropdown
@@ -15,6 +16,7 @@ pub mod file_hud;
 pub mod input_injector;
 pub mod quick_actions;
 pub mod renderer;
+pub mod session_status_view;
 pub mod settings_modal;
 pub mod tabs;
 pub mod toolbar;
@@ -29,6 +31,8 @@ pub use input_injector::*;
 #[allow(unused_imports)]
 pub use quick_actions::*;
 pub use renderer::*;
+#[allow(unused_imports)]
+pub use session_status_view::*;
 #[allow(unused_imports)]
 pub use settings_modal::*;
 pub use tabs::*;

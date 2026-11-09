@@ -38,10 +38,10 @@ use super::quick_actions::{
 };
 use super::renderer::{REMOTE_ORIG_H, REMOTE_ORIG_W, VIEWPORT_RUNNING};
 use super::settings_modal::{
-    handle_settings_click, DISPLAY_MODE, SHOW_SETTINGS_MODAL, TARGET_FPS,
+    handle_settings_click, CAPTURE_CURSOR, DISPLAY_MODE, SHOW_SETTINGS_MODAL, TARGET_FPS,
 };
 use super::tabs::{
-    close_session_tab, detach_tab, switch_session_tab, ACTIVE_REMOTE_MONITOR, ACTIVE_TAB_INDEX,
+    close_session_tab, detach_tab, get_session_tabs, switch_session_tab, ACTIVE_REMOTE_MONITOR, ACTIVE_TAB_INDEX,
     ADMIN_HOVER_STATE, DRAGGING_TAB_INDEX, DRAG_START_POS, HWND_VIEWPORT, REMOTE_PRIVACY_MODE,
     VIEWPORT_IS_ADMIN_MODE,
 };
@@ -386,7 +386,39 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                         return LRESULT(0);
                     }
                 } else {
-                    inject_remote_mouse(hwnd, client_x, client_y, true, false);
+                    let latest_frame = crate::p2p::get_latest_remote_frame();
+                    let status = crate::p2p::get_session_status();
+                    let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
+
+                    if is_err || latest_frame.is_none() {
+                        let hit = super::session_status_view::hit_test_session_status_view(
+                            client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT, &status,
+                        );
+                        if hit == super::session_status_view::BTN_CANCEL_CONNECTION {
+                            crate::p2p::stop_client_session();
+                            switch_session_tab(0);
+                            return LRESULT(0);
+                        } else if hit == super::session_status_view::BTN_RETRY_CONNECTION {
+                            let tabs = get_session_tabs();
+                            if let Some(tab) = tabs.get(active) {
+                                crate::p2p::start_client_session(
+                                    &tab.id,
+                                    TARGET_FPS.load(Ordering::Relaxed),
+                                    CAPTURE_CURSOR.load(Ordering::Relaxed),
+                                );
+                            }
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                            return LRESULT(0);
+                        } else if hit == super::session_status_view::BTN_CLOSE_SESSION {
+                            close_session_tab(hwnd, active);
+                            return LRESULT(0);
+                        } else if hit == super::session_status_view::BTN_RETURN_TO_HOME {
+                            switch_session_tab(0);
+                            return LRESULT(0);
+                        }
+                    } else {
+                        inject_remote_mouse(hwnd, client_x, client_y, true, false);
+                    }
                 }
             }
             LRESULT(0)
@@ -534,10 +566,24 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     );
                     ADMIN_HOVER_STATE.store(hover, Ordering::Relaxed);
                 } else if !is_whiteboard_active() {
-                    let shape_id = crate::p2p::get_remote_cursor_shape();
-                    let c = crate::windows::get_hcursor_for_shape(shape_id);
-                    SetCursor(Some(c));
-                    inject_remote_mouse_move(hwnd, client_x, client_y);
+                    let latest_frame = crate::p2p::get_latest_remote_frame();
+                    let status = crate::p2p::get_session_status();
+                    let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
+
+                    if is_err || latest_frame.is_none() {
+                        let mut rect = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut rect);
+                        let client_w = rect.right - rect.left;
+                        let client_h = rect.bottom - rect.top;
+                        super::session_status_view::handle_status_mousemove(
+                            hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT, &status,
+                        );
+                    } else {
+                        let shape_id = crate::p2p::get_remote_cursor_shape();
+                        let c = crate::windows::get_hcursor_for_shape(shape_id);
+                        SetCursor(Some(c));
+                        inject_remote_mouse_move(hwnd, client_x, client_y);
+                    }
                 }
             }
             LRESULT(0)
@@ -561,10 +607,22 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 } else if !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed)
                     && ACTIVE_TAB_INDEX.load(Ordering::Relaxed) > 0
                 {
-                    let shape_id = crate::p2p::get_remote_cursor_shape();
-                    let c = crate::windows::get_hcursor_for_shape(shape_id);
-                    SetCursor(Some(c));
-                    return LRESULT(1);
+                    let latest_frame = crate::p2p::get_latest_remote_frame();
+                    let status = crate::p2p::get_session_status();
+                    let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
+
+                    if is_err || latest_frame.is_none() {
+                        let status_hover = super::session_status_view::get_status_hover_state();
+                        let cursor_name = if status_hover > 0 { IDC_HAND } else { IDC_ARROW };
+                        let c = LoadCursorW(None, cursor_name).unwrap_or_default();
+                        SetCursor(Some(c));
+                        return LRESULT(1);
+                    } else {
+                        let shape_id = crate::p2p::get_remote_cursor_shape();
+                        let c = crate::windows::get_hcursor_for_shape(shape_id);
+                        SetCursor(Some(c));
+                        return LRESULT(1);
+                    }
                 }
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
