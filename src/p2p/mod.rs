@@ -1,8 +1,15 @@
+pub mod chat;
 pub mod client;
 pub mod host;
 pub mod radar;
 pub mod state;
 
+#[allow(unused_imports)]
+pub use chat::{
+    clear_chat_history, get_chat_messages, get_unread_count, is_chat_open, mark_chat_read,
+    pull_outgoing_messages, receive_chat_message, send_chat_message, set_chat_open, toggle_chat,
+    ChatMessage,
+};
 #[allow(unused_imports)]
 pub use client::start_client_session;
 pub use host::P2PManager;
@@ -13,7 +20,9 @@ pub use state::{
     get_active_quality_params, get_active_session_target, get_latest_remote_frame,
     get_pending_approval, get_quality_mode, get_remote_cursor_shape, get_server_ping_ms,
     get_session_bitrate_kbps, get_session_rtt_ms, get_session_status, get_transfer_progress,
-    is_client_session_active, is_server_online, normalize_id, read_clipboard_files, read_clipboard_text, respond_to_pending_approval, send_admin_request, send_file_transfer,
-    send_remote_clipboard, send_remote_input, set_quality_mode, set_remote_cursor_shape, set_session_status,
-    stop_client_session, take_admin_response, update_client_preferences, SessionStatus,
+    is_client_session_active, is_server_online, normalize_id, read_clipboard_files, read_clipboard_text,
+    respond_to_pending_approval, send_admin_request, send_file_transfer, send_remote_clipboard,
+    send_remote_input, set_quality_mode, set_remote_cursor_shape, set_session_status,
+    stop_client_session, submit_unattended_password, take_admin_response, take_unattended_password,
+    update_client_preferences, SessionStatus,
 };

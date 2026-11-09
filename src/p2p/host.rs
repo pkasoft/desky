@@ -5,6 +5,7 @@ use crate::p2p::state::{
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
     PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS, PKT_ADMIN_REQ,
+    PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -324,6 +325,28 @@ impl P2PManager {
                                         file_pkts_sent += 1;
                                     } else {
                                         break;
+                                    }
+                                }
+
+                                // Host -> Client In-Session Chat packets flush
+                                for msg in crate::p2p::pull_outgoing_messages() {
+                                    let msg_bytes = msg.as_bytes();
+                                    let mut pkt = Vec::with_capacity(5 + msg_bytes.len());
+                                    pkt.extend_from_slice(MAGIC_DSKY);
+                                    pkt.push(PKT_CHAT_MESSAGE);
+                                    pkt.extend_from_slice(msg_bytes);
+                                    for sub in &subscribers {
+                                        if sub.is_direct || sub.addr != target_server_stream {
+                                            let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
+                                            if let Some(l_addr) = sub.lan_addr {
+                                                if l_addr != sub.addr {
+                                                    let _ = std_sock_stream_capture.send_to(&pkt, l_addr);
+                                                }
+                                            }
+                                        } else if !sub.relay_id.is_empty() {
+                                            let relay = wrap_relay_packet(&sub.relay_id, &pkt);
+                                            let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
+                                        }
                                     }
                                 }
 
@@ -715,6 +738,26 @@ impl P2PManager {
                                         let _ = socket_recv.send_to(&relay_auth, target_server).await;
                                     }
 
+                                    // If Unattended Access is enabled on Host, challenge client with salt!
+                                    if crate::identity::is_unattended_enabled() {
+                                        if let Some(salt) = crate::identity::get_unattended_salt() {
+                                            let mut ch_pkt = Vec::with_capacity(5 + salt.len());
+                                            ch_pkt.extend_from_slice(MAGIC_DSKY);
+                                            ch_pkt.push(PKT_UNATTENDED_CHALLENGE);
+                                            ch_pkt.extend_from_slice(salt.as_bytes());
+                                            if !is_from_server {
+                                                let _ = socket_recv.send_to(&ch_pkt, from_addr).await;
+                                            }
+                                            if let Some(l_addr) = client_lan_addr {
+                                                let _ = socket_recv.send_to(&ch_pkt, l_addr).await;
+                                            }
+                                            if !relay_id.is_empty() {
+                                                let relay_ch = wrap_relay_packet(&relay_id, &ch_pkt);
+                                                let _ = socket_recv.send_to(&relay_ch, target_server).await;
+                                            }
+                                        }
+                                    }
+
                                     // Reply with Pong if timestamp included
                                     if slice.len() >= 11 {
                                         let mut pong = Vec::with_capacity(9);
@@ -881,6 +924,59 @@ impl P2PManager {
                                                     }
                                                 });
                                             }
+                                        }
+                                    }
+                                }
+                                PKT_UNATTENDED_AUTH => {
+                                    if slice.len() > 5 {
+                                        if let Ok(hash_str) = std::str::from_utf8(&slice[5..]) {
+                                            if crate::identity::verify_auth_hash(hash_str) {
+                                                info!("🔓 [HOST] Client authenticated successfully via Unattended Password!");
+                                                let mut maybe_sub = None;
+                                                if let Ok(mut map) = clients_recv.lock() {
+                                                    for sub in map.values_mut() {
+                                                        if sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server {
+                                                            sub.auth_state = AuthState::Approved;
+                                                            sub.last_seen = Instant::now();
+                                                            maybe_sub = Some((sub.addr, sub.lan_addr, sub.relay_id.clone()));
+                                                        }
+                                                    }
+                                                }
+                                                if let Ok(mut pg) = pending_approval_store().lock() {
+                                                    *pg = None;
+                                                }
+                                                // Send immediate AUTH_APPROVED packet!
+                                                let mut auth_pkt = Vec::with_capacity(12);
+                                                auth_pkt.extend_from_slice(MAGIC_DSKY);
+                                                auth_pkt.push(PKT_AUTH_STATUS);
+                                                auth_pkt.push(AUTH_APPROVED);
+                                                auth_pkt.extend_from_slice(&host_lan_bytes);
+                                                if from_addr != target_server {
+                                                    let _ = socket_recv.send_to(&auth_pkt, from_addr).await;
+                                                }
+                                                if let Some((_sub_addr, sub_lan, sub_relay)) = maybe_sub {
+                                                    if let Some(l_addr) = sub_lan {
+                                                        if l_addr != from_addr {
+                                                            let _ = socket_recv.send_to(&auth_pkt, l_addr).await;
+                                                        }
+                                                    }
+                                                    if !sub_relay.is_empty() {
+                                                        let relay_auth = wrap_relay_packet(&sub_relay, &auth_pkt);
+                                                        let _ = socket_recv.send_to(&relay_auth, target_server).await;
+                                                    }
+                                                }
+                                                crate::platform::ui::request_main_redraw();
+                                            } else {
+                                                warn!("🔒 [HOST] Invalid unattended password hash attempt from {}", from_addr);
+                                            }
+                                        }
+                                    }
+                                }
+                                PKT_CHAT_MESSAGE => {
+                                    if slice.len() > 5 {
+                                        if let Ok(text) = std::str::from_utf8(&slice[5..]) {
+                                            crate::p2p::receive_chat_message("Client", text);
+                                            crate::platform::ui::request_main_redraw();
                                         }
                                     }
                                 }

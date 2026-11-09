@@ -27,6 +27,9 @@ pub const PKT_ADMIN_REQ: u8 = 0x0D;
 pub const PKT_ADMIN_RESP: u8 = 0x0E;
 pub const PKT_AUDIO_CHUNK: u8 = 0x0F;
 pub const PKT_CURSOR_SHAPE: u8 = 0x10;
+pub const PKT_UNATTENDED_CHALLENGE: u8 = 0x11;
+pub const PKT_UNATTENDED_AUTH: u8 = 0x12;
+pub const PKT_CHAT_MESSAGE: u8 = 0x13;
 
 pub static CLIENT_REMOTE_CURSOR_SHAPE: AtomicU8 = AtomicU8::new(0);
 
@@ -41,6 +44,7 @@ pub fn get_remote_cursor_shape() -> u8 {
 pub const AUTH_PENDING: u8 = 0;
 pub const AUTH_APPROVED: u8 = 1;
 pub const AUTH_DECLINED: u8 = 2;
+pub const AUTH_REQUIRES_PASSWORD: u8 = 3;
 
 #[derive(Clone)]
 pub struct RemoteFrame {
@@ -57,8 +61,21 @@ pub enum SessionStatus {
     Idle,
     Connecting(String),
     WaitingApproval(String),
+    PasswordRequired(String),
     Connected(String),
     Error(String),
+}
+
+static UNATTENDED_AUTH_RESPONSE: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+pub fn submit_unattended_password(pwd: &str) {
+    if let Ok(mut g) = UNATTENDED_AUTH_RESPONSE.get_or_init(|| Mutex::new(None)).lock() {
+        *g = Some(pwd.to_string());
+    }
+}
+
+pub fn take_unattended_password() -> Option<String> {
+    UNATTENDED_AUTH_RESPONSE.get_or_init(|| Mutex::new(None)).lock().ok().and_then(|mut g| g.take())
 }
 
 #[derive(Clone, Debug)]

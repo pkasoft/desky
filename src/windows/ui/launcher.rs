@@ -51,6 +51,7 @@ static CURRENT_EDIT_FONT: AtomicIsize = AtomicIsize::new(0);
 
 pub static LOCAL_DESKY_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 pub static BOTTOM_TAB_RADAR: AtomicBool = AtomicBool::new(false);
+pub static BOTTOM_CARD3_TAB: AtomicU8 = AtomicU8::new(0); // 0 = Recent Sessions, 1 = Address Book, 2 = LAN Radar
 static STATUS_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub fn request_main_redraw() {
@@ -654,13 +655,14 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         // 3. Card 3: RECENT SESSIONS & LAN RADAR (Bottom Left)
         draw_rounded_box(mem_dc, l.col1_x, l.col_y, l.col_w, l.col_h, PK_CARD, PK_CARD_BORDER, 12);
 
-        let is_radar = BOTTOM_TAB_RADAR.load(Ordering::Relaxed);
+        let card3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
         let lan_peers = crate::p2p::get_lan_peers();
+        let contacts = crate::identity::load_address_book();
 
         // Tag 1: RECENT SESSIONS
-        let tag3_w = (124.0 * l.font_scale) as i32;
+        let tag3_w = (112.0 * l.font_scale) as i32;
         let tag3_h = (22.0 * l.font_scale) as i32;
-        let (t1_bg, t1_border, t1_fg) = if !is_radar {
+        let (t1_bg, t1_border, t1_fg) = if card3_tab == 0 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
@@ -677,10 +679,34 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         };
         let _ = DrawTextW(mem_dc, &mut tag3, &mut tag3_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        // Tag 2: LAN RADAR (with peer count)
-        let tag_radar_x = l.col1_x + 18 + tag3_w + 8;
-        let tag_radar_w = (116.0 * l.font_scale) as i32;
-        let (t2_bg, t2_border, t2_fg) = if is_radar {
+        // Tag 2: ADDRESS BOOK
+        let tag_ab_x = l.col1_x + 18 + tag3_w + 6;
+        let tag_ab_w = (110.0 * l.font_scale) as i32;
+        let (tab_bg, tab_border, tab_fg) = if card3_tab == 1 {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(mem_dc, tag_ab_x, l.col_y + 14, tag_ab_w, tag3_h, tab_bg, tab_border, 6);
+        SetTextColor(mem_dc, tab_fg);
+        let ab_text = if !contacts.is_empty() {
+            format!("ADDRESS BOOK ({})", contacts.len())
+        } else {
+            "ADDRESS BOOK".to_string()
+        };
+        let mut tag_ab_utf16: Vec<u16> = ab_text.encode_utf16().collect();
+        let mut tag_ab_rc = RECT {
+            left: tag_ab_x,
+            top: l.col_y + 14,
+            right: tag_ab_x + tag_ab_w,
+            bottom: l.col_y + 14 + tag3_h,
+        };
+        let _ = DrawTextW(mem_dc, &mut tag_ab_utf16, &mut tag_ab_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+        // Tag 3: LAN RADAR (with peer count)
+        let tag_radar_x = tag_ab_x + tag_ab_w + 6;
+        let tag_radar_w = (96.0 * l.font_scale) as i32;
+        let (t2_bg, t2_border, t2_fg) = if card3_tab == 2 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
@@ -701,8 +727,8 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         };
         let _ = DrawTextW(mem_dc, &mut tag_radar_utf16, &mut tag_radar_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        // When in Radar mode, show Scan button at top-right
-        if is_radar {
+        // When in Radar mode, show Scan button at top-right; in Address Book, show [+ Add]
+        if card3_tab == 2 {
             let is_scanning = is_lan_scan_active();
             let scan_w = if is_scanning { 74 } else { 54 };
             let scan_x = l.col1_x + l.col_w - scan_w - 18;
@@ -722,9 +748,23 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 bottom: l.col_y + 14 + tag3_h,
             };
             let _ = DrawTextW(mem_dc, &mut scan_txt, &mut scan_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        } else if card3_tab == 1 {
+            let add_w = 54;
+            let add_x = l.col1_x + l.col_w - add_w - 18;
+            draw_rounded_box(mem_dc, add_x, l.col_y + 14, add_w, tag3_h, PK_GREEN_TINT, PK_GREEN, 6);
+            let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
+            SetTextColor(mem_dc, PK_GREEN_DARK);
+            let mut add_txt: Vec<u16> = "+ Add".encode_utf16().collect();
+            let mut add_rc = RECT {
+                left: add_x,
+                top: l.col_y + 14,
+                right: add_x + add_w,
+                bottom: l.col_y + 14 + tag3_h,
+            };
+            let _ = DrawTextW(mem_dc, &mut add_txt, &mut add_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         }
 
-        if is_radar {
+        if card3_tab == 2 {
             // Render LAN Radar View
             if lan_peers.is_empty() {
                 crate::ui::draw_radio(mem_dc, l.col1_x + 22, l.col_y + 50, 18, PK_GREEN, 2);
@@ -818,6 +858,98 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                         bottom: pill_btn_y + pill_btn_h,
                     };
                     let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                }
+            }
+        } else if card3_tab == 1 {
+            // Render Address Book View
+            if contacts.is_empty() {
+                let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
+                SetTextColor(mem_dc, PK_MUTED);
+                let mut empty_msg1: Vec<u16> = "No contacts in Address Book yet.".encode_utf16().collect();
+                let mut empty_rc1 = RECT {
+                    left: l.col1_x + 20,
+                    top: l.col_y + 48,
+                    right: l.col1_x + l.col_w - 20,
+                    bottom: l.col_y + 70,
+                };
+                let _ = DrawTextW(mem_dc, &mut empty_msg1, &mut empty_rc1, DT_SINGLELINE | DT_VCENTER);
+
+                let mut empty_msg2: Vec<u16> =
+                    "Enter a 9-digit Desky ID above and click [+ Add] to save it here with a nickname."
+                        .encode_utf16()
+                        .collect();
+                let mut empty_rc2 = RECT {
+                    left: l.col1_x + 20,
+                    top: l.col_y + 72,
+                    right: l.col1_x + l.col_w - 20,
+                    bottom: l.col_y + 112,
+                };
+                let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
+            } else {
+                let item_h = (44.0 * l.font_scale) as i32;
+                let item_w = l.col_w - 36;
+                for (idx, entry) in contacts.iter().take(2).enumerate() {
+                    let item_x = l.col1_x + 18;
+                    let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+
+                    draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
+
+                    crate::ui::draw_monitor(mem_dc, item_x + 10, item_y + 13, 18, PK_GREEN, 2);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
+                    SetTextColor(mem_dc, PK_TEXT);
+                    let mut alias_txt: Vec<u16> = entry.alias.encode_utf16().collect();
+                    let mut alias_rc = RECT {
+                        left: item_x + 36,
+                        top: item_y + 4,
+                        right: item_x + item_w - 105,
+                        bottom: item_y + 24,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut alias_txt, &mut alias_rc, DT_SINGLELINE | DT_VCENTER);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
+                    SetTextColor(mem_dc, PK_MUTED);
+                    let pwd_info = if entry.saved_password.is_some() { " | [🔑 Unattended]" } else { "" };
+                    let sub_info = format!("{} | {}{}", entry.id, entry.group, pwd_info);
+                    let mut sub_txt: Vec<u16> = sub_info.encode_utf16().collect();
+                    let mut sub_rc = RECT {
+                        left: item_x + 36,
+                        top: item_y + 24,
+                        right: item_x + item_w - 105,
+                        bottom: item_y + item_h - 4,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut sub_txt, &mut sub_rc, DT_SINGLELINE | DT_VCENTER);
+
+                    let pill_btn_w = 66;
+                    let pill_btn_h = 28;
+                    let pill_btn_x = item_x + item_w - pill_btn_w - 28;
+                    let pill_btn_y = item_y + (item_h - pill_btn_h) / 2;
+                    draw_rounded_box(mem_dc, pill_btn_x, pill_btn_y, pill_btn_w, pill_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
+
+                    let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
+                    SetTextColor(mem_dc, PK_GREEN);
+                    let mut c_txt: Vec<u16> = "Connect".encode_utf16().collect();
+                    let mut c_rc = RECT {
+                        left: pill_btn_x,
+                        top: pill_btn_y,
+                        right: pill_btn_x + pill_btn_w,
+                        bottom: pill_btn_y + pill_btn_h,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+                    let del_btn_w = 20;
+                    let del_btn_x = item_x + item_w - del_btn_w - 4;
+                    let del_btn_y = pill_btn_y;
+                    draw_rounded_box(mem_dc, del_btn_x, del_btn_y, del_btn_w, pill_btn_h, PK_CARD, PK_CARD_BORDER, 4);
+                    SetTextColor(mem_dc, PK_MUTED);
+                    let mut del_txt: Vec<u16> = "×".encode_utf16().collect();
+                    let mut del_rc = RECT {
+                        left: del_btn_x,
+                        top: del_btn_y,
+                        right: del_btn_x + del_btn_w,
+                        bottom: del_btn_y + pill_btn_h,
+                    };
+                    let _ = DrawTextW(mem_dc, &mut del_txt, &mut del_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
                 }
             }
         } else {
@@ -1028,26 +1160,36 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         return true;
     }
 
-    // 4. Card 3 Header Tabs: RECENT SESSIONS vs LAN RADAR
-    let tag3_w = (124.0 * l.font_scale) as i32;
+    // 4. Card 3 Header Tabs: RECENT SESSIONS vs ADDRESS BOOK vs LAN RADAR
+    let tag3_w = (112.0 * l.font_scale) as i32;
     let tag3_h = (22.0 * l.font_scale) as i32;
-    let tag_radar_x = l.col1_x + 18 + tag3_w + 8;
-    let tag_radar_w = (116.0 * l.font_scale) as i32;
-    let is_radar = BOTTOM_TAB_RADAR.load(Ordering::Relaxed);
+    let tag_ab_x = l.col1_x + 18 + tag3_w + 6;
+    let tag_ab_w = (110.0 * l.font_scale) as i32;
+    let tag_radar_x = tag_ab_x + tag_ab_w + 6;
+    let tag_radar_w = (96.0 * l.font_scale) as i32;
+    let card3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
 
     if y >= l.col_y + 14 && y <= l.col_y + 14 + tag3_h {
         if x >= l.col1_x + 18 && x <= l.col1_x + 18 + tag3_w {
+            BOTTOM_CARD3_TAB.store(0, Ordering::Relaxed);
+            BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            return true;
+        }
+        if x >= tag_ab_x && x <= tag_ab_x + tag_ab_w {
+            BOTTOM_CARD3_TAB.store(1, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
         if x >= tag_radar_x && x <= tag_radar_x + tag_radar_w {
+            BOTTOM_CARD3_TAB.store(2, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(true, Ordering::Relaxed);
             trigger_lan_radar_scan();
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
-        if is_radar {
+        if card3_tab == 2 {
             let is_scanning = is_lan_scan_active();
             let scan_w = if is_scanning { 74 } else { 54 };
             let scan_x = l.col1_x + l.col_w - scan_w - 18;
@@ -1056,11 +1198,34 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return true;
             }
+        } else if card3_tab == 1 {
+            let add_w = 54;
+            let add_x = l.col1_x + l.col_w - add_w - 18;
+            if x >= add_x && x <= add_x + add_w {
+                let mut buffer = [0u16; 128];
+                let len = GetWindowTextLengthW(HWND_EDIT_TARGET) as usize;
+                let raw_input = if len > 0 {
+                    let _ = GetWindowTextW(HWND_EDIT_TARGET, &mut buffer);
+                    String::from_utf16_lossy(&buffer[..len])
+                } else {
+                    String::new()
+                };
+                let digits: String = raw_input.chars().filter(|c| c.is_ascii_digit()).collect();
+                if digits.len() == 9 {
+                    let alias = format!("Desk {}", &digits[6..9]);
+                    crate::identity::add_or_update_contact(&digits, &alias, "Favorites", None);
+                    append_status_log(&format!("Saved ID {} to Address Book!", &digits));
+                } else {
+                    append_status_log("[!] Enter a 9-digit Desky ID above, then click [+ Add]");
+                }
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return true;
+            }
         }
     }
 
-    // 5. Card 3 Content: LAN Radar peers or Recent Sessions
-    if is_radar {
+    // 5. Card 3 Content: LAN Radar peers, Address Book, or Recent Sessions
+    if card3_tab == 2 {
         let lan_peers = crate::p2p::get_lan_peers();
         let item_h = (44.0 * l.font_scale) as i32;
         let item_w = l.col_w - 36;
@@ -1084,6 +1249,42 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
                         target_display,
                         peer.ip.map(|i| i.to_string()).unwrap_or_default()
                     ));
+                    super::viewport::spawn_or_add_tab_viewport(&target_display);
+                } else {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
+        }
+    } else if card3_tab == 1 {
+        let contacts = crate::identity::load_address_book();
+        let item_h = (44.0 * l.font_scale) as i32;
+        let item_w = l.col_w - 36;
+        for (idx, entry) in contacts.iter().take(2).enumerate() {
+            let item_x = l.col1_x + 18;
+            let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+
+            if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
+                let wide_id: Vec<u16> = entry.id.encode_utf16().chain(std::iter::once(0)).collect();
+                let _ = SetWindowTextW(HWND_EDIT_TARGET, PCWSTR(wide_id.as_ptr()));
+
+                let pill_btn_w = 66;
+                let pill_btn_x = item_x + item_w - pill_btn_w - 28;
+                let del_btn_w = 20;
+                let del_btn_x = item_x + item_w - del_btn_w - 4;
+
+                if x >= del_btn_x {
+                    crate::identity::delete_contact(&entry.id);
+                    append_status_log(&format!("Removed {} from Address Book", entry.alias));
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return true;
+                }
+
+                if x >= pill_btn_x {
+                    let target_display = entry.id.clone();
+                    info!("Initiating session to Address Book contact: {} ({})", entry.alias, target_display);
+                    crate::identity::save_recent_session(&target_display);
+                    append_status_log(&format!("Connecting to {} ({}) from Address Book...", entry.alias, target_display));
                     super::viewport::spawn_or_add_tab_viewport(&target_display);
                 } else {
                     let _ = InvalidateRect(Some(hwnd), None, false);

@@ -6,11 +6,11 @@ use crate::p2p::state::{
     set_active_session_target,
     set_session_status, update_client_preferences, wrap_relay_packet, SessionStatus,
     ACTIVE_CHROMA_444, ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED,
-    AUTH_PENDING, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
+    AUTH_PENDING, AUTH_REQUIRES_PASSWORD, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
     CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
     PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
     PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_ADMIN_RESP,
-    PKT_AUDIO_CHUNK, PKT_CURSOR_SHAPE,
+    PKT_AUDIO_CHUNK, PKT_CURSOR_SHAPE, PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE,
     admin_notify, pop_outgoing_admin_packet, feed_admin_resp_chunk, store_admin_response,
     clipboard_notify, pop_outgoing_clipboard, file_notify, pop_outgoing_file_packet,
     handle_incoming_file_start, handle_incoming_file_chunk, handle_incoming_file_finish,
@@ -241,6 +241,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut abr_frames_completed: u32 = 0;
             let mut abr_frames_dropped: u32 = 0;
             let mut abr_tier: i32 = 2;
+            let mut current_challenge_salt: Option<String> = None;
 
             while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                 && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
@@ -441,6 +442,44 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
+                // Check for submitted unattended password
+                if let Some(pwd) = crate::p2p::take_unattended_password() {
+                    let salt = current_challenge_salt.clone().unwrap_or_else(|| "0000000000000000".to_string());
+                    let hash = crate::identity::compute_auth_hash(&salt, &pwd);
+                    let mut auth_pkt = Vec::with_capacity(5 + hash.len());
+                    auth_pkt.extend_from_slice(MAGIC_DSKY);
+                    auth_pkt.push(PKT_UNATTENDED_AUTH);
+                    auth_pkt.extend_from_slice(hash.as_bytes());
+                    if let Some(p_addr) = peer_addr {
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&auth_pkt, p_addr).await;
+                        }
+                    }
+                    if !is_direct_peer {
+                        let relay = wrap_relay_packet(&norm_target, &auth_pkt);
+                        let _ = socket.send_to(&relay, server_addr).await;
+                    }
+                    set_session_status(SessionStatus::Connecting(display_target.clone()));
+                }
+
+                // Flush outgoing chat messages
+                for msg in crate::p2p::pull_outgoing_messages() {
+                    let msg_bytes = msg.as_bytes();
+                    let mut pkt = Vec::with_capacity(5 + msg_bytes.len());
+                    pkt.extend_from_slice(MAGIC_DSKY);
+                    pkt.push(PKT_CHAT_MESSAGE);
+                    pkt.extend_from_slice(msg_bytes);
+                    if let Some(p_addr) = peer_addr {
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&pkt, p_addr).await;
+                        }
+                    }
+                    if !is_direct_peer {
+                        let relay = wrap_relay_packet(&norm_target, &pkt);
+                        let _ = socket.send_to(&relay, server_addr).await;
+                    }
+                }
+
                 // Flush queued remote input events immediately over direct P2P or Relay
                 let queued_inputs: Vec<InputEvent> = {
                     if let Ok(mut q) = input_store().lock() {
@@ -549,6 +588,13 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                     set_session_status(SessionStatus::Error(msg.clone()));
                                                     crate::platform::ui::append_status_log(&format!("[-] {}", msg));
                                                     break;
+                                                }
+                                                AUTH_REQUIRES_PASSWORD => {
+                                                    if !received_any_frame {
+                                                        set_session_status(SessionStatus::PasswordRequired(
+                                                            display_target.clone(),
+                                                        ));
+                                                    }
                                                 }
                                                 _ => {}
                                             }
@@ -686,6 +732,40 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             let total_chunks = u16::from_le_bytes(slice[11..13].try_into().unwrap());
                                             if let Some(resp) = feed_admin_resp_chunk(msg_id, chunk_idx, total_chunks, &slice[13..]) {
                                                 store_admin_response(resp);
+                                                crate::platform::ui::request_main_redraw();
+                                            }
+                                        }
+                                    }
+                                    PKT_UNATTENDED_CHALLENGE => {
+                                        if slice.len() > 5 {
+                                            let salt = String::from_utf8_lossy(&slice[5..]).to_string();
+                                            current_challenge_salt = Some(salt.clone());
+                                            let saved_pwd = crate::identity::find_contact(&norm_target)
+                                                .and_then(|c| c.saved_password);
+                                            if let Some(pwd) = saved_pwd {
+                                                let hash = crate::identity::compute_auth_hash(&salt, &pwd);
+                                                let mut auth_pkt = Vec::with_capacity(5 + hash.len());
+                                                auth_pkt.extend_from_slice(MAGIC_DSKY);
+                                                auth_pkt.push(PKT_UNATTENDED_AUTH);
+                                                auth_pkt.extend_from_slice(hash.as_bytes());
+                                                if let Some(p_addr) = peer_addr {
+                                                    if p_addr != server_addr {
+                                                        let _ = socket.send_to(&auth_pkt, p_addr).await;
+                                                    }
+                                                }
+                                                if !is_direct_peer {
+                                                    let relay = wrap_relay_packet(&norm_target, &auth_pkt);
+                                                    let _ = socket.send_to(&relay, server_addr).await;
+                                                }
+                                            } else {
+                                                set_session_status(SessionStatus::PasswordRequired(display_target.clone()));
+                                            }
+                                        }
+                                    }
+                                    PKT_CHAT_MESSAGE => {
+                                        if slice.len() > 5 {
+                                            if let Ok(text) = std::str::from_utf8(&slice[5..]) {
+                                                crate::p2p::receive_chat_message("Host", text);
                                                 crate::platform::ui::request_main_redraw();
                                             }
                                         }

@@ -258,6 +258,13 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 toggle_whiteboard();
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return LRESULT(0);
+            } else if hit == 9010 {
+                let is_open = crate::p2p::toggle_chat();
+                if is_open {
+                    crate::p2p::mark_chat_read();
+                }
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
             } else if hit == 9009 {
                 if crate::recorder::is_recording() {
                     if let Some((path, total_bytes, total_frames, dur)) =
@@ -386,6 +393,21 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                         return LRESULT(0);
                     }
                 } else {
+                    if crate::p2p::is_chat_open() {
+                        let chat_hit = super::chat_hud::hit_test_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT);
+                        if chat_hit > 0 {
+                            if chat_hit == super::chat_hud::BTN_CHAT_CLOSE {
+                                crate::p2p::set_chat_open(false);
+                            } else if chat_hit == super::chat_hud::BTN_CHAT_CLEAR {
+                                crate::p2p::clear_chat_history();
+                            } else if chat_hit == super::chat_hud::BTN_CHAT_SEND {
+                                super::chat_hud::submit_chat_input();
+                            }
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                            return LRESULT(0);
+                        }
+                    }
+
                     let latest_frame = crate::p2p::get_latest_remote_frame();
                     let status = crate::p2p::get_session_status();
                     let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
@@ -397,6 +419,14 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                         if hit == super::session_status_view::BTN_CANCEL_CONNECTION {
                             crate::p2p::stop_client_session();
                             switch_session_tab(0);
+                            return LRESULT(0);
+                        } else if hit == super::session_status_view::BTN_SUBMIT_PASSWORD {
+                            let pwd = super::session_status_view::get_password_input();
+                            if !pwd.is_empty() {
+                                crate::p2p::submit_unattended_password(&pwd);
+                                super::session_status_view::clear_password_input();
+                                let _ = InvalidateRect(Some(hwnd), None, false);
+                            }
                             return LRESULT(0);
                         } else if hit == super::session_status_view::BTN_RETRY_CONNECTION {
                             let tabs = get_session_tabs();
@@ -548,6 +578,15 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active > 0 && crate::p2p::is_chat_open() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    super::chat_hud::handle_chat_mousemove(
+                        hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
+                    );
+                }
                 if active == 0 {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
@@ -641,11 +680,38 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if active == 0 {
                 return LRESULT(0);
             }
-            if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
-                if let Some(c) = char::from_u32(wparam.0 as u32) {
-                    let _ = crate::windows::ui::admin::handle_admin_char(c);
+            if let Some(c) = char::from_u32(wparam.0 as u32) {
+                if crate::p2p::is_chat_open() {
+                    if c == '\r' || c == '\n' {
+                        super::chat_hud::submit_chat_input();
+                    } else if c == '\x08' {
+                        super::chat_hud::pop_chat_char();
+                    } else if !c.is_control() {
+                        super::chat_hud::append_chat_char(c);
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
                 }
-                return LRESULT(0);
+                let status = crate::p2p::get_session_status();
+                if matches!(status, crate::p2p::SessionStatus::PasswordRequired(_)) {
+                    if c == '\r' || c == '\n' {
+                        let pwd = super::session_status_view::get_password_input();
+                        if !pwd.is_empty() {
+                            crate::p2p::submit_unattended_password(&pwd);
+                            super::session_status_view::clear_password_input();
+                        }
+                    } else if c == '\x08' {
+                        super::session_status_view::pop_password_char();
+                    } else if !c.is_control() {
+                        super::session_status_view::append_password_char(c);
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                }
+                if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                    let _ = crate::windows::ui::admin::handle_admin_char(c);
+                    return LRESULT(0);
+                }
             }
             LRESULT(0)
         }
@@ -657,6 +723,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 }
                 return LRESULT(0);
             }
+            if crate::p2p::is_chat_open() && wparam.0 != 0x1B {
+                return LRESULT(0);
+            }
             if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 let _ = crate::windows::ui::admin::handle_admin_key(wparam.0 as u32);
                 return LRESULT(0);
@@ -664,6 +733,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if wparam.0 == 0x1B {
                 if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                } else if crate::p2p::is_chat_open() {
+                    crate::p2p::set_chat_open(false);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 } else if is_whiteboard_active() {
                     set_whiteboard_active(false);
                 } else if is_quick_actions_open() {

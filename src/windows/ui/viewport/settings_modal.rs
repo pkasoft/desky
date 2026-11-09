@@ -6,13 +6,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, DrawTextW, FillRect, SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD, HDC, HGDIOBJ,
+    DT_CENTER, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_SEMIBOLD, HDC, HGDIOBJ,
     InvalidateRect, TRANSPARENT,
 };
 
 use super::theme::{
     create_segoe_font, draw_rounded_box, format_bitrate, PK_BG, PK_CARD,
-    PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_TEXT,
+    PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
 };
 
 // Full-Screen Settings Page state
@@ -69,13 +69,14 @@ pub unsafe fn draw_fullscreen_settings_view(
     // Top Navigation & Close Bar
     let tab_y = top_y + 14;
     let tab_h = 32;
-    let cat_w = (panel_w - 110) / 2;
-    let cat0_x = panel_x;
-    let cat1_x = cat0_x + cat_w + 8;
     let close_w = 84;
     let close_x = panel_x + panel_w - close_w;
+    let cat_w = (panel_w - close_w - 24) / 3;
+    let cat0_x = panel_x;
+    let cat1_x = cat0_x + cat_w + 6;
+    let cat2_x = cat1_x + cat_w + 6;
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(1);
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
 
     // Category 0: Stream & Display Tab Button
     let (c0_bg, c0_border, c0_fg) = if active_cat == 0 {
@@ -95,7 +96,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     let _ = DrawTextW(hdc, &mut c0_txt, &mut c0_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 1: Connection Info Tab Button
+    // Category 1: Security & Unattended Tab Button
     let (c1_bg, c1_border, c1_fg) = if active_cat == 1 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
@@ -103,7 +104,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     draw_rounded_box(hdc, cat1_x, tab_y, cat_w, tab_h, c1_bg, c1_border, 6);
     SetTextColor(hdc, c1_fg);
-    let mut c1_txt: Vec<u16> = "Connection Info".encode_utf16().collect();
+    let mut c1_txt: Vec<u16> = "Security".encode_utf16().collect();
     let mut c1_rc = RECT {
         left: cat1_x,
         top: tab_y,
@@ -111,6 +112,23 @@ pub unsafe fn draw_fullscreen_settings_view(
         bottom: tab_y + tab_h,
     };
     let _ = DrawTextW(hdc, &mut c1_txt, &mut c1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    // Category 2: Connection Info Tab Button
+    let (c2_bg, c2_border, c2_fg) = if active_cat == 2 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else {
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, cat2_x, tab_y, cat_w, tab_h, c2_bg, c2_border, 6);
+    SetTextColor(hdc, c2_fg);
+    let mut c2_txt: Vec<u16> = "Connection Info".encode_utf16().collect();
+    let mut c2_rc = RECT {
+        left: cat2_x,
+        top: tab_y,
+        right: cat2_x + cat_w,
+        bottom: tab_y + tab_h,
+    };
+    let _ = DrawTextW(hdc, &mut c2_txt, &mut c2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     // Close Button [ Close × ]
     draw_rounded_box(hdc, close_x, tab_y, close_w, tab_h, PK_CARD, PK_CARD_BORDER, 6);
@@ -263,6 +281,66 @@ pub unsafe fn draw_fullscreen_settings_view(
             bottom: done_y + done_h,
         };
         let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    } else if active_cat == 1 {
+        // Category 1: Unattended Security
+        let is_unattended = crate::identity::is_unattended_enabled();
+        let sec_y = top_y + 60;
+
+        // Card 1: Status box
+        draw_rounded_box(hdc, panel_x, sec_y, panel_w, 76, PK_INPUT_BG, PK_CARD_BORDER, 8);
+        crate::ui::draw_lock(hdc, panel_x + 16, sec_y + 16, 24, if is_unattended { PK_GREEN } else { PK_MUTED }, 2);
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, if is_unattended { PK_GREEN_DARK } else { PK_TEXT });
+        let status_title = if is_unattended { "Unattended Access: ACTIVE" } else { "Unattended Access: DISABLED" };
+        let mut st_w: Vec<u16> = status_title.encode_utf16().collect();
+        let mut st_rc = RECT { left: panel_x + 50, top: sec_y + 10, right: panel_x + panel_w - 16, bottom: sec_y + 34 };
+        let _ = DrawTextW(hdc, &mut st_w, &mut st_rc, DT_SINGLELINE | DT_VCENTER);
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_MUTED);
+        let status_desc = if is_unattended {
+            "Permanent master password is set with salted SHA-256 hash. Authorized remote desks authenticate automatically."
+        } else {
+            "Unattended access is off. Incoming connection requests must be manually accepted at this desk."
+        };
+        let mut sd_w: Vec<u16> = status_desc.encode_utf16().collect();
+        let mut sd_rc = RECT { left: panel_x + 50, top: sec_y + 36, right: panel_x + panel_w - 16, bottom: sec_y + 70 };
+        let _ = DrawTextW(hdc, &mut sd_w, &mut sd_rc, DT_WORDBREAK);
+
+        // Card 2: Action Toggle Button
+        let act_y = sec_y + 92;
+        let btn_w = 230;
+        let btn_h = 40;
+        let btn_x = panel_x + (panel_w - btn_w) / 2;
+
+        if is_unattended {
+            draw_rounded_box(hdc, btn_x, act_y, btn_w, btn_h, COLORREF(0x00EBF0FF), PK_RED, 6);
+            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+            SetTextColor(hdc, PK_RED);
+            let mut btn_txt: Vec<u16> = "Disable Unattended Access".encode_utf16().collect();
+            let mut btn_rc = RECT { left: btn_x, top: act_y, right: btn_x + btn_w, bottom: act_y + btn_h };
+            let _ = DrawTextW(hdc, &mut btn_txt, &mut btn_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        } else {
+            draw_rounded_box(hdc, btn_x, act_y, btn_w, btn_h, PK_GREEN_TINT, PK_GREEN, 6);
+            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+            SetTextColor(hdc, PK_GREEN_DARK);
+            let mut btn_txt: Vec<u16> = "Enable Master Password".encode_utf16().collect();
+            let mut btn_rc = RECT { left: btn_x, top: act_y, right: btn_x + btn_w, bottom: act_y + btn_h };
+            let _ = DrawTextW(hdc, &mut btn_txt, &mut btn_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        }
+
+        // Bottom [ Done ] Button
+        let done_y = act_y + 64;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
+        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
+        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else {
         let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
         let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
@@ -351,11 +429,12 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
 
     let tab_y = top_y + 14;
     let tab_h = 32;
-    let cat_w = (panel_w - 110) / 2;
-    let cat0_x = panel_x;
-    let cat1_x = cat0_x + cat_w + 8;
     let close_w = 84;
     let close_x = panel_x + panel_w - close_w;
+    let cat_w = (panel_w - close_w - 24) / 3;
+    let cat0_x = panel_x;
+    let cat1_x = cat0_x + cat_w + 6;
+    let cat2_x = cat1_x + cat_w + 6;
 
     // Close Button [ Close × ]
     if client_x >= close_x && client_x <= close_x + close_w && client_y >= tab_y && client_y <= tab_y + tab_h {
@@ -378,7 +457,14 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         return true;
     }
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(1);
+    // Category 2 Tab
+    if client_x >= cat2_x && client_x <= cat2_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
+        SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
+        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+        return true;
+    }
+
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
 
     if active_cat == 0 {
         let sec0_y = top_y + 60;
@@ -445,6 +531,32 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
 
         // Done Button
         let done_y = sec0_y + step * 3 + step + 6;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
+            SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+    } else if active_cat == 1 {
+        let sec_y = top_y + 60;
+        let act_y = sec_y + 92;
+        let btn_w = 230;
+        let btn_h = 40;
+        let btn_x = panel_x + (panel_w - btn_w) / 2;
+
+        if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= act_y && client_y <= act_y + btn_h {
+            if crate::identity::is_unattended_enabled() {
+                crate::identity::disable_unattended();
+            } else {
+                crate::identity::set_unattended_password("Desky@2026");
+            }
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+
+        let done_y = act_y + 64;
         let done_w = 140;
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;

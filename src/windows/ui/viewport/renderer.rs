@@ -61,6 +61,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
         let mut last_cat: u8 = 255;
         let mut last_session_status = crate::p2p::SessionStatus::Idle;
         let mut last_status_hover: i32 = -1;
+        let mut last_chat_open: bool = false;
+        let mut last_chat_hover: i32 = -1;
         let mut last_ui_refresh = Instant::now();
 
         let mut cached_mem_dc: Option<HDC> = None;
@@ -96,6 +98,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                 let cat_val = SETTINGS_CATEGORY.load(Ordering::Relaxed);
                 let session_status = crate::p2p::get_session_status();
                 let status_hover = super::session_status_view::get_status_hover_state();
+                let chat_open = crate::p2p::is_chat_open();
+                let chat_hover = super::chat_hud::get_chat_hover_state();
                 let tabs = get_session_tabs();
 
                 let latest_frame = crate::p2p::get_latest_remote_frame();
@@ -114,7 +118,9 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     || modal_open != last_modal
                     || cat_val != last_cat
                     || session_status != last_session_status
-                    || status_hover != last_status_hover;
+                    || status_hover != last_status_hover
+                    || chat_open != last_chat_open
+                    || chat_hover != last_chat_hover;
 
                 let periodic_refresh = last_ui_refresh.elapsed() >= Duration::from_millis(50);
 
@@ -133,6 +139,8 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     last_cat = cat_val;
                     last_session_status = session_status.clone();
                     last_status_hover = status_hover;
+                    last_chat_open = chat_open;
+                    last_chat_hover = chat_hover;
                     last_ui_refresh = Instant::now();
 
                     let toolbar_h = if toolbar_visible { TOOLBAR_HEIGHT } else { 0 };
@@ -324,6 +332,9 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                                 draw_whiteboard_palette(mem_dc, client_w, TOOLBAR_HEIGHT, hover_state);
                             }
                             file_hud::draw_file_transfer_hud(mem_dc, client_w, client_h);
+                            if crate::p2p::is_chat_open() && active_idx > 0 {
+                                super::chat_hud::draw_chat_hud(mem_dc, client_w, client_h, toolbar_h, chat_hover);
+                            }
                         }
 
                         let _ = BitBlt(hdc_window, 0, 0, client_w, client_h, Some(mem_dc), 0, 0, SRCCOPY);

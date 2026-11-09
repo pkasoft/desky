@@ -5,6 +5,7 @@
 //! - `tabs.rs`: Multi-session tabs, switching, closing & window detachment
 //! - `renderer.rs`: Double-buffered 60-120 FPS video frame canvas renderer
 //! - `session_status_view.rs`: Dedicated session connecting, waiting & error/alert card renderer
+//! - `chat_hud.rs`: Real-time in-session encrypted text messaging panel
 //! - `toolbar.rs`: Compact floating top toolbar pill & Lucide vector icons
 //! - `whiteboard.rs`: Interactive screen pen & real-time GDI+ polyline annotations
 //! - `quick_actions.rs`: Instant system hotkeys & admin shortcuts dropdown
@@ -12,6 +13,7 @@
 //! - `file_hud.rs`: In-canvas drag-and-drop file transfer progress HUD
 //! - `input_injector.rs`: High-precision coordinate translation & Win32 input injection
 
+pub mod chat_hud;
 pub mod file_hud;
 pub mod input_injector;
 pub mod quick_actions;
@@ -24,6 +26,8 @@ pub mod whiteboard;
 pub mod window;
 
 pub use crate::windows::ui::theme;
+#[allow(unused_imports)]
+pub use chat_hud::*;
 #[allow(unused_imports)]
 pub use file_hud::*;
 #[allow(unused_imports)]

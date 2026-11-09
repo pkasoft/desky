@@ -280,7 +280,7 @@ pub unsafe fn draw_tab_bar(
     draw_rounded_box(hdc, settings_x, mode_y, btn_w, tab_h, s_bg, s_border, 6);
     crate::ui::draw_settings(hdc, settings_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, s_fg, 2);
 
-    let (admin_x, desk_x, priv_x, voice_x, audio_x, rec_x, wb_x, zap_x, mon3_x, mon2_x, mon1_x) = if is_home {
+    let (admin_x, desk_x, priv_x, voice_x, audio_x, rec_x, wb_x, zap_x, mon3_x, mon2_x, mon1_x, chat_x) = if is_home {
         let is_online = crate::p2p::is_server_online();
         let ping = crate::p2p::get_server_ping_ms();
         let (pill_text_str, pill_bg, pill_fg) = if is_online {
@@ -311,9 +311,10 @@ pub unsafe fn draw_tab_bar(
             bottom: mode_y + tab_h,
         };
         let _ = DrawTextW(hdc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     } else {
-        let admin_x = settings_x - btn_w - 5;
+        let chat_x = settings_x - btn_w - 5;
+        let admin_x = chat_x - btn_w - 5;
         let desk_x = admin_x - btn_w - 5;
         let priv_x = desk_x - btn_w - 5;
         let voice_x = priv_x - btn_w - 5;
@@ -450,11 +451,37 @@ pub unsafe fn draw_tab_bar(
         draw_rounded_box(hdc, admin_x, mode_y, btn_w, tab_h, ad_bg, ad_border, 6);
         crate::ui::draw_terminal(hdc, admin_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, ad_fg, 2);
 
-        (admin_x, desk_x, priv_x, voice_x, audio_x, rec_x, wb_x, zap_x, mon3_x, mon2_x, mon1_x)
+        // In-Session Floating Chat (9010)
+        let is_chat = crate::p2p::is_chat_open();
+        let unread = crate::p2p::get_unread_count();
+        let chat_hover = hover_state == 9010;
+        let (c_bg, c_border, c_fg) = if is_chat {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if chat_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        } else {
+            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, chat_x, mode_y, btn_w, tab_h, c_bg, c_border, 6);
+        crate::ui::draw_message_square(hdc, chat_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, c_fg, 2);
+        if unread > 0 {
+            let badge_brush = CreateSolidBrush(PK_RED);
+            let badge_rc = RECT {
+                left: chat_x + btn_w - 9,
+                top: mode_y + 3,
+                right: chat_x + btn_w - 3,
+                bottom: mode_y + 9,
+            };
+            FillRect(hdc, &badge_rc, badge_brush);
+            let _ = DeleteObject(HGDIOBJ(badge_brush.0));
+        }
+
+        (admin_x, desk_x, priv_x, voice_x, audio_x, rec_x, wb_x, zap_x, mon3_x, mon2_x, mon1_x, chat_x)
     };
 
     let tooltip_data: Option<(&str, i32)> = match hover_state {
         9006 => Some((if is_settings_open { "Close Settings" } else { "Settings" }, settings_x + btn_w / 2)),
+        9010 if !is_home => Some((if crate::p2p::is_chat_open() { "Close Chat" } else { "In-Session Chat" }, chat_x + btn_w / 2)),
         9002 if !is_home => Some(("Remote Admin Terminal", admin_x + btn_w / 2)),
         9001 if !is_home => Some(("Desktop View", desk_x + btn_w / 2)),
         9004 if !is_home => Some((if is_privacy { "Privacy Mode: ON" } else { "Privacy Mode" }, priv_x + btn_w / 2)),
@@ -536,7 +563,8 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
 
     let active_idx = ACTIVE_TAB_INDEX.load(std::sync::atomic::Ordering::Relaxed);
     if active_idx > 0 {
-        let admin_x = settings_x - btn_w - 5;
+        let chat_x = settings_x - btn_w - 5;
+        let admin_x = chat_x - btn_w - 5;
         let desk_x = admin_x - btn_w - 5;
         let priv_x = desk_x - btn_w - 5;
         let voice_x = priv_x - btn_w - 5;
@@ -550,6 +578,7 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
         let mon1_x = mon2_x - btn_w - 4;
 
         if client_y >= tab_y && client_y < tab_y + tab_h {
+            if client_x >= chat_x && client_x < chat_x + btn_w { return 9010; }
             if client_x >= desk_x && client_x < desk_x + btn_w { return 9001; }
             if client_x >= admin_x && client_x < admin_x + btn_w { return 9002; }
             if client_x >= priv_x && client_x < priv_x + btn_w { return 9004; }
