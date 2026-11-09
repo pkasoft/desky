@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod launcher;
 pub mod progress;
+pub mod remote_desk_edit;
 pub mod theme;
 pub mod viewport;
 

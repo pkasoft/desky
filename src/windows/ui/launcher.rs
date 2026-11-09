@@ -1018,6 +1018,16 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         return true;
     }
 
+    // 4. Remote Desk Input Box Clicked (Focus Edit control)
+    if x >= l.input_box_x
+        && x <= l.input_box_x + l.input_box_w
+        && y >= l.input_box_y
+        && y <= l.input_box_y + l.input_box_h
+    {
+        super::remote_desk_edit::focus_remote_desk_edit(HWND_EDIT_TARGET);
+        return true;
+    }
+
     // 4. Card 3 Header Tabs: RECENT SESSIONS vs LAN RADAR
     let tag3_w = (124.0 * l.font_scale) as i32;
     let tag3_h = (22.0 * l.font_scale) as i32;

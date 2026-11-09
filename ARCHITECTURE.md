@@ -42,6 +42,7 @@ desky/
     ├── recorder.rs            # Zero-overhead cross-platform AVI / Motion-JPEG session video recorder
     ├── windows/                   # Windows OS Platform Layer
     │   ├── mod.rs                 # Windows subsystem re-exports
+    │   ├── os_version.rs          # NT kernel version & edition detection (Win 7/8/10/11 & Server 2012-2025)
     │   ├── admin.rs               # Silent Admin backend (processes, services, shell, SAS, reboot)
     │   ├── audio.rs               # WASAPI loopback audio capture & technician intercom
     │   ├── capture.rs             # Screen capture dispatch (DXGI Desktop Duplication / GDI)
@@ -54,10 +55,14 @@ desky/
     │       ├── mod.rs             # UI module entry
     │       ├── theme.rs           # PKASOFT Emerald design tokens, fonts, rounded boxes
     │       ├── launcher.rs        # Main Dashboard, ID generator, LAN radar, status log
+    │       ├── remote_desk_edit.rs # Dedicated Remote Desk Edit control (Ctrl+C, Ctrl+V, Enter to connect)
     │       ├── admin.rs           # Remote Admin Terminal UI (processes, services, console)
     │       ├── progress.rs        # Standalone file transfer progress window
     │       └── viewport/          # Modular Multi-Tab Remote Session Canvas Window
-    │           ├── mod.rs         # Viewport window proc, render loop, double-buffering
+    │           ├── mod.rs         # Module exports & component declarations
+    │           ├── window.rs      # Native Win32 window procedure & message lifecycle
+    │           ├── tabs.rs        # AnyDesk-style tabbed session manager & window detaching
+    │           ├── renderer.rs    # Double-buffered 60-120 FPS video frame canvas renderer
     │           ├── toolbar.rs     # Top tab bar, Lucide toolbar buttons, tooltips
     │           ├── quick_actions.rs # Quick Actions hotkeys menu (Ctrl+Alt+Del, Win+L...)
     │           ├── whiteboard.rs  # In-session Whiteboard canvas & annotation overlay
