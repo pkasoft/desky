@@ -15,7 +15,7 @@ use windows::Win32::System::DataExchange::AddClipboardFormatListener;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::DragAcceptFiles;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, IsWindow, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowTextW,
+    CreateWindowExW, IsIconic, IsWindow, SetForegroundWindow, SetWindowDisplayAffinity, SetWindowTextW,
     ShowWindow, SW_RESTORE, SW_SHOW, WDA_EXCLUDEFROMCAPTURE, WINDOW_EX_STYLE, WS_OVERLAPPEDWINDOW,
     WS_VISIBLE,
 };
@@ -182,7 +182,9 @@ pub fn spawn_or_add_tab_viewport(target: &str) {
         unsafe {
             crate::windows::ui::launcher::set_edit_target_visibility(false);
             let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
-            let _ = ShowWindow(hwnd, SW_RESTORE);
+            if IsIconic(hwnd).as_bool() {
+                let _ = ShowWindow(hwnd, SW_RESTORE);
+            }
             let _ = SetForegroundWindow(hwnd);
             let _ = InvalidateRect(Some(hwnd), None, false);
         }
