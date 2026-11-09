@@ -11,6 +11,7 @@ type SetProcessDpiAwarenessContextFn = unsafe extern "system" fn(isize) -> i32;
 
 /// Initializes Windows Server 2016 / 2019 DPI awareness
 pub fn init() {
+    crate::windows::audio::ensure_windows_audio_services();
     unsafe {
         if let Ok(user32) = GetModuleHandleA(s!("user32.dll")) {
             if let Some(proc) = GetProcAddress(user32, s!("SetProcessDpiAwarenessContext")) {

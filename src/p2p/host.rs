@@ -442,23 +442,39 @@ impl P2PManager {
                     let target_server_audio = target_server;
 
                     std::thread::spawn(move || {
-                        if let Ok(capturer) = crate::windows::audio::WasapiLoopbackCapturer::new() {
+                        let mut capturer_opt: Option<crate::windows::audio::WasapiLoopbackCapturer> = None;
+
+                        while running_audio.load(Ordering::Relaxed) {
+                            let has_subscribers = {
+                                if let Ok(map) = clients_audio.lock() {
+                                    map.values().any(|s| s.auth_state == AuthState::Approved)
+                                } else {
+                                    false
+                                }
+                            };
+                            if !has_subscribers {
+                                std::thread::sleep(Duration::from_millis(100));
+                                continue;
+                            }
+
+                            if capturer_opt.is_none() {
+                                match crate::windows::audio::WasapiLoopbackCapturer::new() {
+                                    Ok(c) => {
+                                        capturer_opt = Some(c);
+                                    }
+                                    Err(_) => {
+                                        std::thread::sleep(Duration::from_millis(1500));
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let capturer = capturer_opt.as_ref().unwrap();
                             let channels = capturer.channels;
                             let sample_rate = capturer.sample_rate;
-                            while running_audio.load(Ordering::Relaxed) {
-                                let has_subscribers = {
-                                    if let Ok(map) = clients_audio.lock() {
-                                        map.values().any(|s| s.auth_state == AuthState::Approved)
-                                    } else {
-                                        false
-                                    }
-                                };
-                                if !has_subscribers {
-                                    std::thread::sleep(Duration::from_millis(80));
-                                    continue;
-                                }
 
-                                if let Ok(Some(pcm_data)) = capturer.read_packet() {
+                            match capturer.read_packet() {
+                                Ok(Some(pcm_data)) => {
                                     if !pcm_data.is_empty() {
                                         let subscribers: Vec<ClientSubscriber> = {
                                             if let Ok(map) = clients_audio.lock() {
@@ -493,8 +509,15 @@ impl P2PManager {
                                             }
                                         }
                                     }
+                                    std::thread::sleep(Duration::from_millis(15));
                                 }
-                                std::thread::sleep(Duration::from_millis(15));
+                                Ok(None) => {
+                                    std::thread::sleep(Duration::from_millis(15));
+                                }
+                                Err(_) => {
+                                    capturer_opt = None;
+                                    std::thread::sleep(Duration::from_millis(500));
+                                }
                             }
                         }
                     });

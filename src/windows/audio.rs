@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use tracing::info;
 
 use windows::Win32::Media::Audio::{
-    eConsole, eRender, waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset,
+    eConsole, eMultimedia, eRender, waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset,
     waveOutUnprepareHeader, waveOutWrite, HWAVEOUT, IAudioCaptureClient, IAudioClient,
     IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
     AUDCLNT_STREAMFLAGS_LOOPBACK, MIDI_WAVE_OPEN_TYPE, WAVEFORMATEX, WAVEHDR,
@@ -24,6 +24,34 @@ use windows::Win32::System::Com::{
 pub static CLIENT_AUDIO_MUTED: AtomicBool = AtomicBool::new(false);
 
 static AUDIO_PLAYER: Mutex<Option<AudioPlayer>> = Mutex::new(None);
+
+/// Ensures Windows Audio (`Audiosrv`) and Audio Endpoint Builder services are running.
+/// On Windows Server editions (2012, 2016, 2019, 2022), these services are often stopped/disabled by default.
+pub fn ensure_windows_audio_services() {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    std::thread::spawn(|| {
+        let _ = Command::new("sc")
+            .args(["config", "AudioEndpointBuilder", "start=", "auto"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        let _ = Command::new("net")
+            .args(["start", "AudioEndpointBuilder"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+
+        let _ = Command::new("sc")
+            .args(["config", "Audiosrv", "start=", "auto"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        let _ = Command::new("net")
+            .args(["start", "Audiosrv"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    });
+}
 
 pub struct WasapiLoopbackCapturer {
     client: IAudioClient,
@@ -39,7 +67,18 @@ impl WasapiLoopbackCapturer {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
 
             let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-            let device: IMMDevice = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
+            
+            // Try eMultimedia first (media players, browsers, YouTube), fallback to eConsole
+            let device: IMMDevice = match enumerator.GetDefaultAudioEndpoint(eRender, eMultimedia) {
+                Ok(d) => d,
+                Err(_) => match enumerator.GetDefaultAudioEndpoint(eRender, eConsole) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        ensure_windows_audio_services();
+                        return Err(e.into());
+                    }
+                },
+            };
 
             let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
 
@@ -137,9 +176,9 @@ impl WasapiLoopbackCapturer {
 
             let _ = self.capture_client.ReleaseBuffer(num_frames_read);
 
-            // Noise gate: if peak amplitude is below line-noise threshold (160 / -46dB),
-            // treat as complete silence so client speakers produce zero hiss, clicks, or pitch glitches.
-            if max_amp < 160 {
+            // Noise gate: if peak amplitude is below line-noise threshold (40 / -58dB),
+            // treat as silence to eliminate background hiss while capturing quiet speech and video playback
+            if max_amp < 40 {
                 return Ok(None);
             }
 
