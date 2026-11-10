@@ -219,6 +219,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     set_session_status(SessionStatus::Connected(
                                         disp_worker.clone(),
                                     ));
+                                    if crate::recorder::is_auto_record_enabled() && !crate::recorder::is_recording() {
+                                        let _ = crate::recorder::start_recording(decoded.orig_width, decoded.orig_height, 60);
+                                    }
                                     crate::platform::ui::append_status_log(&format!(
                                         "🎉 Connected to Remote Desk {} ({}x{})!",
                                         disp_worker, decoded.orig_width, decoded.orig_height

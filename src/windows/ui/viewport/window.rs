@@ -490,6 +490,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
 
             if client_y >= TOOLBAR_HEIGHT {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active == 0 {
+                    return LRESULT(0);
+                }
                 if active > 0 && crate::p2p::is_chat_open() {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
@@ -515,6 +518,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active == 0 {
+                    return LRESULT(0);
+                }
                 if active > 0 && crate::p2p::is_chat_open() {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
@@ -534,6 +540,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active == 0 {
+                    return LRESULT(0);
+                }
                 if active > 0 && crate::p2p::is_chat_open() {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
@@ -553,6 +562,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active == 0 {
+                    return LRESULT(0);
+                }
                 if active > 0 && crate::p2p::is_chat_open() {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
@@ -572,6 +584,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active == 0 {
+                    return LRESULT(0);
+                }
                 if active > 0 && crate::p2p::is_chat_open() {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
@@ -770,6 +785,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let _ = ScreenToClient(hwnd, &mut pt);
 
             let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+            if active == 0 {
+                return LRESULT(0);
+            }
             if active > 0 && crate::p2p::is_chat_open() {
                 let mut rect = RECT::default();
                 let _ = GetClientRect(hwnd, &mut rect);

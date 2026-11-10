@@ -19,7 +19,7 @@ use super::theme::{
 pub static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 
 // Active AnyDesk-style settings sidebar category:
-// 0 = Stream & Display, 1 = Connection Info
+// 0 = Stream & Display, 1 = Recording, 2 = Security, 3 = Connection Info
 pub static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
 
 // Display mode: 0 = Auto Fit, 1 = Fill Window, 2 = 1:1 Original resolution
@@ -66,28 +66,30 @@ pub unsafe fn draw_fullscreen_settings_view(
     let panel_w = (client_w - 48).clamp(320, 620);
     let panel_x = (client_w - panel_w) / 2;
 
-    // Top Navigation & Close Bar
+    // Top Navigation & Close Bar (4 categories: Display, Recording, Security, Info)
     let tab_y = top_y + 14;
     let tab_h = 32;
-    let close_w = 84;
+    let close_w = 80;
     let close_x = panel_x + panel_w - close_w;
-    let cat_w = (panel_w - close_w - 24) / 3;
+    let cat_w = (panel_w - close_w - 24) / 4;
     let cat0_x = panel_x;
     let cat1_x = cat0_x + cat_w + 6;
     let cat2_x = cat1_x + cat_w + 6;
+    let cat3_x = cat2_x + cat_w + 6;
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(3);
 
-    // Category 0: Stream & Display Tab Button
+    let old_font = SelectObject(hdc, HGDIOBJ(font_btn.0));
+
+    // Category 0: Display Tab Button
     let (c0_bg, c0_border, c0_fg) = if active_cat == 0 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
         (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
     draw_rounded_box(hdc, cat0_x, tab_y, cat_w, tab_h, c0_bg, c0_border, 6);
-    let old_font = SelectObject(hdc, HGDIOBJ(font_btn.0));
     SetTextColor(hdc, c0_fg);
-    let mut c0_txt: Vec<u16> = "Stream & Display".encode_utf16().collect();
+    let mut c0_txt: Vec<u16> = "Display".encode_utf16().collect();
     let mut c0_rc = RECT {
         left: cat0_x,
         top: tab_y,
@@ -96,7 +98,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     let _ = DrawTextW(hdc, &mut c0_txt, &mut c0_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 1: Security & Unattended Tab Button
+    // Category 1: Recording Tab Button
     let (c1_bg, c1_border, c1_fg) = if active_cat == 1 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
@@ -104,7 +106,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     draw_rounded_box(hdc, cat1_x, tab_y, cat_w, tab_h, c1_bg, c1_border, 6);
     SetTextColor(hdc, c1_fg);
-    let mut c1_txt: Vec<u16> = "Security".encode_utf16().collect();
+    let mut c1_txt: Vec<u16> = "Recording".encode_utf16().collect();
     let mut c1_rc = RECT {
         left: cat1_x,
         top: tab_y,
@@ -113,7 +115,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     let _ = DrawTextW(hdc, &mut c1_txt, &mut c1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 2: Connection Info Tab Button
+    // Category 2: Security Tab Button
     let (c2_bg, c2_border, c2_fg) = if active_cat == 2 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
@@ -121,7 +123,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     draw_rounded_box(hdc, cat2_x, tab_y, cat_w, tab_h, c2_bg, c2_border, 6);
     SetTextColor(hdc, c2_fg);
-    let mut c2_txt: Vec<u16> = "Connection Info".encode_utf16().collect();
+    let mut c2_txt: Vec<u16> = "Security".encode_utf16().collect();
     let mut c2_rc = RECT {
         left: cat2_x,
         top: tab_y,
@@ -129,6 +131,23 @@ pub unsafe fn draw_fullscreen_settings_view(
         bottom: tab_y + tab_h,
     };
     let _ = DrawTextW(hdc, &mut c2_txt, &mut c2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    // Category 3: Info Tab Button
+    let (c3_bg, c3_border, c3_fg) = if active_cat == 3 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else {
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, cat3_x, tab_y, cat_w, tab_h, c3_bg, c3_border, 6);
+    SetTextColor(hdc, c3_fg);
+    let mut c3_txt: Vec<u16> = "Info".encode_utf16().collect();
+    let mut c3_rc = RECT {
+        left: cat3_x,
+        top: tab_y,
+        right: cat3_x + cat_w,
+        bottom: tab_y + tab_h,
+    };
+    let _ = DrawTextW(hdc, &mut c3_txt, &mut c3_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     // Close Button [ Close × ]
     draw_rounded_box(hdc, close_x, tab_y, close_w, tab_h, PK_CARD, PK_CARD_BORDER, 6);
@@ -282,7 +301,90 @@ pub unsafe fn draw_fullscreen_settings_view(
         };
         let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else if active_cat == 1 {
-        // Category 1: Unattended Security
+        // Category 1: Recording Settings
+        let sec0_y = top_y + 60;
+        let strip_h = 36;
+        let step = 70;
+
+        // 1. Audio Capture: Remote Media
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s0_lbl: Vec<u16> = "Target Machine Media Audio (Remote Loopback)".encode_utf16().collect();
+        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
+        let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let rem_audio_on = crate::recorder::is_remote_audio_recording_enabled();
+        let rem_labels = ["Capture Target Media (ON)", "Mute Target Audio"];
+        draw_segmented_strip(panel_x, sec0_y + 22, panel_w, strip_h, &rem_labels, if rem_audio_on { 0 } else { 1 });
+
+        // 2. Audio Capture: This Machine (Local)
+        let sec1_y = sec0_y + step;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s1_lbl: Vec<u16> = "This Machine Audio (Local Microphone / Host)".encode_utf16().collect();
+        let mut s1_rc = RECT { left: panel_x, top: sec1_y, right: panel_x + panel_w, bottom: sec1_y + 20 };
+        let _ = DrawTextW(hdc, &mut s1_lbl, &mut s1_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let loc_audio_on = crate::recorder::is_local_audio_recording_enabled();
+        let loc_labels = ["Capture This Machine (ON)", "Mute Local Audio"];
+        draw_segmented_strip(panel_x, sec1_y + 22, panel_w, strip_h, &loc_labels, if loc_audio_on { 0 } else { 1 });
+
+        // 3. Recording Quality Scale
+        let sec2_y = sec1_y + step;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s2_lbl: Vec<u16> = "Recording Resolution Scale".encode_utf16().collect();
+        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
+        let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let scale_val = crate::recorder::get_recording_quality_scale() as usize;
+        let scale_labels = ["Native (100%)", "Balanced (75%)", "Compact (50%)"];
+        draw_segmented_strip(panel_x, sec2_y + 22, panel_w, strip_h, &scale_labels, scale_val.min(2));
+
+        // 4. Storage Folder card with Open Folder button
+        let sec3_y = sec2_y + step;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s3_lbl: Vec<u16> = "Recordings Storage Folder".encode_utf16().collect();
+        let mut s3_rc = RECT { left: panel_x, top: sec3_y, right: panel_x + panel_w, bottom: sec3_y + 20 };
+        let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let card_h = 44;
+        let folder_card_y = sec3_y + 22;
+        draw_rounded_box(hdc, panel_x, folder_card_y, panel_w, card_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
+
+        let save_dir_str = crate::recorder::get_recording_save_dir().to_string_lossy().to_string();
+        let btn_open_w = 110;
+        let btn_open_x = panel_x + panel_w - btn_open_w - 6;
+        let btn_open_y = folder_card_y + 5;
+        let btn_open_h = 34;
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_MUTED);
+        let mut dir_w: Vec<u16> = save_dir_str.encode_utf16().collect();
+        let mut dir_rc = RECT { left: panel_x + 12, top: folder_card_y, right: btn_open_x - 8, bottom: folder_card_y + card_h };
+        let _ = DrawTextW(hdc, &mut dir_w, &mut dir_rc, DT_SINGLELINE | DT_VCENTER);
+
+        draw_rounded_box(hdc, btn_open_x, btn_open_y, btn_open_w, btn_open_h, PK_GREEN_TINT, PK_GREEN, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, PK_GREEN_DARK);
+        let mut btn_open_txt: Vec<u16> = "Open Folder".encode_utf16().collect();
+        let mut btn_open_rc = RECT { left: btn_open_x, top: btn_open_y, right: btn_open_x + btn_open_w, bottom: btn_open_y + btn_open_h };
+        let _ = DrawTextW(hdc, &mut btn_open_txt, &mut btn_open_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        // Bottom [ Done ] Button
+        let done_y = folder_card_y + card_h + 20;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
+        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
+        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    } else if active_cat == 2 {
+        // Category 2: Unattended Security
         let is_unattended = crate::identity::is_unattended_enabled();
         let sec_y = top_y + 60;
 
@@ -342,6 +444,7 @@ pub unsafe fn draw_fullscreen_settings_view(
         let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
         let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else {
+        // Category 3: Connection Info
         let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
         let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
         let rtt_ms = crate::p2p::get_session_rtt_ms();
@@ -429,12 +532,13 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
 
     let tab_y = top_y + 14;
     let tab_h = 32;
-    let close_w = 84;
+    let close_w = 80;
     let close_x = panel_x + panel_w - close_w;
-    let cat_w = (panel_w - close_w - 24) / 3;
+    let cat_w = (panel_w - close_w - 24) / 4;
     let cat0_x = panel_x;
     let cat1_x = cat0_x + cat_w + 6;
     let cat2_x = cat1_x + cat_w + 6;
+    let cat3_x = cat2_x + cat_w + 6;
 
     // Close Button [ Close × ]
     if client_x >= close_x && client_x <= close_x + close_w && client_y >= tab_y && client_y <= tab_y + tab_h {
@@ -443,28 +547,35 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         return true;
     }
 
-    // Category 0 Tab
+    // Category 0 Tab: Display
     if client_x >= cat0_x && client_x <= cat0_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
         SETTINGS_CATEGORY.store(0, Ordering::Relaxed);
         unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
         return true;
     }
 
-    // Category 1 Tab
+    // Category 1 Tab: Recording
     if client_x >= cat1_x && client_x <= cat1_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
         SETTINGS_CATEGORY.store(1, Ordering::Relaxed);
         unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
         return true;
     }
 
-    // Category 2 Tab
+    // Category 2 Tab: Security
     if client_x >= cat2_x && client_x <= cat2_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
         SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
         unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
         return true;
     }
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(2);
+    // Category 3 Tab: Info
+    if client_x >= cat3_x && client_x <= cat3_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
+        SETTINGS_CATEGORY.store(3, Ordering::Relaxed);
+        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+        return true;
+    }
+
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(3);
 
     if active_cat == 0 {
         let sec0_y = top_y + 60;
@@ -540,6 +651,71 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
             return true;
         }
     } else if active_cat == 1 {
+        // Category 1: Recording Settings
+        let sec0_y = top_y + 60;
+        let strip_h = 36;
+        let step = 70;
+
+        let hit_segment = |sy: i32, count: i32| -> Option<usize> {
+            if client_x >= panel_x
+                && client_x <= panel_x + panel_w
+                && client_y >= sy
+                && client_y <= sy + strip_h
+            {
+                let seg_w = (panel_w / count.max(1)).max(1);
+                let idx = ((client_x - panel_x) / seg_w).clamp(0, count - 1) as usize;
+                Some(idx)
+            } else {
+                None
+            }
+        };
+
+        // 1. Remote Media Audio toggle
+        if let Some(idx) = hit_segment(sec0_y + 22, 2) {
+            crate::recorder::set_remote_audio_recording_enabled(idx == 0);
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+
+        // 2. Local Media Audio toggle
+        if let Some(idx) = hit_segment(sec0_y + step + 22, 2) {
+            crate::recorder::set_local_audio_recording_enabled(idx == 0);
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+
+        // 3. Resolution scale
+        if let Some(idx) = hit_segment(sec0_y + step * 2 + 22, 3) {
+            crate::recorder::set_recording_quality_scale(idx as u8);
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+
+        // 4. Open Folder button
+        let card_h = 44;
+        let folder_card_y = sec0_y + step * 3 + 22;
+        let btn_open_w = 110;
+        let btn_open_x = panel_x + panel_w - btn_open_w - 6;
+        let btn_open_y = folder_card_y + 5;
+        let btn_open_h = 34;
+        if client_x >= btn_open_x && client_x <= btn_open_x + btn_open_w && client_y >= btn_open_y && client_y <= btn_open_y + btn_open_h {
+            let dir = crate::recorder::get_recording_save_dir();
+            let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+            return true;
+        }
+
+        // Done button
+        let done_y = folder_card_y + card_h + 20;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
+            SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+    } else if active_cat == 2 {
+        // Category 2: Unattended Security
         let sec_y = top_y + 60;
         let act_y = sec_y + 92;
         let btn_w = 230;
@@ -566,6 +742,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
             return true;
         }
     } else {
+        // Category 3: Info
         let row_h = 40;
         let tbl_y = top_y + 60;
         let done_y = tbl_y + 4 * (row_h + 4) + 24;

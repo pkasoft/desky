@@ -4,7 +4,7 @@
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -15,6 +15,47 @@ static RECORD_FRAMES: AtomicU32 = AtomicU32::new(0);
 static RECORD_START_TIME: AtomicU64 = AtomicU64::new(0);
 static RECORDER_SENDER: Mutex<Option<Sender<Vec<u8>>>> = Mutex::new(None);
 static LAST_SAVED_INFO: Mutex<Option<(PathBuf, u64, u32, Duration)>> = Mutex::new(None);
+
+pub static RECORD_CAPTURE_REMOTE_AUDIO: AtomicBool = AtomicBool::new(true);
+pub static RECORD_CAPTURE_LOCAL_AUDIO: AtomicBool = AtomicBool::new(false);
+pub static RECORD_QUALITY_SCALE: AtomicU8 = AtomicU8::new(0); // 0 = Native (100%), 1 = 75%, 2 = 50%
+pub static RECORD_AUTO_START: AtomicBool = AtomicBool::new(false);
+
+pub fn is_remote_audio_recording_enabled() -> bool {
+    RECORD_CAPTURE_REMOTE_AUDIO.load(Ordering::Relaxed)
+}
+
+pub fn set_remote_audio_recording_enabled(enabled: bool) {
+    RECORD_CAPTURE_REMOTE_AUDIO.store(enabled, Ordering::Relaxed);
+}
+
+pub fn is_local_audio_recording_enabled() -> bool {
+    RECORD_CAPTURE_LOCAL_AUDIO.load(Ordering::Relaxed)
+}
+
+pub fn set_local_audio_recording_enabled(enabled: bool) {
+    RECORD_CAPTURE_LOCAL_AUDIO.store(enabled, Ordering::Relaxed);
+}
+
+pub fn get_recording_quality_scale() -> u8 {
+    RECORD_QUALITY_SCALE.load(Ordering::Relaxed)
+}
+
+pub fn set_recording_quality_scale(scale: u8) {
+    RECORD_QUALITY_SCALE.store(scale.min(2), Ordering::Relaxed);
+}
+
+pub fn is_auto_record_enabled() -> bool {
+    RECORD_AUTO_START.load(Ordering::Relaxed)
+}
+
+pub fn set_auto_record_enabled(enabled: bool) {
+    RECORD_AUTO_START.store(enabled, Ordering::Relaxed);
+}
+
+pub fn get_recording_save_dir() -> PathBuf {
+    dirs_fallback_videos()
+}
 
 struct AviIndexEntry {
     fcc: [u8; 4],
