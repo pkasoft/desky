@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Windows Operating System Version Detection Engine
 
 use std::sync::OnceLock;

@@ -1,4 +1,4 @@
-#![allow(dead_code, unsafe_op_in_unsafe_fn)]
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Dedicated Double-Buffered Remote Viewport Canvas Renderer
 //!
 //! Handles the high-performance 60-120 FPS render thread, StretchDIBits

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Windows OS Platform Modules & Runtime Architecture
 //!
 //! Subdivided by OS family:
@@ -13,6 +12,7 @@ pub mod audio;
 pub mod capture;
 pub mod clipboard;
 pub mod cursor;
+pub mod desktop;
 pub mod dxgi_capture;
 pub mod input;
 pub mod os_version;
@@ -39,6 +39,7 @@ pub use ui::set_assigned_desky_id;
 use tracing::info;
 
 pub fn run() -> anyhow::Result<()> {
+    desktop::enable_debug_privilege();
     let platform = get_platform();
     info!("🚀 Running Desky on Platform Engine: {:?}", platform);
 

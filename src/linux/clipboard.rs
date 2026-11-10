@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Linux Platform Clipboard Operations
 
 use std::io::Write;

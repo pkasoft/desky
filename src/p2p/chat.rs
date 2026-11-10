@@ -7,8 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug)]
 pub struct ChatMessage {
-    #[allow(dead_code)]
-    pub id: u64,
     pub sender: String,
     pub is_me: bool,
     pub text: String,
@@ -77,13 +75,7 @@ pub fn send_chat_message(text: &str) {
     if trimmed.is_empty() {
         return;
     }
-    let id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
     let msg = ChatMessage {
-        id,
         sender: "You".to_string(),
         is_me: true,
         text: trimmed.to_string(),
@@ -104,13 +96,7 @@ pub fn receive_chat_message(sender_label: &str, text: &str) {
     if trimmed.is_empty() {
         return;
     }
-    let id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
-
     let msg = ChatMessage {
-        id,
         sender: sender_label.to_string(),
         is_me: false,
         text: trimmed.to_string(),

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use crate::protocol::{AdminReq, AdminResp, InputEvent};
 use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

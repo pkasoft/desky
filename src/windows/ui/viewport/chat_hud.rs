@@ -35,12 +35,6 @@ pub fn get_chat_input() -> String {
     input_buf().lock().map(|g| g.clone()).unwrap_or_default()
 }
 
-pub fn set_chat_input(s: &str) {
-    if let Ok(mut g) = input_buf().lock() {
-        *g = s.to_string();
-    }
-}
-
 pub fn append_chat_char(c: char) {
     if let Ok(mut g) = input_buf().lock() {
         if !c.is_control() {

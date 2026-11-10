@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Fast, Zero-Overhead AVI / Motion-JPEG Session Recorder
 //! Direct container muxing for incoming remote JPEG frames with 0% CPU re-encoding overhead.
 

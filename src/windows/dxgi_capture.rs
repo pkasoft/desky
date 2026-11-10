@@ -246,7 +246,8 @@ impl DxgiCapturer {
                         }
                         Ok((self.width, self.height, &self.cached_frame))
                     } else if err.code() == DXGI_ERROR_ACCESS_LOST {
-                        warn!("DXGI Desktop Duplication access lost (mode switch/UAC). Resetting capturer...");
+                        warn!("DXGI Desktop Duplication access lost (mode switch/UAC/Lock screen). Resetting capturer...");
+                        super::desktop::sync_thread_desktop_to_input();
                         Err(anyhow!("DXGI_ERROR_ACCESS_LOST"))
                     } else {
                         Err(anyhow!("DXGI acquire error: {:?}", err))

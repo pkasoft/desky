@@ -9,6 +9,7 @@ impl InputInjector {
     }
 
     pub fn handle_event(&self, event: &InputEvent) {
+        super::desktop::sync_thread_desktop_to_input();
         match super::get_platform() {
             WindowsPlatform::Win10_11 => super::win10_11::input::handle_event(event),
             WindowsPlatform::Server2022 => super::server_2022::input::handle_event(event),

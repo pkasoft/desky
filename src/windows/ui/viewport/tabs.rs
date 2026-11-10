@@ -1,4 +1,4 @@
-#![allow(dead_code, unsafe_op_in_unsafe_fn)]
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Dedicated Multi-Tab Session Manager & Window Detachment
 //!
 //! AnyDesk-style tabbed multi-session management across remote computers,

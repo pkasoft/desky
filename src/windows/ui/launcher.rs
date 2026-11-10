@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Main Win32 Launcher Window & Application Lifecycle
 //!
 //! Exposes responsive Home page rendering, layout calculations, and

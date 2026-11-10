@@ -2,8 +2,6 @@
 //! Provides salted SHA-256 credential hashing, master password management,
 //! and cryptographic challenge-response verification for headless/unattended connections.
 
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -88,15 +86,6 @@ pub fn disable_unattended() {
     cfg.enabled = false;
     save_unattended_config(&cfg);
     info!("🔒 [SECURITY] Unattended access disabled.");
-}
-
-pub fn verify_unattended_password(input_password: &str) -> bool {
-    let cfg = load_unattended_config();
-    if !cfg.enabled || cfg.password_hash.is_empty() {
-        return false;
-    }
-    let computed = compute_auth_hash(&cfg.salt, input_password);
-    computed.eq_ignore_ascii_case(&cfg.password_hash)
 }
 
 pub fn verify_auth_hash(incoming_hash: &str) -> bool {

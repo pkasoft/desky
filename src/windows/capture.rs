@@ -8,6 +8,9 @@ pub fn capture_screen_frame(
     capture_cursor: bool,
     scale_pct: u8,
 ) -> Result<(u32, u32, u32, u32, Vec<u8>)> {
+    // 0. Ensure capture thread is attached to active input desktop (Default, Winlogon lock screen, etc.)
+    super::desktop::sync_thread_desktop_to_input();
+
     // 1. Hardware-accelerated GPU capture via DirectX 11 Desktop Duplication API (DXGI DDA)
     // Grabs frames directly from VRAM in < 1ms, eliminating CPU GDI BitBlt bottlenecks.
     if let Ok(Some(dxgi_frame)) = super::dxgi_capture::try_dxgi_capture(capture_cursor, scale_pct) {

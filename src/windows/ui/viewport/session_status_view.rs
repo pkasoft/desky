@@ -60,10 +60,6 @@ pub fn get_status_hover_state() -> i32 {
     STATUS_HOVER_STATE.load(Ordering::Relaxed)
 }
 
-pub fn set_status_hover_state(val: i32) {
-    STATUS_HOVER_STATE.store(val, Ordering::Relaxed);
-}
-
 fn compute_card_layout(client_w: i32, client_h: i32, toolbar_h: i32) -> (i32, i32, i32, i32) {
     let view_h = client_h - toolbar_h;
     let card_w = (client_w - 48).clamp(400, 520);

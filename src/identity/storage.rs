@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -62,6 +61,7 @@ pub fn save_recent_session(target_id: &str) {
     let display = format!("{} {} {}", &digits[0..3], &digits[3..6], &digits[6..9]);
     let path = get_identity_path();
     let mut ident = load_or_create_identity();
+    super::address_book::update_last_connected(&display);
     ident.recent_sessions.retain(|id| id != &display && id != &digits);
     ident.recent_sessions.insert(0, display);
     if ident.recent_sessions.len() > 8 {

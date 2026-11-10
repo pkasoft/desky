@@ -1,4 +1,4 @@
-#![allow(dead_code, unsafe_op_in_unsafe_fn)]
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Dedicated Win32 Remote Desk Edit Control & Subclass Engine
 //!
 //! Handles keyboard input, clipboard shortcuts (Ctrl+C, Ctrl+V, Ctrl+A, Ctrl+X),

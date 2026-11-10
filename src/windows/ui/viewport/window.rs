@@ -1,4 +1,4 @@
-#![allow(dead_code, unsafe_op_in_unsafe_fn)]
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Dedicated Native Win32 Window Procedure & Lifecycle Engine
 //!
 //! Hosts the primary unified window, creates the responsive Remote Desk input control,
@@ -6,7 +6,6 @@
 
 use std::sync::atomic::Ordering;
 use tracing::info;
-use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, ClientToScreen, EndPaint, InvalidateRect,
@@ -20,12 +19,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, GetClientRect, GetCursorPos, IsIconic, LoadCursorW, PostQuitMessage,
-    RegisterClassExW, SetCursor, SetForegroundWindow, ShowWindow,
+    SetCursor, SetForegroundWindow, ShowWindow,
     IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, SW_RESTORE, WM_CHAR, WM_CLIPBOARDUPDATE, WM_COMMAND,
     WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO,
     WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
-    WM_TIMER, WNDCLASSEXW,
+    WM_TIMER,
 };
 
 use super::input_injector::{
@@ -940,28 +939,3 @@ pub unsafe extern "system" fn viewport_wnd_proc(
     }
 }
 
-pub unsafe fn launch_fullscreen_viewport(_initial_target: Option<&str>) {
-    let h_module = GetModuleHandleW(None).unwrap_or_default();
-    let h_instance: HINSTANCE = h_module.into();
-
-    let bg_color = theme::PK_BG;
-    VIEWPORT_BRUSH = windows::Win32::Graphics::Gdi::CreateSolidBrush(bg_color);
-
-    let wnd_class = WNDCLASSEXW {
-        cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-        style: windows::Win32::UI::WindowsAndMessaging::CS_HREDRAW
-            | windows::Win32::UI::WindowsAndMessaging::CS_VREDRAW,
-        lpfnWndProc: Some(viewport_wnd_proc),
-        cbClsExtra: 0,
-        cbWndExtra: 0,
-        hInstance: h_instance,
-        hIcon: windows::Win32::UI::WindowsAndMessaging::HICON(std::ptr::null_mut()),
-        hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-        hbrBackground: VIEWPORT_BRUSH,
-        lpszMenuName: PCWSTR::null(),
-        lpszClassName: w!("DeskyViewportClass"),
-        hIconSm: windows::Win32::UI::WindowsAndMessaging::HICON(std::ptr::null_mut()),
-    };
-
-    let _ = RegisterClassExW(&wnd_class);
-}
