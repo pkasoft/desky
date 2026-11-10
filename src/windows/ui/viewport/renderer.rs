@@ -64,6 +64,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
         let mut last_chat_open: bool = false;
         let mut last_chat_hover: i32 = -1;
         let mut last_ui_refresh = Instant::now();
+        let mut last_edit_wanted: bool = true;
 
         let mut cached_mem_dc: Option<HDC> = None;
         let mut cached_mem_bmp: Option<windows::Win32::Graphics::Gdi::HBITMAP> = None;
@@ -101,6 +102,19 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                 let chat_open = crate::p2p::is_chat_open();
                 let chat_hover = super::chat_hud::get_chat_hover_state();
                 let tabs = get_session_tabs();
+
+                // Keep the native Remote Desk edit box in sync with overlays (connection
+                // request, settings, tab switches). Only posts on transitions, so no flicker.
+                let want_edit = crate::windows::ui::launcher::should_show_edit_target();
+                if want_edit != last_edit_wanted {
+                    last_edit_wanted = want_edit;
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(target_hwnd),
+                        crate::windows::ui::launcher::WM_APP_REDRAW,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(0),
+                    );
+                }
 
                 let latest_frame = crate::p2p::get_latest_remote_frame();
                 let cur_frame_id = latest_frame.as_ref().map(|f| f.frame_id).unwrap_or(0);

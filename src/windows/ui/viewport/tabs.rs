@@ -71,7 +71,7 @@ pub fn switch_session_tab(tab_idx: usize) {
                 let hwnd = HWND(hwnd_raw as *mut _);
                 unsafe {
                     if tab_idx == 0 {
-                        crate::windows::ui::launcher::set_edit_target_visibility(true);
+                        crate::windows::ui::launcher::sync_edit_target_visibility();
                         let _ = SetWindowTextW(hwnd, w!("Desky | pkasoft.com"));
                     } else {
                         crate::windows::ui::launcher::set_edit_target_visibility(false);

@@ -50,7 +50,7 @@ use super::whiteboard::{
     set_whiteboard_active, start_stroke, toggle_whiteboard, WHITEBOARD_COLOR_IDX,
 };
 use crate::windows::ui::launcher::{
-    get_responsive_layout, set_edit_target_hwnd, set_edit_target_visibility,
+    get_responsive_layout, set_edit_target_hwnd, sync_edit_target_visibility,
     set_main_window_hwnd, update_edit_layout, ID_EDIT_TARGET_CODE, WM_APP_BRING_FRONT,
     WM_APP_REDRAW, WM_APP_SHOW_PROGRESS,
 };
@@ -85,6 +85,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_TIMER => {
+            sync_edit_target_visibility();
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
@@ -93,9 +94,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let h = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
             if w > 100 {
                 update_edit_layout(w, h);
-                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-                let has_pending = crate::p2p::get_pending_approval().is_some();
-                set_edit_target_visibility(active == 0 && !has_pending);
+                sync_edit_target_visibility();
             }
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
@@ -119,16 +118,12 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_APP_REDRAW => {
-            let has_pending = crate::p2p::get_pending_approval().is_some();
-            let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-            set_edit_target_visibility(active == 0 && !has_pending);
+            sync_edit_target_visibility();
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
         WM_APP_BRING_FRONT => {
-            let has_pending = crate::p2p::get_pending_approval().is_some();
-            let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-            set_edit_target_visibility(active == 0 && !has_pending);
+            sync_edit_target_visibility();
             if IsIconic(hwnd).as_bool() {
                 let _ = ShowWindow(hwnd, SW_RESTORE);
             }
@@ -199,10 +194,8 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 let hit = get_tab_hit_state(hwnd, client_x, client_y);
 
                 if hit == 9006 {
-                    let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
-                    let has_pending = crate::p2p::get_pending_approval().is_some();
-                    let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-                    set_edit_target_visibility(active == 0 && !has_pending && prev);
+                    SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+                    sync_edit_target_visibility();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 } else if hit == 9007 {
@@ -942,6 +935,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 }
             } else if wparam.0 == 0x09 {
                 let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+                sync_edit_target_visibility();
                 info!("Full-Screen Settings Page toggled: {}", !prev);
             } else if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let vk = wparam.0 as u32;

@@ -183,6 +183,21 @@ pub fn set_edit_target_visibility(visible: bool) {
     }
 }
 
+/// Single source of truth for whether the native "Remote Desk" edit box may be shown.
+/// The edit is a real Win32 child window, so it always paints on top of GDI-drawn
+/// overlays; it must be hidden whenever anything covers the Home tab card.
+pub fn should_show_edit_target() -> bool {
+    use crate::windows::ui::viewport::{ACTIVE_TAB_INDEX, SHOW_SETTINGS_MODAL};
+    ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0
+        && !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed)
+        && crate::p2p::get_pending_approval().is_none()
+}
+
+/// Re-applies the desired visibility of the edit box (no-op when already correct).
+pub fn sync_edit_target_visibility() {
+    set_edit_target_visibility(should_show_edit_target());
+}
+
 pub fn get_edit_bg_brush() -> HBRUSH {
     unsafe { EDIT_BG_BRUSH }
 }

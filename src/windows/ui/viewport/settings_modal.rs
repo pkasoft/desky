@@ -528,9 +528,7 @@ pub unsafe fn draw_fullscreen_settings_view(
 
 pub fn close_settings_modal(hwnd: HWND) {
     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-    let active = super::tabs::ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-    let has_pending = crate::p2p::get_pending_approval().is_some();
-    crate::windows::ui::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+    crate::windows::ui::launcher::sync_edit_target_visibility();
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
     }
