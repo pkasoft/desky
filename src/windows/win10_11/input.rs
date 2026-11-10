@@ -12,7 +12,9 @@ pub fn handle_event(event: &InputEvent) {
     unsafe {
         match event {
             InputEvent::MouseMove { x, y } => {
-                let _ = SetCursorPos(*x, *y);
+                let off_x = crate::windows::dxgi_capture::get_active_monitor_offset_x();
+                let off_y = crate::windows::dxgi_capture::get_active_monitor_offset_y();
+                let _ = SetCursorPos(*x + off_x, *y + off_y);
             }
             InputEvent::MouseDown { button } => {
                 let flag = match button {

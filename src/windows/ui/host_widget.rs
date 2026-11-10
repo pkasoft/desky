@@ -22,12 +22,12 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetSystemMetrics,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetParent, GetSystemMetrics,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW, MoveWindow,
-    RegisterClassExW, SendMessageW, SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowTextW,
-    ShowWindow, HMENU, HTCAPTION, IDC_ARROW, IDC_HAND, LWA_COLORKEY, SM_CXSCREEN, SM_CYSCREEN,
-    SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT,
-    WM_DESTROY, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCLBUTTONDOWN, WM_PAINT, WM_SETCURSOR, WM_TIMER,
+    RegisterClassExW, SendMessageW, SetCursor, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowTextW,
+    ShowWindow, GWLP_WNDPROC, HMENU, HTCAPTION, IDC_ARROW, IDC_HAND, LWA_COLORKEY, SM_CXSCREEN, SM_CYSCREEN,
+    SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT,
+    WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_NCLBUTTONDOWN, WM_PAINT, WM_SETCURSOR, WM_TIMER,
     WNDCLASSEXW, WS_BORDER, WS_CHILD, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
@@ -47,8 +47,52 @@ const ID_TIMER_WIDGET_TICK: usize = 4001;
 static HWND_HOST_WIDGET: AtomicIsize = AtomicIsize::new(0);
 static HWND_SCREEN_BORDER: AtomicIsize = AtomicIsize::new(0);
 static HWND_CHAT_EDIT: AtomicIsize = AtomicIsize::new(0);
+static PREV_HOST_CHAT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static CHAT_EXPANDED: AtomicBool = AtomicBool::new(false);
 static HOVER_BTN: AtomicI32 = AtomicI32::new(0); // 1 = Chat, 2 = Disconnect, 3 = Send
+
+unsafe extern "system" fn host_chat_edit_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let old_proc = PREV_HOST_CHAT_WNDPROC.load(Ordering::Relaxed);
+    let old_wndproc = if old_proc != 0 {
+        Some(std::mem::transmute::<
+            isize,
+            unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT,
+        >(old_proc))
+    } else {
+        None
+    };
+
+    match msg {
+        WM_KEYDOWN => {
+            let key = wparam.0 as i32;
+            if key == 0x0D {
+                send_host_chat_input();
+                let parent = GetParent(hwnd).unwrap_or_default();
+                if !parent.0.is_null() {
+                    let _ = InvalidateRect(Some(parent), None, false);
+                }
+                return LRESULT(0);
+            }
+        }
+        WM_CHAR => {
+            if wparam.0 == 0x0D {
+                return LRESULT(0); // Suppress Windows bell on Enter
+            }
+        }
+        _ => {}
+    }
+
+    if let Some(prev) = old_wndproc {
+        prev(hwnd, msg, wparam, lparam)
+    } else {
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+}
 
 /// Synchronizes the visibility of the Host Floating Widget and Screen Border.
 /// Automatically creates or destroys the window based on whether an approved client is connected.
@@ -234,6 +278,10 @@ unsafe extern "system" fn host_widget_wndproc(
             if let Ok(eh) = edit_hwnd {
                 let font = create_segoe_font(12, FW_NORMAL);
                 let _ = SendMessageW(eh, windows::Win32::UI::WindowsAndMessaging::WM_SETFONT, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
+                let old = SetWindowLongPtrW(eh, GWLP_WNDPROC, host_chat_edit_proc as *const () as usize as isize);
+                if old != 0 {
+                    PREV_HOST_CHAT_WNDPROC.store(old, Ordering::Relaxed);
+                }
                 HWND_CHAT_EDIT.store(eh.0 as isize, Ordering::Relaxed);
                 let _ = ShowWindow(eh, SW_HIDE);
             }

@@ -884,6 +884,7 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
     let target_path = dest_dir.join(&safe_name);
 
     if let Ok(file) = std::fs::File::create(&target_path) {
+        let _ = file.set_len(total_size);
         let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
         if let Ok(mut guard) = store.lock() {
             *guard = Some(IncomingFileTransfer {
@@ -901,12 +902,14 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
     }
 }
 
-pub fn handle_incoming_file_chunk(_chunk_idx: u32, data: &[u8]) {
-    use std::io::Write;
+pub fn handle_incoming_file_chunk(chunk_idx: u32, data: &[u8]) {
+    use std::io::{Seek, SeekFrom, Write};
     let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = store.lock() {
         if let Some(transfer) = guard.as_mut() {
             if let Some(file) = transfer.handle.as_mut() {
+                let offset = (chunk_idx as u64) * 1200;
+                let _ = file.seek(SeekFrom::Start(offset));
                 let _ = file.write_all(data);
                 transfer.received_bytes += data.len() as u64;
                 update_transfer_progress(false, &transfer.file_name, transfer.received_bytes, transfer.total_size, false);

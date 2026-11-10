@@ -52,6 +52,16 @@ pub struct DxgiCapturer {
 
 static DXGI_ENGINE: Mutex<Option<DxgiCapturer>> = Mutex::new(None);
 static TARGET_MONITOR_INDEX: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static ACTIVE_MONITOR_OFFSET_X: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static ACTIVE_MONITOR_OFFSET_Y: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+pub fn get_active_monitor_offset_x() -> i32 {
+    ACTIVE_MONITOR_OFFSET_X.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn get_active_monitor_offset_y() -> i32 {
+    ACTIVE_MONITOR_OFFSET_Y.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 pub fn count_available_monitors() -> u32 {
     unsafe {
@@ -137,6 +147,9 @@ impl DxgiCapturer {
             let screen_y = desc.DesktopCoordinates.top;
             let width = (desc.DesktopCoordinates.right - desc.DesktopCoordinates.left).abs() as u32;
             let height = (desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top).abs() as u32;
+
+            ACTIVE_MONITOR_OFFSET_X.store(screen_x, std::sync::atomic::Ordering::Relaxed);
+            ACTIVE_MONITOR_OFFSET_Y.store(screen_y, std::sync::atomic::Ordering::Relaxed);
 
             info!("DXGI GPU Desktop Duplication initialized: Output #{} ({}x{}) @ Feature Level {:?}", monitor_index, width, height, feature_level);
 

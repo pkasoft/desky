@@ -795,7 +795,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                         let _ = socket.send_to(&auth_pkt, p_addr).await;
                                                     }
                                                 }
-                                                if !is_direct_peer {
+                                                if !is_direct_peer || is_reconnecting {
                                                     let relay = wrap_relay_packet(&norm_target, &auth_pkt);
                                                     let _ = socket.send_to(&relay, server_addr).await;
                                                 }

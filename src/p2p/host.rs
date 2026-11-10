@@ -293,8 +293,13 @@ impl P2PManager {
                                 while file_pkts_sent < 16 {
                                     if let Some(pkt) = crate::p2p::state::pop_outgoing_file_packet() {
                                         for sub in &subscribers {
-                                            if sub.is_direct {
+                                            if sub.is_direct || sub.addr != target_server_stream {
                                                 let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
+                                                if let Some(l_addr) = sub.lan_addr {
+                                                    if l_addr != sub.addr {
+                                                        let _ = std_sock_stream_capture.send_to(&pkt, l_addr);
+                                                    }
+                                                }
                                             } else if !sub.relay_id.is_empty() {
                                                 let relay = wrap_relay_packet(&sub.relay_id, &pkt);
                                                 let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);

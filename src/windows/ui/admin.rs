@@ -89,6 +89,11 @@ pub fn get_admin_state() -> &'static Mutex<AdminState> {
     ADMIN_STATE.get_or_init(|| Mutex::new(AdminState::default()))
 }
 
+#[inline]
+pub fn lock_admin_state() -> std::sync::MutexGuard<'static, AdminState> {
+    get_admin_state().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn poll_admin_responses() {
     while let Some(resp) = crate::p2p::take_admin_response() {
         if let Ok(mut state) = get_admin_state().lock() {
@@ -158,7 +163,7 @@ pub unsafe fn draw_admin_view(hdc: HDC, width: i32, height: i32, hover_state: i3
     let _ = DeleteObject(HGDIOBJ(bg_brush.0));
 
     let sub_tab = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.sub_tab
     };
 
@@ -270,7 +275,7 @@ unsafe fn draw_sub_tab_bar(hdc: HDC, width: i32, current_tab: AdminSubTab, hover
     let _ = DrawTextW(hdc, &mut safe_txt, &mut safe_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
     let last_time = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.last_req_time
     };
     let ref_label = if let Some(t) = last_time {
@@ -317,7 +322,7 @@ unsafe fn draw_processes_view(hdc: HDC, width: i32, height: i32, hover_state: i3
 
     // Search text label (with Lucide Search vector icon)
     let (filter_text, filter_active, processes, scroll_y) = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         (
             state.process_filter.clone(),
             state.filter_active,
@@ -478,7 +483,7 @@ unsafe fn draw_services_view(hdc: HDC, width: i32, height: i32, hover_state: i32
     SetBkMode(hdc, TRANSPARENT);
 
     let (filter_text, filter_active, services, scroll_y) = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         (
             state.service_filter.clone(),
             state.service_filter_active,
@@ -661,7 +666,7 @@ unsafe fn draw_terminal_view(hdc: HDC, width: i32, height: i32) {
     SetBkColor(hdc, term_bg);
 
     let (lines, input, scroll_y) = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         (
             state.terminal_lines.clone(),
             state.terminal_input.clone(),
@@ -727,7 +732,7 @@ unsafe fn draw_terminal_view(hdc: HDC, width: i32, height: i32) {
 unsafe fn draw_system_info_view(hdc: HDC, width: i32, _height: i32, hover_state: i32) {
     let top_y = 96;
     let stats = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.system_stats.clone()
     };
 
@@ -864,7 +869,7 @@ unsafe fn draw_system_info_view(hdc: HDC, width: i32, _height: i32, hover_state:
 
 unsafe fn draw_reboot_confirmation_modal(hdc: HDC, width: i32, height: i32, hover_state: i32) {
     let modal_kind = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.confirm_modal
     };
 
@@ -967,7 +972,7 @@ unsafe fn draw_reboot_confirmation_modal(hdc: HDC, width: i32, height: i32, hove
 
 unsafe fn draw_status_toast(hdc: HDC, width: i32, height: i32) {
     let msg_opt = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.status_msg.clone()
     };
 
@@ -1093,7 +1098,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
     }
 
     let sub_tab = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.sub_tab
     };
 
@@ -1105,7 +1110,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         let wol_btn_x = 24 + net_w - wol_btn_w - 18;
         if y >= net_cy + 18 && y < net_cy + 18 + 40 && x >= wol_btn_x && x < wol_btn_x + wol_btn_w {
             let mac = {
-                let state = get_admin_state().lock().unwrap();
+                let state = lock_admin_state();
                 state.system_stats.as_ref().map(|s| s.mac_addr.clone()).unwrap_or_default()
             };
             if !mac.is_empty() {
@@ -1144,7 +1149,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         let row_h = 30;
         if y >= rows_y && y < height - 20 {
             let (filter_text, services, scroll_y) = {
-                let state = get_admin_state().lock().unwrap();
+                let state = lock_admin_state();
                 (state.service_filter.clone(), state.services.clone(), state.service_scroll_y)
             };
             let lower_filter = filter_text.to_lowercase();
@@ -1216,7 +1221,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
         let rows_y = head_y + 30;
         if y >= rows_y && y < height - 20 {
             let (filter_text, processes, scroll_y) = {
-                let state = get_admin_state().lock().unwrap();
+                let state = lock_admin_state();
                 (state.process_filter.clone(), state.processes.clone(), state.scroll_y)
             };
             let lower_filter = filter_text.to_lowercase();
@@ -1254,7 +1259,7 @@ pub fn handle_admin_click(x: i32, y: i32, width: i32, height: i32) -> bool {
 
 pub fn handle_admin_char(c: char) -> bool {
     let sub_tab = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.sub_tab
     };
 
@@ -1409,7 +1414,7 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
     }
 
     let sub_tab = {
-        let state = get_admin_state().lock().unwrap();
+        let state = lock_admin_state();
         state.sub_tab
     };
 
@@ -1422,7 +1427,7 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
         let row_h = 30;
         if y >= rows_y && y < height - 20 {
             let scroll_y = {
-                let state = get_admin_state().lock().unwrap();
+                let state = lock_admin_state();
                 state.service_scroll_y
             };
             let i = ((y - rows_y + scroll_y) / row_h) as i32;
@@ -1445,7 +1450,7 @@ pub fn get_admin_hover_state(x: i32, y: i32, width: i32, height: i32) -> i32 {
         let rows_y = head_y + 30;
         if y >= rows_y && y < height - 20 {
             let (filter_text, processes, scroll_y) = {
-                let state = get_admin_state().lock().unwrap();
+                let state = lock_admin_state();
                 (state.process_filter.clone(), state.processes.clone(), state.scroll_y)
             };
             let lower_filter = filter_text.to_lowercase();
