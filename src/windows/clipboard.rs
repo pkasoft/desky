@@ -17,6 +17,18 @@ const CF_HDROP: u32 = 15;
 
 static LAST_SYNCED_CLIPBOARD: Mutex<String> = Mutex::new(String::new());
 
+/// Attempts to open the Windows clipboard with up to 10 retries (5ms interval)
+/// to handle clipboard contention when other Windows processes hold the lock.
+unsafe fn open_clipboard_with_retry() -> bool {
+    for _ in 0..10 {
+        if OpenClipboard(None).is_ok() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    false
+}
+
 pub fn mark_clipboard_synced(text: &str) {
     if let Ok(mut guard) = LAST_SYNCED_CLIPBOARD.lock() {
         *guard = text.to_string();
@@ -38,7 +50,7 @@ pub fn write_clipboard_files(paths: &[PathBuf]) {
         return;
     }
     unsafe {
-        if OpenClipboard(None).is_ok() {
+        if open_clipboard_with_retry() {
             let _ = EmptyClipboard();
 
             let mut wide_bytes = Vec::new();
@@ -93,7 +105,7 @@ pub fn write_clipboard_files(paths: &[PathBuf]) {
 pub fn write_clipboard_text(text: &str) {
     mark_clipboard_synced(text);
     unsafe {
-        if OpenClipboard(None).is_ok() {
+        if open_clipboard_with_retry() {
             let _ = EmptyClipboard();
             let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
             let bytes_len = wide.len() * 2;
@@ -120,7 +132,7 @@ pub fn write_clipboard_text(text: &str) {
 /// Reads Unicode text from the Windows clipboard
 pub fn read_clipboard_text() -> Option<String> {
     unsafe {
-        if OpenClipboard(None).is_ok() {
+        if open_clipboard_with_retry() {
             let res = if let Ok(h) = GetClipboardData(CF_UNICODETEXT) {
                 if !h.0.is_null() {
                     let hglob = windows::Win32::Foundation::HGLOBAL(h.0);
@@ -162,7 +174,7 @@ pub fn read_clipboard_files() -> Vec<PathBuf> {
     unsafe {
         let mut files = Vec::new();
         if IsClipboardFormatAvailable(CF_HDROP).is_ok() {
-            if OpenClipboard(None).is_ok() {
+            if open_clipboard_with_retry() {
                 if let Ok(h) = GetClipboardData(CF_HDROP) {
                     if !h.0.is_null() {
                         let hdrop = HDROP(h.0);

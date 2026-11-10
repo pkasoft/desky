@@ -244,6 +244,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut abr_frames_dropped: u32 = 0;
             let mut abr_tier: i32 = 2;
             let mut current_challenge_salt: Option<String> = None;
+            let mut last_rx_from_peer = Instant::now();
+            let mut is_reconnecting = false;
 
             while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                 && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
@@ -322,6 +324,38 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_matchmaker_retry = Instant::now();
                 }
 
+                // Auto-reconnect & network blip resilience for active sessions
+                if received_any_frame {
+                    let rx_elapsed = last_rx_from_peer.elapsed();
+                    if rx_elapsed > Duration::from_secs(35) {
+                        let msg = format!(
+                            "Connection timed out with Desky ID '{}' (No response for 35s)",
+                            display_target
+                        );
+                        warn!("{}", msg);
+                        set_session_status(SessionStatus::Error(msg.clone()));
+                        crate::platform::ui::append_status_log(&format!("[x] {}", msg));
+                        break;
+                    } else if rx_elapsed > Duration::from_secs(4) {
+                        if !is_reconnecting {
+                            is_reconnecting = true;
+                            warn!(
+                                "⚠️ Network blip detected (>4s without peer packet). Re-punching UDP and enabling Relay mirroring..."
+                            );
+                            set_session_status(SessionStatus::Connecting(format!(
+                                "{} (Reconnecting...)",
+                                display_target
+                            )));
+                        }
+                        if last_matchmaker_retry.elapsed() >= Duration::from_millis(1500) {
+                            if let Ok(req_bytes) = serde_json::to_vec(&req) {
+                                let _ = socket.send_to(&req_bytes, server_addr).await;
+                            }
+                            last_matchmaker_retry = Instant::now();
+                        }
+                    }
+                }
+
                 // Periodically send ClientHello with ABR quality parameters, relay_id, LAN endpoint, and direct confirmation flag
                 let hello_interval = if received_any_frame {
                     Duration::from_millis(350)
@@ -384,8 +418,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         }
                     }
 
-                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified)
-                    if !is_direct_peer {
+                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified or during reconnect)
+                    if !is_direct_peer || is_reconnecting {
                         let relay_hello = wrap_relay_packet(&norm_target, &hello);
                         let _ = socket.send_to(&relay_hello, server_addr).await;
                     }
@@ -406,7 +440,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer {
+                    if !is_direct_peer || is_reconnecting {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -421,7 +455,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 let _ = socket.send_to(&pkt, p_addr).await;
                             }
                         }
-                        if !is_direct_peer {
+                        if !is_direct_peer || is_reconnecting {
                             let relay = wrap_relay_packet(&norm_target, &pkt);
                             let _ = socket.send_to(&relay, server_addr).await;
                         }
@@ -438,7 +472,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer {
+                    if !is_direct_peer || is_reconnecting {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -457,7 +491,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             let _ = socket.send_to(&auth_pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer {
+                    if !is_direct_peer || is_reconnecting {
                         let relay = wrap_relay_packet(&norm_target, &auth_pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -476,7 +510,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer {
+                    if !is_direct_peer || is_reconnecting {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -508,7 +542,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     let _ = socket.send_to(&pkt, l_addr).await;
                                 }
                             }
-                            if !is_direct_peer {
+                            if !is_direct_peer || is_reconnecting {
                                 let relay_input = wrap_relay_packet(&norm_target, &pkt);
                                 let _ = socket.send_to(&relay_input, server_addr).await;
                             }
@@ -527,6 +561,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
                                 let pkt_type = slice[4];
                                 host_contacted = true;
+                                last_rx_from_peer = Instant::now();
+                                if is_reconnecting {
+                                    is_reconnecting = false;
+                                    info!("🔄 Session re-established successfully with {}!", display_target);
+                                    set_session_status(SessionStatus::Connected(display_target.clone()));
+                                }
                                 if from_addr != server_addr {
                                     is_direct_peer = true;
                                     peer_addr = Some(from_addr);
@@ -844,6 +884,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             peer_addr = Some(from_addr);
                                             is_direct_peer = true;
                                             host_contacted = true;
+                                            last_rx_from_peer = Instant::now();
+                                            if is_reconnecting {
+                                                is_reconnecting = false;
+                                                info!("🔄 Direct P2P tunnel re-punched successfully with {}!", display_target);
+                                                set_session_status(SessionStatus::Connected(display_target.clone()));
+                                            }
                                             if !logged_direct_peer {
                                                 logged_direct_peer = true;
                                                 info!("🎉 Direct P2P tunnel established with {}!", from_addr);

@@ -279,33 +279,11 @@ impl P2PManager {
                                     }
                                 }
 
-                                // Host -> Client Clipboard Synchronization check
+                                // Fallback periodic host clipboard check (every ~1s / 30 frames)
                                 if frame_id % 30 == 0 {
                                     if let Some(text) = crate::p2p::state::read_clipboard_text() {
                                         if !text.is_empty() {
-                                            let hash = crate::p2p::state::compute_clipboard_hash(&text);
-                                            let last = crate::p2p::state::LAST_SYNCED_CLIPBOARD_HASH.load(Ordering::Relaxed);
-                                            if hash != last {
-                                                crate::p2p::state::LAST_SYNCED_CLIPBOARD_HASH.store(hash, Ordering::Relaxed);
-                                                let text_bytes = text.as_bytes();
-                                                let mut pkt = Vec::with_capacity(5 + text_bytes.len());
-                                                pkt.extend_from_slice(MAGIC_DSKY);
-                                                pkt.push(PKT_CLIPBOARD);
-                                                pkt.extend_from_slice(text_bytes);
-                                                for sub in &subscribers {
-                                                    if sub.is_direct || sub.addr != target_server_stream {
-                                                        let _ = std_sock_stream_capture.send_to(&pkt, sub.addr);
-                                                        if let Some(l_addr) = sub.lan_addr {
-                                                            if l_addr != sub.addr {
-                                                                let _ = std_sock_stream_capture.send_to(&pkt, l_addr);
-                                                            }
-                                                        }
-                                                    } else if !sub.relay_id.is_empty() {
-                                                        let relay = wrap_relay_packet(&sub.relay_id, &pkt);
-                                                        let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
-                                                    }
-                                                }
-                                            }
+                                            crate::p2p::state::send_remote_clipboard(&text);
                                         }
                                     }
                                 }

@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, SW_RESTORE, WM_CHAR, WM_CLIPBOARDUPDATE, WM_COMMAND,
     WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO,
     WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE,
     WM_TIMER,
 };
 
@@ -176,6 +176,15 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     desc
                 );
             } else if let Some(text) = crate::p2p::read_clipboard_text() {
+                if !crate::platform::is_clipboard_recently_synced(&text) {
+                    crate::platform::mark_clipboard_synced(&text);
+                    crate::p2p::send_remote_clipboard(&text);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_SETFOCUS => {
+            if let Some(text) = crate::p2p::read_clipboard_text() {
                 if !crate::platform::is_clipboard_recently_synced(&text) {
                     crate::platform::mark_clipboard_synced(&text);
                     crate::p2p::send_remote_clipboard(&text);
@@ -972,7 +981,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     }
                 }
 
-                // Seamless Explorer Clipboard File Paste (Ctrl + V)
+                // Seamless Explorer Clipboard File Paste & Text Sync (Ctrl + V)
                 if is_ctrl && (vk == 0x56 || vk == 0x76) {
                     let files = crate::p2p::read_clipboard_files();
                     if !files.is_empty() {
@@ -981,6 +990,10 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                             crate::p2p::send_file_transfer(f);
                         }
                         return LRESULT(0);
+                    } else if let Some(text) = crate::p2p::read_clipboard_text() {
+                        if !text.is_empty() {
+                            crate::p2p::send_remote_clipboard(&text);
+                        }
                     }
                 }
 
