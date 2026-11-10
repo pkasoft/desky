@@ -764,6 +764,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
                                         }
                                     }
+                                    PKT_DISCONNECT => {
+                                        info!("🔴 Remote host ended the session.");
+                                        set_session_status(SessionStatus::Error("Remote session was disconnected by host.".to_string()));
+                                        CLIENT_SESSION_ACTIVE.store(false, Ordering::Relaxed);
+                                        crate::platform::ui::request_main_redraw();
+                                    }
                                     PKT_CHAT_MESSAGE => {
                                         if slice.len() > 5 {
                                             if let Ok(text) = std::str::from_utf8(&slice[5..]) {

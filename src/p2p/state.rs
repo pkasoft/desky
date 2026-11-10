@@ -3,7 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tracing::info;
 
@@ -333,6 +333,77 @@ pub fn respond_to_pending_approval(approved: bool) {
                 "[-] Declined connection request from ID: {}",
                 pending.client_id
             ));
+        }
+    }
+    crate::platform::ui::request_main_redraw();
+}
+
+static HOST_SESSION_TRACKER: OnceLock<Mutex<Option<(String, Instant)>>> = OnceLock::new();
+
+/// Returns `(client_id, elapsed_seconds)` if an approved remote client is actively connected to this host
+pub fn get_active_host_session_info() -> Option<(String, u64)> {
+    let active_id = {
+        if let Ok(map) = host_subscribers_store().lock() {
+            map.values()
+                .find(|s| s.auth_state == AuthState::Approved && s.last_seen.elapsed() < Duration::from_secs(20))
+                .map(|s| s.client_id.clone())
+        } else {
+            None
+        }
+    };
+
+    let store = HOST_SESSION_TRACKER.get_or_init(|| Mutex::new(None));
+    if let Some(id) = active_id {
+        if let Ok(mut g) = store.lock() {
+            if let Some((tracked_id, start)) = g.as_ref() {
+                if tracked_id == &id {
+                    return Some((id, start.elapsed().as_secs()));
+                }
+            }
+            let now = Instant::now();
+            *g = Some((id.clone(), now));
+            return Some((id, 0));
+        }
+    } else if let Ok(mut g) = store.lock() {
+        *g = None;
+    }
+    None
+}
+
+/// Disconnects all connected client subscribers from this host and sends PKT_DISCONNECT
+pub fn disconnect_host_session() {
+    let mut to_send: Vec<(SocketAddr, Option<SocketAddr>, String)> = Vec::new();
+    if let Ok(mut map) = host_subscribers_store().lock() {
+        for sub in map.values() {
+            if sub.auth_state == AuthState::Approved {
+                to_send.push((sub.addr, sub.lan_addr, sub.relay_id.clone()));
+            }
+        }
+        map.clear();
+    }
+    let store = HOST_SESSION_TRACKER.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = store.lock() {
+        *g = None;
+    }
+
+    if let Ok(socket_opt) = host_std_socket_store().lock() {
+        if let Some(sock) = socket_opt.as_ref() {
+            let mut disc = Vec::with_capacity(5);
+            disc.extend_from_slice(MAGIC_DSKY);
+            disc.push(PKT_DISCONNECT);
+            let server_addr = resolve_server_addr();
+            for (addr, lan_addr, relay_id) in to_send {
+                let _ = sock.send_to(&disc, addr);
+                if let Some(lan) = lan_addr {
+                    if lan != addr {
+                        let _ = sock.send_to(&disc, lan);
+                    }
+                }
+                if !relay_id.is_empty() {
+                    let relay = wrap_relay_packet(&relay_id, &disc);
+                    let _ = sock.send_to(&relay, server_addr);
+                }
+            }
         }
     }
     crate::platform::ui::request_main_redraw();

@@ -86,6 +86,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
         }
         WM_TIMER => {
             sync_edit_target_visibility();
+            crate::windows::ui::sync_host_session_ui();
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
@@ -119,6 +120,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
         }
         WM_APP_REDRAW => {
             sync_edit_target_visibility();
+            crate::windows::ui::sync_host_session_ui();
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }

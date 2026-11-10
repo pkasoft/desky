@@ -65,6 +65,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
         let mut last_chat_hover: i32 = -1;
         let mut last_ui_refresh = Instant::now();
         let mut last_edit_wanted: bool = true;
+        let mut last_host_session_active: bool = false;
 
         let mut cached_mem_dc: Option<HDC> = None;
         let mut cached_mem_bmp: Option<windows::Win32::Graphics::Gdi::HBITMAP> = None;
@@ -108,6 +109,17 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                 let want_edit = crate::windows::ui::launcher::should_show_edit_target();
                 if want_edit != last_edit_wanted {
                     last_edit_wanted = want_edit;
+                    let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
+                        Some(target_hwnd),
+                        crate::windows::ui::launcher::WM_APP_REDRAW,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(0),
+                    );
+                }
+
+                let has_host_session = crate::p2p::get_active_host_session_info().is_some();
+                if has_host_session != last_host_session_active {
+                    last_host_session_active = has_host_session;
                     let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                         Some(target_hwnd),
                         crate::windows::ui::launcher::WM_APP_REDRAW,

@@ -17,6 +17,7 @@ pub use host::P2PManager;
 pub use radar::{get_lan_peers, parse_mac_address, send_wake_on_lan, start_lan_radar, trigger_lan_ping};
 #[allow(unused_imports)]
 pub use state::{
+    disconnect_host_session, get_active_host_session_info,
     get_active_quality_params, get_active_session_target, get_latest_remote_frame,
     get_pending_approval, get_quality_mode, get_remote_cursor_shape, get_server_ping_ms,
     get_session_bitrate_kbps, get_session_rtt_ms, get_session_status, get_transfer_progress,
