@@ -526,6 +526,16 @@ pub unsafe fn draw_fullscreen_settings_view(
     let _ = DeleteObject(HGDIOBJ(font_btn.0));
 }
 
+pub fn close_settings_modal(hwnd: HWND) {
+    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+    let active = super::tabs::ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+    let has_pending = crate::p2p::get_pending_approval().is_some();
+    crate::windows::ui::launcher::set_edit_target_visibility(active == 0 && !has_pending);
+    unsafe {
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
+
 pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x: i32, client_y: i32, top_y: i32) -> bool {
     let panel_w = (client_w - 48).clamp(320, 620);
     let panel_x = (client_w - panel_w) / 2;
@@ -542,8 +552,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
 
     // Close Button [ Close × ]
     if client_x >= close_x && client_x <= close_x + close_w && client_y >= tab_y && client_y <= tab_y + tab_h {
-        SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+        close_settings_modal(hwnd);
         return true;
     }
 
@@ -646,8 +655,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;
         if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            close_settings_modal(hwnd);
             return true;
         }
     } else if active_cat == 1 {
@@ -710,8 +718,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;
         if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            close_settings_modal(hwnd);
             return true;
         }
     } else if active_cat == 2 {
@@ -737,8 +744,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;
         if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            close_settings_modal(hwnd);
             return true;
         }
     } else {
@@ -750,8 +756,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;
         if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            close_settings_modal(hwnd);
             return true;
         }
     }

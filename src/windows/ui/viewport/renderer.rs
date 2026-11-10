@@ -174,7 +174,6 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                         let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed);
 
                         if modal_open {
-                            crate::windows::ui::launcher::set_edit_target_visibility(false);
                             draw_fullscreen_settings_view(
                                 mem_dc,
                                 client_w,

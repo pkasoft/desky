@@ -19,7 +19,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DispatchMessageW, GetMessageW, GetWindowTextLengthW, GetWindowTextW,
-    IsWindow, LoadCursorW, PostMessageW, RegisterClassExW, SendMessageW, SetCursor,
+    IsWindow, IsWindowVisible, LoadCursorW, PostMessageW, RegisterClassExW, SendMessageW, SetCursor,
     SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage,
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, IDC_ARROW, IDC_HAND, MSG, SWP_NOACTIVATE,
     SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WM_SETFONT,
@@ -175,7 +175,10 @@ pub fn set_edit_target_hwnd(hwnd: HWND) {
 pub fn set_edit_target_visibility(visible: bool) {
     unsafe {
         if !HWND_EDIT_TARGET.0.is_null() && IsWindow(Some(HWND_EDIT_TARGET)).as_bool() {
-            let _ = ShowWindow(HWND_EDIT_TARGET, if visible { SW_SHOW } else { SW_HIDE });
+            let is_currently_visible = IsWindowVisible(HWND_EDIT_TARGET).as_bool();
+            if is_currently_visible != visible {
+                let _ = ShowWindow(HWND_EDIT_TARGET, if visible { SW_SHOW } else { SW_HIDE });
+            }
         }
     }
 }

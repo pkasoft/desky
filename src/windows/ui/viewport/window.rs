@@ -196,16 +196,15 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let client_h = rect.bottom - rect.top;
 
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                if handle_settings_click(
+                let _ = handle_settings_click(
                     hwnd,
                     client_w,
                     client_h,
                     client_x,
                     client_y,
                     TOOLBAR_HEIGHT,
-                ) {
-                    return LRESULT(0);
-                }
+                );
+                return LRESULT(0);
             }
 
             if is_whiteboard_active() {
@@ -361,6 +360,10 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if client_y >= TOOLBAR_HEIGHT {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                 if active == 0 {
+                    return LRESULT(0);
+                }
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active == 0 {
                     crate::windows::ui::launcher::handle_homepage_click(
                         hwnd, client_x, client_y, client_w, client_h,
                     );
@@ -488,6 +491,10 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 }
             }
 
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
+
             if client_y >= TOOLBAR_HEIGHT {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                 if active == 0 {
@@ -507,6 +514,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_RBUTTONDOWN => {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
@@ -535,6 +545,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_RBUTTONUP => {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
@@ -557,6 +570,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_MBUTTONDOWN => {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
@@ -579,6 +595,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_MBUTTONUP => {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
@@ -603,6 +622,17 @@ pub unsafe extern "system" fn viewport_wnd_proc(
         WM_MOUSEMOVE => {
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                let c = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+                SetCursor(Some(c));
+                return LRESULT(0);
+            }
+            if is_quick_actions_open() {
+                let c = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
+                SetCursor(Some(c));
+                return LRESULT(0);
+            }
 
             if is_whiteboard_active() {
                 let screen_w = REMOTE_ORIG_W.load(Ordering::Relaxed) as i32;
@@ -778,6 +808,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_MOUSEWHEEL => {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) || is_quick_actions_open() {
+                return LRESULT(0);
+            }
             let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
             let screen_x = (lparam.0 & 0xffff) as i16 as i32;
             let screen_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
@@ -806,6 +839,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_CHAR => {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                return LRESULT(0);
+            }
             let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
             if active == 0 {
                 return LRESULT(0);
@@ -862,7 +898,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
             if wparam.0 == 0x1B {
                 if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+                    super::settings_modal::close_settings_modal(hwnd);
                 } else if crate::p2p::is_chat_open() {
                     crate::p2p::set_chat_open(false);
                     let _ = InvalidateRect(Some(hwnd), None, false);

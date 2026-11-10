@@ -7,10 +7,24 @@ use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
 use crate::protocol::{InputEvent, MouseButton};
-use super::settings_modal::DISPLAY_MODE;
+use super::settings_modal::{DISPLAY_MODE, SHOW_SETTINGS_MODAL};
 use super::tabs::ACTIVE_TAB_INDEX;
 use super::toolbar::TOOLBAR_HEIGHT;
-use super::{REMOTE_ORIG_H, REMOTE_ORIG_W};
+use super::{REMOTE_ORIG_H, REMOTE_ORIG_W, VIEWPORT_IS_ADMIN_MODE};
+
+#[inline]
+pub fn is_remote_session_interactive() -> bool {
+    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+        return false;
+    }
+    if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+        return false;
+    }
+    true
+}
 
 pub fn map_client_to_screen(
     client_x: i32,
@@ -80,7 +94,7 @@ pub unsafe fn inject_remote_mouse(
     is_down: bool,
     is_right: bool,
 ) {
-    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+    if !is_remote_session_interactive() {
         return;
     }
     let mut rect = RECT::default();
@@ -126,7 +140,7 @@ pub unsafe fn inject_remote_mouse_move(
     client_x: i32,
     client_y: i32,
 ) {
-    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+    if !is_remote_session_interactive() {
         return;
     }
     let mut rect = RECT::default();
@@ -158,7 +172,7 @@ pub unsafe fn inject_remote_mouse_middle(
     client_y: i32,
     is_down: bool,
 ) {
-    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+    if !is_remote_session_interactive() {
         return;
     }
     let mut rect = RECT::default();
@@ -194,14 +208,14 @@ pub unsafe fn inject_remote_mouse_middle(
 }
 
 pub fn inject_remote_wheel(delta: i32) {
-    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+    if !is_remote_session_interactive() {
         return;
     }
     crate::p2p::send_remote_input(InputEvent::MouseWheel { delta });
 }
 
 pub fn inject_remote_key(key_code: u32, is_down: bool) {
-    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+    if !is_remote_session_interactive() {
         return;
     }
     if is_down {
