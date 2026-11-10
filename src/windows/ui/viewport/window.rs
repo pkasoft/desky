@@ -21,7 +21,7 @@ use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, GetClientRect, GetCursorPos, IsIconic, LoadCursorW, PostQuitMessage,
     RegisterClassExW, SetCursor, SetForegroundWindow, ShowWindow,
-    IDC_ARROW, IDC_CROSS, IDC_HAND, MINMAXINFO, SW_RESTORE, WM_CHAR, WM_CLIPBOARDUPDATE, WM_COMMAND,
+    IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, SW_RESTORE, WM_CHAR, WM_CLIPBOARDUPDATE, WM_COMMAND,
     WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO,
     WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
     WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SIZE,
@@ -395,7 +395,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 } else {
                     if crate::p2p::is_chat_open() {
                         let chat_hit = super::chat_hud::hit_test_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT);
-                        if chat_hit > 0 {
+                        if chat_hit >= 0 {
                             if chat_hit == super::chat_hud::BTN_CHAT_CLOSE {
                                 crate::p2p::set_chat_open(false);
                             } else if chat_hit == super::chat_hud::BTN_CHAT_CLEAR {
@@ -490,6 +490,16 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
 
             if client_y >= TOOLBAR_HEIGHT {
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active > 0 && crate::p2p::is_chat_open() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    if super::chat_hud::is_mouse_over_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT) {
+                        return LRESULT(0);
+                    }
+                }
                 inject_remote_mouse(hwnd, client_x, client_y, false, false);
             }
             LRESULT(0)
@@ -505,6 +515,16 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active > 0 && crate::p2p::is_chat_open() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    if super::chat_hud::is_mouse_over_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT) {
+                        return LRESULT(0);
+                    }
+                }
                 inject_remote_mouse(hwnd, client_x, client_y, true, true);
             }
             LRESULT(0)
@@ -514,6 +534,16 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active > 0 && crate::p2p::is_chat_open() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    if super::chat_hud::is_mouse_over_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT) {
+                        return LRESULT(0);
+                    }
+                }
                 inject_remote_mouse(hwnd, client_x, client_y, false, true);
             }
             LRESULT(0)
@@ -523,6 +553,16 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active > 0 && crate::p2p::is_chat_open() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    if super::chat_hud::is_mouse_over_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT) {
+                        return LRESULT(0);
+                    }
+                }
                 inject_remote_mouse_middle(hwnd, client_x, client_y, true);
             }
             LRESULT(0)
@@ -532,6 +572,16 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
             if client_y >= TOOLBAR_HEIGHT && !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                if active > 0 && crate::p2p::is_chat_open() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    if super::chat_hud::is_mouse_over_chat_hud(client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT) {
+                        return LRESULT(0);
+                    }
+                }
                 inject_remote_mouse_middle(hwnd, client_x, client_y, false);
             }
             LRESULT(0)
@@ -586,6 +636,26 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     super::chat_hud::handle_chat_mousemove(
                         hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
                     );
+                    if super::chat_hud::is_mouse_over_chat_hud(
+                        client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
+                    ) {
+                        let hit = super::chat_hud::hit_test_chat_hud(
+                            client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
+                        );
+                        let cursor_name = if hit == super::chat_hud::AREA_CHAT_INPUT {
+                            IDC_IBEAM
+                        } else if hit == super::chat_hud::BTN_CHAT_SEND
+                            || hit == super::chat_hud::BTN_CHAT_CLOSE
+                            || hit == super::chat_hud::BTN_CHAT_CLEAR
+                        {
+                            IDC_HAND
+                        } else {
+                            IDC_ARROW
+                        };
+                        let c = LoadCursorW(None, cursor_name).unwrap_or_default();
+                        SetCursor(Some(c));
+                        return LRESULT(0);
+                    }
                 }
                 if active == 0 {
                     let mut rect = RECT::default();
@@ -646,6 +716,33 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 } else if !VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed)
                     && ACTIVE_TAB_INDEX.load(Ordering::Relaxed) > 0
                 {
+                    if crate::p2p::is_chat_open() {
+                        let mut rect = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut rect);
+                        let client_w = rect.right - rect.left;
+                        let client_h = rect.bottom - rect.top;
+                        if super::chat_hud::is_mouse_over_chat_hud(
+                            cursor_pt.x, cursor_pt.y, client_w, client_h, TOOLBAR_HEIGHT,
+                        ) {
+                            let hit = super::chat_hud::hit_test_chat_hud(
+                                cursor_pt.x, cursor_pt.y, client_w, client_h, TOOLBAR_HEIGHT,
+                            );
+                            let cursor_name = if hit == super::chat_hud::AREA_CHAT_INPUT {
+                                IDC_IBEAM
+                            } else if hit == super::chat_hud::BTN_CHAT_SEND
+                                || hit == super::chat_hud::BTN_CHAT_CLOSE
+                                || hit == super::chat_hud::BTN_CHAT_CLEAR
+                            {
+                                IDC_HAND
+                            } else {
+                                IDC_ARROW
+                            };
+                            let c = LoadCursorW(None, cursor_name).unwrap_or_default();
+                            SetCursor(Some(c));
+                            return LRESULT(1);
+                        }
+                    }
+
                     let latest_frame = crate::p2p::get_latest_remote_frame();
                     let status = crate::p2p::get_session_status();
                     let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
@@ -668,6 +765,22 @@ pub unsafe extern "system" fn viewport_wnd_proc(
         }
         WM_MOUSEWHEEL => {
             let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
+            let screen_x = (lparam.0 & 0xffff) as i16 as i32;
+            let screen_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+            let mut pt = POINT { x: screen_x, y: screen_y };
+            let _ = ScreenToClient(hwnd, &mut pt);
+
+            let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+            if active > 0 && crate::p2p::is_chat_open() {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let client_w = rect.right - rect.left;
+                let client_h = rect.bottom - rect.top;
+                if super::chat_hud::is_mouse_over_chat_hud(pt.x, pt.y, client_w, client_h, TOOLBAR_HEIGHT) {
+                    return LRESULT(0);
+                }
+            }
+
             if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 crate::windows::ui::admin::handle_admin_scroll(delta);
             } else {

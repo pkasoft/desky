@@ -115,6 +115,16 @@ pub fn hit_test_chat_hud(
     9500 // Generic inside chat click
 }
 
+pub fn is_mouse_over_chat_hud(
+    client_x: i32,
+    client_y: i32,
+    client_w: i32,
+    client_h: i32,
+    toolbar_h: i32,
+) -> bool {
+    hit_test_chat_hud(client_x, client_y, client_w, client_h, toolbar_h) >= 0
+}
+
 pub fn handle_chat_mousemove(
     hwnd: HWND,
     client_x: i32,
