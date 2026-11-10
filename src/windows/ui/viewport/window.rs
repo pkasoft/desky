@@ -360,10 +360,6 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if client_y >= TOOLBAR_HEIGHT {
                 let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
                 if active == 0 {
-                    return LRESULT(0);
-                }
-                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-                if active == 0 {
                     crate::windows::ui::launcher::handle_homepage_click(
                         hwnd, client_x, client_y, client_w, client_h,
                     );
@@ -709,6 +705,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     crate::windows::ui::launcher::handle_homepage_mousemove(
                         hwnd, client_x, client_y, client_w, client_h,
                     );
+                    return LRESULT(0);
                 } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                     let mut rect = RECT::default();
                     let _ = GetClientRect(hwnd, &mut rect);
