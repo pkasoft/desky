@@ -37,7 +37,7 @@ use super::quick_actions::{
 };
 use super::renderer::{REMOTE_ORIG_H, REMOTE_ORIG_W, VIEWPORT_RUNNING};
 use super::settings_modal::{
-    handle_settings_click, CAPTURE_CURSOR, DISPLAY_MODE, SHOW_SETTINGS_MODAL, TARGET_FPS,
+    close_settings_modal, handle_settings_click, CAPTURE_CURSOR, DISPLAY_MODE, SHOW_SETTINGS_MODAL, TARGET_FPS,
 };
 use super::tabs::{
     close_session_tab, detach_tab, get_session_tabs, switch_session_tab, ACTIVE_REMOTE_MONITOR, ACTIVE_TAB_INDEX,
@@ -195,15 +195,162 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let client_w = rect.right - rect.left;
             let client_h = rect.bottom - rect.top;
 
+            if client_y < TOOLBAR_HEIGHT {
+                let hit = get_tab_hit_state(hwnd, client_x, client_y);
+
+                if hit == 9006 {
+                    let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+                    let has_pending = crate::p2p::get_pending_approval().is_some();
+                    let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                    set_edit_target_visibility(active == 0 && !has_pending && prev);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9007 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    toggle_quick_actions();
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9008 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    toggle_whiteboard();
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9010 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    let is_open = crate::p2p::toggle_chat();
+                    if is_open {
+                        crate::p2p::mark_chat_read();
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9009 {
+                    if crate::recorder::is_recording() {
+                        if let Some((path, total_bytes, total_frames, dur)) =
+                            crate::recorder::stop_recording()
+                        {
+                            crate::windows::ui::launcher::append_status_log(&format!(
+                                "🎥 Session recording saved: {} ({} frames, {} KB, {:.1}s)",
+                                path.file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default(),
+                                total_frames,
+                                total_bytes / 1024,
+                                dur.as_secs_f32()
+                            ));
+                        }
+                    } else {
+                        let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed).max(1280);
+                        let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed).max(720);
+                        let fps = TARGET_FPS.load(Ordering::Relaxed);
+                        if let Ok(path) = crate::recorder::start_recording(orig_w, orig_h, fps) {
+                            crate::windows::ui::launcher::append_status_log(&format!(
+                                "🔴 Recording started: {}",
+                                path.display()
+                            ));
+                        }
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9001 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    VIEWPORT_IS_ADMIN_MODE.store(false, Ordering::Relaxed);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9002 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    VIEWPORT_IS_ADMIN_MODE.store(true, Ordering::Relaxed);
+                    crate::p2p::send_admin_request(crate::protocol::AdminReq::GetProcesses);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9003 {
+                    let muted = crate::windows::audio::toggle_audio_mute();
+                    info!("Audio toggle muted: {}", muted);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9004 {
+                    let new_priv = !REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
+                    REMOTE_PRIVACY_MODE.store(new_priv, Ordering::Relaxed);
+                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SetPrivacyMode {
+                        enabled: new_priv,
+                    });
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9005 {
+                    let is_on = crate::windows::audio::toggle_intercom_voice();
+                    info!("Intercom voice: {}", is_on);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9101 {
+                    ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
+                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+                        monitor_index: 0,
+                    });
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9102 {
+                    ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
+                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+                        monitor_index: 1,
+                    });
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9103 {
+                    ACTIVE_REMOTE_MONITOR.store(2, Ordering::Relaxed);
+                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+                        monitor_index: 2,
+                    });
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit >= 1000 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    let close_idx = (hit - 1000) as usize;
+                    close_session_tab(hwnd, close_idx);
+                    return LRESULT(0);
+                } else if hit == 999 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    switch_session_tab(0);
+                    return LRESULT(0);
+                } else if hit >= 0 {
+                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                        close_settings_modal(hwnd);
+                    }
+                    let tab_idx = hit as usize;
+                    switch_session_tab(tab_idx);
+                    if tab_idx > 0 {
+                        DRAGGING_TAB_INDEX.store(hit, Ordering::Relaxed);
+                        *DRAG_START_POS.lock().unwrap() = Some((client_x, client_y));
+                        let _ = SetCapture(hwnd);
+                    }
+                    return LRESULT(0);
+                }
+                return LRESULT(0);
+            }
+
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                let _ = handle_settings_click(
+                if !handle_settings_click(
                     hwnd,
                     client_w,
                     client_h,
                     client_x,
                     client_y,
                     TOOLBAR_HEIGHT,
-                );
+                ) {
+                    close_settings_modal(hwnd);
+                }
                 return LRESULT(0);
             }
 
@@ -237,124 +384,6 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 } else {
                     set_quick_actions_open(false);
                 }
-            }
-
-            let hit = get_tab_hit_state(hwnd, client_x, client_y);
-
-            if hit == 9006 {
-                let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
-                let has_pending = crate::p2p::get_pending_approval().is_some();
-                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-                set_edit_target_visibility(active == 0 && !has_pending && prev);
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9007 {
-                toggle_quick_actions();
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9008 {
-                toggle_whiteboard();
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9010 {
-                let is_open = crate::p2p::toggle_chat();
-                if is_open {
-                    crate::p2p::mark_chat_read();
-                }
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9009 {
-                if crate::recorder::is_recording() {
-                    if let Some((path, total_bytes, total_frames, dur)) =
-                        crate::recorder::stop_recording()
-                    {
-                        crate::windows::ui::launcher::append_status_log(&format!(
-                            "🎥 Session recording saved: {} ({} frames, {} KB, {:.1}s)",
-                            path.file_name()
-                                .map(|n| n.to_string_lossy().to_string())
-                                .unwrap_or_default(),
-                            total_frames,
-                            total_bytes / 1024,
-                            dur.as_secs_f32()
-                        ));
-                    }
-                } else {
-                    let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed).max(1280);
-                    let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed).max(720);
-                    let fps = TARGET_FPS.load(Ordering::Relaxed);
-                    if let Ok(path) = crate::recorder::start_recording(orig_w, orig_h, fps) {
-                        crate::windows::ui::launcher::append_status_log(&format!(
-                            "🔴 Recording started: {}",
-                            path.display()
-                        ));
-                    }
-                }
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9001 {
-                VIEWPORT_IS_ADMIN_MODE.store(false, Ordering::Relaxed);
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9002 {
-                VIEWPORT_IS_ADMIN_MODE.store(true, Ordering::Relaxed);
-                crate::p2p::send_admin_request(crate::protocol::AdminReq::GetProcesses);
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9003 {
-                let muted = crate::windows::audio::toggle_audio_mute();
-                info!("Audio toggle muted: {}", muted);
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9004 {
-                let new_priv = !REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
-                REMOTE_PRIVACY_MODE.store(new_priv, Ordering::Relaxed);
-                crate::p2p::send_admin_request(crate::protocol::AdminReq::SetPrivacyMode {
-                    enabled: new_priv,
-                });
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9005 {
-                let is_on = crate::windows::audio::toggle_intercom_voice();
-                info!("Intercom voice: {}", is_on);
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9101 {
-                ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
-                crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
-                    monitor_index: 0,
-                });
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9102 {
-                ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
-                crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
-                    monitor_index: 1,
-                });
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit == 9103 {
-                ACTIVE_REMOTE_MONITOR.store(2, Ordering::Relaxed);
-                crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
-                    monitor_index: 2,
-                });
-                let _ = InvalidateRect(Some(hwnd), None, false);
-                return LRESULT(0);
-            } else if hit >= 1000 {
-                let close_idx = (hit - 1000) as usize;
-                close_session_tab(hwnd, close_idx);
-                return LRESULT(0);
-            } else if hit == 999 {
-                switch_session_tab(0);
-                return LRESULT(0);
-            } else if hit >= 0 {
-                let tab_idx = hit as usize;
-                switch_session_tab(tab_idx);
-                if tab_idx > 0 {
-                    DRAGGING_TAB_INDEX.store(hit, Ordering::Relaxed);
-                    *DRAG_START_POS.lock().unwrap() = Some((client_x, client_y));
-                    let _ = SetCapture(hwnd);
-                }
-                return LRESULT(0);
             }
 
             if client_y >= TOOLBAR_HEIGHT {
@@ -619,6 +648,25 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
+            if client_y < TOOLBAR_HEIGHT {
+                let prev = TAB_HOVER_STATE.load(Ordering::Relaxed);
+                let hit = get_tab_hit_state(hwnd, client_x, client_y);
+                if prev != hit {
+                    TAB_HOVER_STATE.store(hit, Ordering::Relaxed);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                let cursor_name = if hit >= 0 { IDC_HAND } else { IDC_ARROW };
+                let c = LoadCursorW(None, cursor_name).unwrap_or_default();
+                SetCursor(Some(c));
+                return LRESULT(0);
+            }
+
+            let prev = TAB_HOVER_STATE.load(Ordering::Relaxed);
+            if prev != -1 {
+                TAB_HOVER_STATE.store(-1, Ordering::Relaxed);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+            }
+
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let c = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
                 SetCursor(Some(c));
@@ -654,86 +702,72 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 }
             }
 
-            if client_y < TOOLBAR_HEIGHT {
-                let prev = TAB_HOVER_STATE.load(Ordering::Relaxed);
-                let hit = get_tab_hit_state(hwnd, client_x, client_y);
-                if prev != hit {
-                    TAB_HOVER_STATE.store(hit, Ordering::Relaxed);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-            } else {
-                let prev = TAB_HOVER_STATE.load(Ordering::Relaxed);
-                if prev != -1 {
-                    TAB_HOVER_STATE.store(-1, Ordering::Relaxed);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
-                if active > 0 && crate::p2p::is_chat_open() {
-                    let mut rect = RECT::default();
-                    let _ = GetClientRect(hwnd, &mut rect);
-                    let client_w = rect.right - rect.left;
-                    let client_h = rect.bottom - rect.top;
-                    super::chat_hud::handle_chat_mousemove(
-                        hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
-                    );
-                    if super::chat_hud::is_mouse_over_chat_hud(
+            let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+            if active > 0 && crate::p2p::is_chat_open() {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let client_w = rect.right - rect.left;
+                let client_h = rect.bottom - rect.top;
+                super::chat_hud::handle_chat_mousemove(
+                    hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
+                );
+                if super::chat_hud::is_mouse_over_chat_hud(
+                    client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
+                ) {
+                    let hit = super::chat_hud::hit_test_chat_hud(
                         client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
-                    ) {
-                        let hit = super::chat_hud::hit_test_chat_hud(
-                            client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT,
-                        );
-                        let cursor_name = if hit == super::chat_hud::AREA_CHAT_INPUT {
-                            IDC_IBEAM
-                        } else if hit == super::chat_hud::BTN_CHAT_SEND
-                            || hit == super::chat_hud::BTN_CHAT_CLOSE
-                            || hit == super::chat_hud::BTN_CHAT_CLEAR
-                        {
-                            IDC_HAND
-                        } else {
-                            IDC_ARROW
-                        };
-                        let c = LoadCursorW(None, cursor_name).unwrap_or_default();
-                        SetCursor(Some(c));
-                        return LRESULT(0);
-                    }
-                }
-                if active == 0 {
-                    let mut rect = RECT::default();
-                    let _ = GetClientRect(hwnd, &mut rect);
-                    let client_w = rect.right - rect.left;
-                    let client_h = rect.bottom - rect.top;
-                    crate::windows::ui::launcher::handle_homepage_mousemove(
-                        hwnd, client_x, client_y, client_w, client_h,
                     );
-                    return LRESULT(0);
-                } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
-                    let mut rect = RECT::default();
-                    let _ = GetClientRect(hwnd, &mut rect);
-                    let client_w = rect.right - rect.left;
-                    let client_h = rect.bottom - rect.top;
-                    let hover = crate::windows::ui::admin::get_admin_hover_state(
-                        client_x, client_y, client_w, client_h,
-                    );
-                    ADMIN_HOVER_STATE.store(hover, Ordering::Relaxed);
-                } else if !is_whiteboard_active() {
-                    let latest_frame = crate::p2p::get_latest_remote_frame();
-                    let status = crate::p2p::get_session_status();
-                    let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
-
-                    if is_err || latest_frame.is_none() {
-                        let mut rect = RECT::default();
-                        let _ = GetClientRect(hwnd, &mut rect);
-                        let client_w = rect.right - rect.left;
-                        let client_h = rect.bottom - rect.top;
-                        super::session_status_view::handle_status_mousemove(
-                            hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT, &status,
-                        );
+                    let cursor_name = if hit == super::chat_hud::AREA_CHAT_INPUT {
+                        IDC_IBEAM
+                    } else if hit == super::chat_hud::BTN_CHAT_SEND
+                        || hit == super::chat_hud::BTN_CHAT_CLOSE
+                        || hit == super::chat_hud::BTN_CHAT_CLEAR
+                    {
+                        IDC_HAND
                     } else {
-                        let shape_id = crate::p2p::get_remote_cursor_shape();
-                        let c = crate::windows::get_hcursor_for_shape(shape_id);
-                        SetCursor(Some(c));
-                        inject_remote_mouse_move(hwnd, client_x, client_y);
-                    }
+                        IDC_ARROW
+                    };
+                    let c = LoadCursorW(None, cursor_name).unwrap_or_default();
+                    SetCursor(Some(c));
+                    return LRESULT(0);
+                }
+            }
+            if active == 0 {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let client_w = rect.right - rect.left;
+                let client_h = rect.bottom - rect.top;
+                crate::windows::ui::launcher::handle_homepage_mousemove(
+                    hwnd, client_x, client_y, client_w, client_h,
+                );
+                return LRESULT(0);
+            } else if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let client_w = rect.right - rect.left;
+                let client_h = rect.bottom - rect.top;
+                let hover = crate::windows::ui::admin::get_admin_hover_state(
+                    client_x, client_y, client_w, client_h,
+                );
+                ADMIN_HOVER_STATE.store(hover, Ordering::Relaxed);
+            } else if !is_whiteboard_active() {
+                let latest_frame = crate::p2p::get_latest_remote_frame();
+                let status = crate::p2p::get_session_status();
+                let is_err = matches!(status, crate::p2p::SessionStatus::Error(_));
+
+                if is_err || latest_frame.is_none() {
+                    let mut rect = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rect);
+                    let client_w = rect.right - rect.left;
+                    let client_h = rect.bottom - rect.top;
+                    super::session_status_view::handle_status_mousemove(
+                        hwnd, client_x, client_y, client_w, client_h, TOOLBAR_HEIGHT, &status,
+                    );
+                } else {
+                    let shape_id = crate::p2p::get_remote_cursor_shape();
+                    let c = crate::windows::get_hcursor_for_shape(shape_id);
+                    SetCursor(Some(c));
+                    inject_remote_mouse_move(hwnd, client_x, client_y);
                 }
             }
             LRESULT(0)

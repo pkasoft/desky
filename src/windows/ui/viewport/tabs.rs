@@ -61,6 +61,7 @@ pub fn get_session_tabs() -> Vec<SessionTab> {
 }
 
 pub fn switch_session_tab(tab_idx: usize) {
+    super::settings_modal::SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
     let store = SESSION_TABS.get_or_init(|| Mutex::new(Vec::new()));
     if let Ok(tabs) = store.lock() {
         if let Some(tab) = tabs.get(tab_idx) {
