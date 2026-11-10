@@ -6,9 +6,9 @@
 use std::sync::atomic::AtomicI32;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetTextExtentPoint32W,
-    SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_SINGLELINE,
-    DT_VCENTER, FW_BOLD, FW_SEMIBOLD, HDC, HGDIOBJ, TRANSPARENT,
+    CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetTextExtentPoint32W,
+    Rectangle, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
+    DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
@@ -16,13 +16,61 @@ use super::quick_actions::is_quick_actions_open;
 use super::settings_modal::SHOW_SETTINGS_MODAL;
 use super::theme::{
     create_segoe_font, draw_rounded_box, PK_BG, PK_BTN_HOVER, PK_CARD, PK_CARD_BORDER, PK_GREEN,
-    PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
+    PK_GREEN_DARK, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
 };
 use super::whiteboard::is_whiteboard_active;
 use super::{SessionTab, ACTIVE_REMOTE_MONITOR, ACTIVE_TAB_INDEX, REMOTE_PRIVACY_MODE, VIEWPORT_IS_ADMIN_MODE};
 
 pub const TOOLBAR_HEIGHT: i32 = 40;
 pub static TAB_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
+
+// Modern high-visibility active vs passive button colors:
+pub const TB_ACTIVE_BG: COLORREF = COLORREF(0x00D0F5E0);     // Vibrant emerald mint fill (RGB 224, 245, 208)
+pub const TB_ACTIVE_BORDER: COLORREF = COLORREF(0x002B7808); // Bold forest emerald border (RGB 8, 120, 43)
+pub const TB_ACTIVE_FG: COLORREF = COLORREF(0x001B4F04);     // Deep contrast emerald icon (RGB 4, 79, 27)
+
+pub const TB_REC_BG: COLORREF = COLORREF(0x00D4DCFF);        // Vibrant soft red fill (RGB 255, 220, 212)
+pub const TB_REC_BORDER: COLORREF = COLORREF(0x002B37DF);    // PK_RED
+pub const TB_REC_FG: COLORREF = COLORREF(0x002B37DF);
+
+pub const TB_PRIV_BG: COLORREF = COLORREF(0x00CEEBFF);       // Vibrant amber fill (RGB 255, 235, 206)
+pub const TB_PRIV_BORDER: COLORREF = COLORREF(0x000E82E6);   // Amber border (RGB 230, 130, 14)
+pub const TB_PRIV_FG: COLORREF = COLORREF(0x000A569C);       // Bronze lock (RGB 156, 86, 10)
+
+pub const TB_MUTED_BG: COLORREF = COLORREF(0x00E8EEFF);      // Soft red/pink fill for muted audio
+pub const TB_MUTED_BORDER: COLORREF = COLORREF(0x007A8BE8);  // Rose border for muted audio
+pub const TB_MUTED_FG: COLORREF = COLORREF(0x002B37DF);      // Red volume_x icon
+
+pub const TB_PASSIVE_BG: COLORREF = COLORREF(0x00FAFCFB);    // Clean off-white card fill
+pub const TB_PASSIVE_BORDER: COLORREF = COLORREF(0x00DCE0DE);// Subtle 1px border
+pub const TB_PASSIVE_FG: COLORREF = COLORREF(0x006E7D77);    // Slate gray passive icon
+
+pub const TB_HOVER_BG: COLORREF = COLORREF(0x00EBF0EC);      // Hover fill
+pub const TB_HOVER_BORDER: COLORREF = COLORREF(0x00B5C2BC);  // Hover border
+pub const TB_HOVER_FG: COLORREF = COLORREF(0x001B2420);      // Hover icon
+
+pub unsafe fn draw_tb_button_box(
+    hdc: HDC,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    fill_color: COLORREF,
+    border_color: COLORREF,
+    border_width: i32,
+) {
+    let brush: HBRUSH = CreateSolidBrush(fill_color);
+    let pen = CreatePen(PS_SOLID, border_width, border_color);
+    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+    let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+
+    let _ = Rectangle(hdc, x, y, x + w, y + h);
+
+    let _ = SelectObject(hdc, old_brush);
+    let _ = SelectObject(hdc, old_pen);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+}
 
 pub unsafe fn draw_toolbar_tooltip(
     hdc: HDC,
@@ -270,14 +318,14 @@ pub unsafe fn draw_tab_bar(
 
     let settings_x = client_w - btn_w - 12;
     let s_hover = hover_state == 9006;
-    let (s_bg, s_border, s_fg) = if is_settings_open {
-        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    let (s_bg, s_border, s_fg, s_bw) = if is_settings_open {
+        (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
     } else if s_hover {
-        (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
     } else {
-        (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+        (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
     };
-    draw_rounded_box(hdc, settings_x, mode_y, btn_w, tab_h, s_bg, s_border, 6);
+    draw_tb_button_box(hdc, settings_x, mode_y, btn_w, tab_h, s_bg, s_border, s_bw);
     crate::ui::draw_settings(hdc, settings_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, s_fg, 2);
 
     let (admin_x, desk_x, priv_x, voice_x, audio_x, rec_x, wb_x, zap_x, mon3_x, mon2_x, mon1_x, chat_x) = if is_home {
@@ -285,7 +333,7 @@ pub unsafe fn draw_tab_bar(
         let ping = crate::p2p::get_server_ping_ms();
         let (pill_text_str, pill_bg, pill_fg) = if is_online {
             let s = if ping > 0 { format!("Online ({}ms)", ping) } else { "Online".to_string() };
-            (s, PK_GREEN_TINT, PK_GREEN)
+            (s, TB_ACTIVE_BG, TB_ACTIVE_BORDER)
         } else {
             ("Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
         };
@@ -338,77 +386,82 @@ pub unsafe fn draw_tab_bar(
         // Mon 1, 2, 3
         for (idx, mx, hid) in [(0u32, mon1_x, 9101), (1, mon2_x, 9102), (2, mon3_x, 9103)] {
             let m_hover = hover_state == hid;
-            let (m_bg, m_border, m_fg) = if active_mon == idx {
-                (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+            let (m_bg, m_border, m_fg, m_bw) = if active_mon == idx {
+                (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
             } else if m_hover {
-                (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+                (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
             } else {
-                (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+                (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
             };
-            draw_rounded_box(hdc, mx, mode_y, btn_w, tab_h, m_bg, m_border, 6);
+            draw_tb_button_box(hdc, mx, mode_y, btn_w, tab_h, m_bg, m_border, m_bw);
             crate::ui::draw_monitor_num(hdc, mx + (btn_w - 18) / 2, mode_y + (tab_h - 18) / 2, 18, idx + 1, m_fg, 2);
         }
 
         // Quick Actions Menu (Zap 9007)
         let zap_hover = hover_state == 9007;
-        let (z_bg, z_border, z_fg) = if is_zap {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (z_bg, z_border, z_fg, z_bw) = if is_zap {
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
         } else if zap_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, zap_x, mode_y, btn_w, tab_h, z_bg, z_border, 6);
+        draw_tb_button_box(hdc, zap_x, mode_y, btn_w, tab_h, z_bg, z_border, z_bw);
         crate::ui::draw_zap(hdc, zap_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, z_fg, 2);
 
         // Whiteboard Pen (Pen 9008)
         let wb_hover = hover_state == 9008;
-        let (wb_bg, wb_border, wb_fg) = if is_wb {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (wb_bg, wb_border, wb_fg, wb_bw) = if is_wb {
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
         } else if wb_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, wb_x, mode_y, btn_w, tab_h, wb_bg, wb_border, 6);
+        draw_tb_button_box(hdc, wb_x, mode_y, btn_w, tab_h, wb_bg, wb_border, wb_bw);
         crate::ui::draw_pen(hdc, wb_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, wb_fg, 2);
 
         // Session Recording (Record 9009)
         let rec_hover = hover_state == 9009;
-        let (r_bg, r_border, r_fg) = if is_rec {
-            (COLORREF(0x00EBF0FF), PK_RED, PK_RED)
+        let (r_bg, r_border, r_fg, r_bw) = if is_rec {
+            (TB_REC_BG, TB_REC_BORDER, TB_REC_FG, 2)
         } else if rec_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, rec_x, mode_y, btn_w, tab_h, r_bg, r_border, 6);
+        draw_tb_button_box(hdc, rec_x, mode_y, btn_w, tab_h, r_bg, r_border, r_bw);
         crate::ui::draw_record(hdc, rec_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, r_fg, 2, is_rec);
 
         // Audio Mute/Unmute (9003)
         let a_hover = hover_state == 9003;
-        let (a_bg, a_border, a_fg) = if a_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        let (a_bg, a_border, a_fg, a_bw) = if !is_muted {
+            // Audio ACTIVE: Streaming remote audio
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
+        } else if a_hover {
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            // Audio MUTED / PASSIVE: Soft red alert
+            (TB_MUTED_BG, TB_MUTED_BORDER, TB_MUTED_FG, 1)
         };
-        draw_rounded_box(hdc, audio_x, mode_y, btn_w, tab_h, a_bg, a_border, 6);
+        draw_tb_button_box(hdc, audio_x, mode_y, btn_w, tab_h, a_bg, a_border, a_bw);
         if is_muted {
-            crate::ui::draw_volume_x(hdc, audio_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, PK_RED, 2);
+            crate::ui::draw_volume_x(hdc, audio_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, a_fg, 2);
         } else {
             crate::ui::draw_volume(hdc, audio_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, a_fg, 2);
         }
 
         // Voice Intercom (9005)
         let vox_hover = hover_state == 9005;
-        let (vox_bg, vox_border, vox_fg) = if is_voice {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (vox_bg, vox_border, vox_fg, vox_bw) = if is_voice {
+            // Microphone ACTIVE: Transmitting
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
         } else if vox_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, voice_x, mode_y, btn_w, tab_h, vox_bg, vox_border, 6);
+        draw_tb_button_box(hdc, voice_x, mode_y, btn_w, tab_h, vox_bg, vox_border, vox_bw);
         if is_voice {
             crate::ui::draw_mic(hdc, voice_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, vox_fg, 2);
         } else {
@@ -417,52 +470,53 @@ pub unsafe fn draw_tab_bar(
 
         // Privacy Lock (9004)
         let priv_hover = hover_state == 9004;
-        let (p_bg, p_border, p_fg) = if is_privacy {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (p_bg, p_border, p_fg, p_bw) = if is_privacy {
+            // Screen Blackout / Input Lock ACTIVE: Amber security highlight
+            (TB_PRIV_BG, TB_PRIV_BORDER, TB_PRIV_FG, 2)
         } else if priv_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, priv_x, mode_y, btn_w, tab_h, p_bg, p_border, 6);
+        draw_tb_button_box(hdc, priv_x, mode_y, btn_w, tab_h, p_bg, p_border, p_bw);
         crate::ui::draw_lock(hdc, priv_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, p_fg, 2);
 
         // Desktop View (9001)
         let desk_hover = hover_state == 9001;
-        let (d_bg, d_border, d_fg) = if !is_admin {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (d_bg, d_border, d_fg, d_bw) = if !is_admin {
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
         } else if desk_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, desk_x, mode_y, btn_w, tab_h, d_bg, d_border, 6);
+        draw_tb_button_box(hdc, desk_x, mode_y, btn_w, tab_h, d_bg, d_border, d_bw);
         crate::ui::draw_monitor(hdc, desk_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, d_fg, 2);
 
         // Admin Terminal (9002)
         let admin_hover = hover_state == 9002;
-        let (ad_bg, ad_border, ad_fg) = if is_admin {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (ad_bg, ad_border, ad_fg, ad_bw) = if is_admin {
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
         } else if admin_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, admin_x, mode_y, btn_w, tab_h, ad_bg, ad_border, 6);
+        draw_tb_button_box(hdc, admin_x, mode_y, btn_w, tab_h, ad_bg, ad_border, ad_bw);
         crate::ui::draw_terminal(hdc, admin_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, ad_fg, 2);
 
         // In-Session Floating Chat (9010)
         let is_chat = crate::p2p::is_chat_open();
         let unread = crate::p2p::get_unread_count();
         let chat_hover = hover_state == 9010;
-        let (c_bg, c_border, c_fg) = if is_chat {
-            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        let (c_bg, c_border, c_fg, c_bw) = if is_chat {
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 2)
         } else if chat_hover {
-            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
         } else {
-            (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
         };
-        draw_rounded_box(hdc, chat_x, mode_y, btn_w, tab_h, c_bg, c_border, 6);
+        draw_tb_button_box(hdc, chat_x, mode_y, btn_w, tab_h, c_bg, c_border, c_bw);
         crate::ui::draw_message_square(hdc, chat_x + (btn_w - 16) / 2, mode_y + (tab_h - 16) / 2, 16, c_fg, 2);
         if unread > 0 {
             let badge_brush = CreateSolidBrush(PK_RED);
@@ -482,17 +536,17 @@ pub unsafe fn draw_tab_bar(
     let tooltip_data: Option<(&str, i32)> = match hover_state {
         9006 => Some((if is_settings_open { "Close Settings" } else { "Settings" }, settings_x + btn_w / 2)),
         9010 if !is_home => Some((if crate::p2p::is_chat_open() { "Close Chat" } else { "In-Session Chat" }, chat_x + btn_w / 2)),
-        9002 if !is_home => Some(("Remote Admin Terminal", admin_x + btn_w / 2)),
-        9001 if !is_home => Some(("Desktop View", desk_x + btn_w / 2)),
-        9004 if !is_home => Some((if is_privacy { "Privacy Mode: ON" } else { "Privacy Mode" }, priv_x + btn_w / 2)),
-        9005 if !is_home => Some((if is_voice { "Intercom: Active" } else { "Intercom Voice" }, voice_x + btn_w / 2)),
-        9003 if !is_home => Some((if is_muted { "Unmute Audio" } else { "Mute Audio" }, audio_x + btn_w / 2)),
-        9009 if !is_home => Some((if is_rec { "Stop Recording (Active)" } else { "Record Session" }, rec_x + btn_w / 2)),
-        9008 if !is_home => Some((if is_wb { "Whiteboard: ON" } else { "Whiteboard Pen" }, wb_x + btn_w / 2)),
+        9002 if !is_home => Some((if is_admin { "Admin Terminal: Active" } else { "Open Remote Admin Terminal" }, admin_x + btn_w / 2)),
+        9001 if !is_home => Some((if !is_admin { "Desktop View: Active" } else { "Switch to Desktop View" }, desk_x + btn_w / 2)),
+        9004 if !is_home => Some((if is_privacy { "Privacy Mode: ACTIVE (Screen Blacked Out)" } else { "Privacy Mode: OFF (Blackout Screen)" }, priv_x + btn_w / 2)),
+        9005 if !is_home => Some((if is_voice { "Microphone: ACTIVE (Click to Mute)" } else { "Microphone: Muted (Click to Talk)" }, voice_x + btn_w / 2)),
+        9003 if !is_home => Some((if !is_muted { "Audio: ACTIVE (Streaming - Click to Mute)" } else { "Audio: MUTED (Click to Unmute)" }, audio_x + btn_w / 2)),
+        9009 if !is_home => Some((if is_rec { "Recording: ACTIVE (Click to Stop)" } else { "Start Screen Recording" }, rec_x + btn_w / 2)),
+        9008 if !is_home => Some((if is_wb { "Whiteboard: ACTIVE (Click to Close)" } else { "Whiteboard: OFF (Click to Open)" }, wb_x + btn_w / 2)),
         9007 if !is_home => Some(("Quick Actions (Ctrl+Alt+Del, Win+L...)", zap_x + btn_w / 2)),
-        9103 if !is_home => Some(("Monitor 3", mon3_x + btn_w / 2)),
-        9102 if !is_home => Some(("Monitor 2", mon2_x + btn_w / 2)),
-        9101 if !is_home => Some(("Monitor 1", mon1_x + btn_w / 2)),
+        9103 if !is_home => Some((if active_mon == 2 { "Monitor 3: Active" } else { "Switch to Monitor 3" }, mon3_x + btn_w / 2)),
+        9102 if !is_home => Some((if active_mon == 1 { "Monitor 2: Active" } else { "Switch to Monitor 2" }, mon2_x + btn_w / 2)),
+        9101 if !is_home => Some((if active_mon == 0 { "Monitor 1: Active" } else { "Switch to Monitor 1" }, mon1_x + btn_w / 2)),
         _ => None,
     };
 
