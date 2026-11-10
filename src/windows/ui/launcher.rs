@@ -313,6 +313,55 @@ pub fn get_responsive_layout(w: i32, h: i32) -> ResponsiveLayout {
     }
 }
 
+pub fn get_card3_tab_rects(
+    col1_x: i32,
+    col_y: i32,
+    font_scale: f32,
+    contacts_count: usize,
+    peers_count: usize,
+) -> (
+    (i32, i32, i32, i32, String),
+    (i32, i32, i32, i32, String),
+    (i32, i32, i32, i32, String),
+) {
+    let tab_h = (24.0 * font_scale) as i32;
+    let tab_y = col_y + 14;
+
+    let t0_text = "RECENTS".to_string();
+    let t0_w = (84.0 * font_scale) as i32;
+    let t0_x = col1_x + 18;
+
+    let t1_text = if contacts_count > 0 {
+        format!("CONTACTS ({})", contacts_count)
+    } else {
+        "CONTACTS".to_string()
+    };
+    let t1_w = if contacts_count > 0 {
+        (116.0 * font_scale) as i32
+    } else {
+        (92.0 * font_scale) as i32
+    };
+    let t1_x = t0_x + t0_w + 6;
+
+    let t2_text = if peers_count > 0 {
+        format!("LAN RADAR ({})", peers_count)
+    } else {
+        "LAN RADAR".to_string()
+    };
+    let t2_w = if peers_count > 0 {
+        (116.0 * font_scale) as i32
+    } else {
+        (96.0 * font_scale) as i32
+    };
+    let t2_x = t1_x + t1_w + 6;
+
+    (
+        (t0_x, tab_y, t0_w, tab_h, t0_text),
+        (t1_x, tab_y, t1_w, tab_h, t1_text),
+        (t2_x, tab_y, t2_w, tab_h, t2_text),
+    )
+}
+
 pub unsafe fn update_edit_layout(w: i32, h: i32) {
     if !HWND_EDIT_TARGET.0.is_null() && IsWindow(Some(HWND_EDIT_TARGET)).as_bool() {
         let l = get_responsive_layout(w, h);
@@ -659,73 +708,68 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         let lan_peers = crate::p2p::get_lan_peers();
         let contacts = crate::identity::load_address_book();
 
-        // Tag 1: RECENT SESSIONS
-        let tag3_w = (112.0 * l.font_scale) as i32;
-        let tag3_h = (22.0 * l.font_scale) as i32;
+        let (t0, t1, t2) = get_card3_tab_rects(
+            l.col1_x,
+            l.col_y,
+            l.font_scale,
+            contacts.len(),
+            lan_peers.len(),
+        );
+
+        // Tag 1: RECENTS
+        let (t0_x, t0_y, t0_w, t0_h, t0_text) = t0;
         let (t1_bg, t1_border, t1_fg) = if card3_tab == 0 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(mem_dc, l.col1_x + 18, l.col_y + 14, tag3_w, tag3_h, t1_bg, t1_border, 6);
+        draw_rounded_box(mem_dc, t0_x, t0_y, t0_w, t0_h, t1_bg, t1_border, 6);
         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
         SetTextColor(mem_dc, t1_fg);
-        let mut tag3: Vec<u16> = "RECENT SESSIONS".encode_utf16().collect();
-        let mut tag3_rect = RECT {
-            left: l.col1_x + 18,
-            top: l.col_y + 14,
-            right: l.col1_x + 18 + tag3_w,
-            bottom: l.col_y + 14 + tag3_h,
+        let mut t0_utf16: Vec<u16> = t0_text.encode_utf16().collect();
+        let mut t0_rect = RECT {
+            left: t0_x,
+            top: t0_y,
+            right: t0_x + t0_w,
+            bottom: t0_y + t0_h,
         };
-        let _ = DrawTextW(mem_dc, &mut tag3, &mut tag3_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(mem_dc, &mut t0_utf16, &mut t0_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        // Tag 2: ADDRESS BOOK
-        let tag_ab_x = l.col1_x + 18 + tag3_w + 6;
-        let tag_ab_w = (110.0 * l.font_scale) as i32;
+        // Tag 2: CONTACTS
+        let (t1_x, t1_y, t1_w, t1_h, t1_text) = t1;
         let (tab_bg, tab_border, tab_fg) = if card3_tab == 1 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(mem_dc, tag_ab_x, l.col_y + 14, tag_ab_w, tag3_h, tab_bg, tab_border, 6);
+        draw_rounded_box(mem_dc, t1_x, t1_y, t1_w, t1_h, tab_bg, tab_border, 6);
         SetTextColor(mem_dc, tab_fg);
-        let ab_text = if !contacts.is_empty() {
-            format!("ADDRESS BOOK ({})", contacts.len())
-        } else {
-            "ADDRESS BOOK".to_string()
+        let mut t1_utf16: Vec<u16> = t1_text.encode_utf16().collect();
+        let mut t1_rect = RECT {
+            left: t1_x,
+            top: t1_y,
+            right: t1_x + t1_w,
+            bottom: t1_y + t1_h,
         };
-        let mut tag_ab_utf16: Vec<u16> = ab_text.encode_utf16().collect();
-        let mut tag_ab_rc = RECT {
-            left: tag_ab_x,
-            top: l.col_y + 14,
-            right: tag_ab_x + tag_ab_w,
-            bottom: l.col_y + 14 + tag3_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut tag_ab_utf16, &mut tag_ab_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(mem_dc, &mut t1_utf16, &mut t1_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-        // Tag 3: LAN RADAR (with peer count)
-        let tag_radar_x = tag_ab_x + tag_ab_w + 6;
-        let tag_radar_w = (96.0 * l.font_scale) as i32;
+        // Tag 3: LAN RADAR
+        let (t2_x, t2_y, t2_w, t2_h, t2_text) = t2;
         let (t2_bg, t2_border, t2_fg) = if card3_tab == 2 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(mem_dc, tag_radar_x, l.col_y + 14, tag_radar_w, tag3_h, t2_bg, t2_border, 6);
+        draw_rounded_box(mem_dc, t2_x, t2_y, t2_w, t2_h, t2_bg, t2_border, 6);
         SetTextColor(mem_dc, t2_fg);
-        let radar_tag_text = if !lan_peers.is_empty() {
-            format!("LAN RADAR ({})", lan_peers.len())
-        } else {
-            "LAN RADAR".to_string()
+        let mut t2_utf16: Vec<u16> = t2_text.encode_utf16().collect();
+        let mut t2_rect = RECT {
+            left: t2_x,
+            top: t2_y,
+            right: t2_x + t2_w,
+            bottom: t2_y + t2_h,
         };
-        let mut tag_radar_utf16: Vec<u16> = radar_tag_text.encode_utf16().collect();
-        let mut tag_radar_rc = RECT {
-            left: tag_radar_x,
-            top: l.col_y + 14,
-            right: tag_radar_x + tag_radar_w,
-            bottom: l.col_y + 14 + tag3_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut tag_radar_utf16, &mut tag_radar_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(mem_dc, &mut t2_utf16, &mut t2_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
         // When in Radar mode, show Scan button at top-right; in Address Book, show [+ Add]
         if card3_tab == 2 {
@@ -737,7 +781,7 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             } else {
                 (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
             };
-            draw_rounded_box(mem_dc, scan_x, l.col_y + 14, scan_w, tag3_h, scan_bg, scan_border, 6);
+            draw_rounded_box(mem_dc, scan_x, l.col_y + 14, scan_w, t0_h, scan_bg, scan_border, 6);
             let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
             SetTextColor(mem_dc, scan_fg);
             let mut scan_txt: Vec<u16> = (if is_scanning { "Scanning..." } else { "Scan" }).encode_utf16().collect();
@@ -745,13 +789,13 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 left: scan_x,
                 top: l.col_y + 14,
                 right: scan_x + scan_w,
-                bottom: l.col_y + 14 + tag3_h,
+                bottom: l.col_y + 14 + t0_h,
             };
             let _ = DrawTextW(mem_dc, &mut scan_txt, &mut scan_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         } else if card3_tab == 1 {
             let add_w = 54;
             let add_x = l.col1_x + l.col_w - add_w - 18;
-            draw_rounded_box(mem_dc, add_x, l.col_y + 14, add_w, tag3_h, PK_GREEN_TINT, PK_GREEN, 6);
+            draw_rounded_box(mem_dc, add_x, l.col_y + 14, add_w, t0_h, PK_GREEN_TINT, PK_GREEN, 6);
             let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
             SetTextColor(mem_dc, PK_GREEN_DARK);
             let mut add_txt: Vec<u16> = "+ Add".encode_utf16().collect();
@@ -759,7 +803,7 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 left: add_x,
                 top: l.col_y + 14,
                 right: add_x + add_w,
-                bottom: l.col_y + 14 + tag3_h,
+                bottom: l.col_y + 14 + t0_h,
             };
             let _ = DrawTextW(mem_dc, &mut add_txt, &mut add_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         }
@@ -1160,29 +1204,36 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         return true;
     }
 
-    // 4. Card 3 Header Tabs: RECENT SESSIONS vs ADDRESS BOOK vs LAN RADAR
-    let tag3_w = (112.0 * l.font_scale) as i32;
-    let tag3_h = (22.0 * l.font_scale) as i32;
-    let tag_ab_x = l.col1_x + 18 + tag3_w + 6;
-    let tag_ab_w = (110.0 * l.font_scale) as i32;
-    let tag_radar_x = tag_ab_x + tag_ab_w + 6;
-    let tag_radar_w = (96.0 * l.font_scale) as i32;
+    // 4. Card 3 Header Tabs: RECENTS vs CONTACTS vs LAN RADAR
+    let contacts = crate::identity::load_address_book();
+    let lan_peers = crate::p2p::get_lan_peers();
+    let (t0, t1, t2) = get_card3_tab_rects(
+        l.col1_x,
+        l.col_y,
+        l.font_scale,
+        contacts.len(),
+        lan_peers.len(),
+    );
+
+    let (t0_x, t0_y, t0_w, t0_h, _) = t0;
+    let (t1_x, _, t1_w, _, _) = t1;
+    let (t2_x, _, t2_w, _, _) = t2;
     let card3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
 
-    if y >= l.col_y + 14 && y <= l.col_y + 14 + tag3_h {
-        if x >= l.col1_x + 18 && x <= l.col1_x + 18 + tag3_w {
+    if y >= t0_y && y <= t0_y + t0_h {
+        if x >= t0_x && x <= t0_x + t0_w {
             BOTTOM_CARD3_TAB.store(0, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
-        if x >= tag_ab_x && x <= tag_ab_x + tag_ab_w {
+        if x >= t1_x && x <= t1_x + t1_w {
             BOTTOM_CARD3_TAB.store(1, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
-        if x >= tag_radar_x && x <= tag_radar_x + tag_radar_w {
+        if x >= t2_x && x <= t2_x + t2_w {
             BOTTOM_CARD3_TAB.store(2, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(true, Ordering::Relaxed);
             trigger_lan_radar_scan();

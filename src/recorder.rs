@@ -259,6 +259,15 @@ fn run_recorder_writer(
         .saturating_sub(HEADER_SIZE as u32)
         .saturating_sub(idx1_len + 8);
 
+    let duration = start_time.elapsed();
+    let elapsed_secs = duration.as_secs_f64();
+    let actual_fps = if elapsed_secs > 0.5 && frames_written > 1 {
+        let calc = (frames_written as f64 / elapsed_secs).round() as u32;
+        calc.clamp(1, 60)
+    } else {
+        fps.clamp(1, 60)
+    };
+
     // 4. Seek back and write standardized AVI headers filling all 2048 reserved bytes
     let _ = file.seek(SeekFrom::Start(0));
 
@@ -267,14 +276,13 @@ fn run_recorder_writer(
         movi_data_len,
         width.max(320),
         height.max(240),
-        fps.max(1),
+        actual_fps,
         frames_written,
     );
 
     let _ = file.write_all(&hdr);
     let _ = file.flush();
 
-    let duration = start_time.elapsed();
     info!(
         "Session recording saved successfully: {} ({} frames, {} KB, {:.1}s, {}x{} @ {}fps)",
         path.display(),
@@ -283,7 +291,7 @@ fn run_recorder_writer(
         duration.as_secs_f32(),
         width,
         height,
-        fps
+        actual_fps
     );
 
     if let Ok(mut guard) = LAST_SAVED_INFO.lock() {
@@ -310,11 +318,10 @@ fn generate_avi_headers(
     buf.extend_from_slice(b"AVI ");
 
     // LIST 'hdrl'
-    let hdrl_size_pos = buf.len() + 4;
+    let hdrl_start = buf.len();
     buf.extend_from_slice(b"LIST");
     buf.extend_from_slice(&0u32.to_le_bytes()); // placeholder
     buf.extend_from_slice(b"hdrl");
-    let hdrl_content_start = buf.len();
 
     // 'avih' (MainAVIHeader, 56 bytes)
     buf.extend_from_slice(b"avih");
@@ -378,9 +385,9 @@ fn generate_avi_headers(
     let strl_len = (buf.len() - strl_start - 8) as u32;
     buf[strl_start + 4..strl_start + 8].copy_from_slice(&strl_len.to_le_bytes());
 
-    // Patch hdrl size
-    let hdrl_len = (buf.len() - hdrl_content_start) as u32;
-    buf[hdrl_size_pos..hdrl_size_pos + 4].copy_from_slice(&hdrl_len.to_le_bytes());
+    // Patch hdrl size (must include 'hdrl' FOURCC and all child chunks)
+    let hdrl_len = (buf.len() - hdrl_start - 8) as u32;
+    buf[hdrl_start + 4..hdrl_start + 8].copy_from_slice(&hdrl_len.to_le_bytes());
 
     // JUNK padding chunk to bring buffer up to exact target before LIST movi
     let movi_header_size = 12usize; // LIST (4) + size (4) + movi (4)
@@ -477,6 +484,8 @@ mod tests {
 
         // Check LIST hdrl
         assert_eq!(&hdr[12..16], b"LIST");
+        let hdrl_size = u32::from_le_bytes(hdr[16..20].try_into().unwrap());
+        assert_eq!(hdrl_size, 192); // 4 (hdrl) + 64 (avih) + 124 (LIST strl)
         assert_eq!(&hdr[20..24], b"hdrl");
 
         // Check avih
@@ -484,6 +493,8 @@ mod tests {
 
         // Check LIST strl
         assert_eq!(&hdr[88..92], b"LIST");
+        let strl_size = u32::from_le_bytes(hdr[92..96].try_into().unwrap());
+        assert_eq!(strl_size, 116); // 4 (strl) + 64 (strh) + 48 (strf)
         assert_eq!(&hdr[96..100], b"strl");
 
         // Check strh
