@@ -122,6 +122,7 @@ pub fn trigger_system_action(action: SystemAction) -> (bool, String) {
             (res, "Run Dialog opened".into())
         }
         SystemAction::CtrlAltDel => {
+            super::desktop::configure_software_sas();
             let success = unsafe {
                 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
                 use windows::core::s;
@@ -142,6 +143,21 @@ pub fn trigger_system_action(action: SystemAction) -> (bool, String) {
             } else {
                 let _ = Command::new("taskmgr.exe").creation_flags(0x08000000).spawn();
                 (true, "Security/Task Manager triggered (SAS requires sas.dll policy)".into())
+            }
+        }
+        SystemAction::ElevatePrivileges => {
+            if super::desktop::is_current_process_elevated() {
+                (true, "Host process is already running with Administrator privileges".into())
+            } else {
+                let res = super::desktop::elevate_process();
+                (
+                    res,
+                    if res {
+                        "UAC Administrator elevation prompt requested on host".into()
+                    } else {
+                        "Failed to request elevation on host".into()
+                    },
+                )
             }
         }
         SystemAction::RebootNormal => {

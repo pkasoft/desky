@@ -23,7 +23,7 @@ pub struct QuickActionItem {
     pub requires_confirm: bool,
 }
 
-pub const QUICK_ACTIONS: [QuickActionItem; 7] = [
+pub const QUICK_ACTIONS: [QuickActionItem; 8] = [
     QuickActionItem {
         id: 9201,
         title: "Send Ctrl+Alt+Del",
@@ -72,6 +72,13 @@ pub const QUICK_ACTIONS: [QuickActionItem; 7] = [
         shortcut: "Safe Boot",
         action: SystemAction::RebootSafe,
         requires_confirm: true,
+    },
+    QuickActionItem {
+        id: 9208,
+        title: "Elevate Remote Host",
+        shortcut: "UAC / Admin",
+        action: SystemAction::ElevatePrivileges,
+        requires_confirm: false,
     },
 ];
 

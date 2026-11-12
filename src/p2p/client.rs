@@ -10,6 +10,7 @@ use crate::p2p::state::{
     PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
     PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_ADMIN_RESP,
     PKT_AUDIO_CHUNK, PKT_CURSOR_SHAPE, PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE,
+    PKT_VOICE_CHUNK, pop_outgoing_voice_packet, voice_notify,
     admin_notify, pop_outgoing_admin_packet, feed_admin_resp_chunk, store_admin_response,
     clipboard_notify, pop_outgoing_clipboard, file_notify, pop_outgoing_file_packet,
     handle_incoming_file_start, handle_incoming_file_chunk, handle_incoming_file_finish,
@@ -478,6 +479,19 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
+                // Flush outgoing intercom voice packets (Technician -> Host)
+                while let Some(pkt) = pop_outgoing_voice_packet() {
+                    if let Some(p_addr) = peer_addr {
+                        if p_addr != server_addr {
+                            let _ = socket.send_to(&pkt, p_addr).await;
+                        }
+                    }
+                    if !is_direct_peer || is_reconnecting {
+                        let relay = wrap_relay_packet(&norm_target, &pkt);
+                        let _ = socket.send_to(&relay, server_addr).await;
+                    }
+                }
+
                 // Check for submitted unattended password
                 if let Some(pwd) = crate::p2p::take_unattended_password() {
                     let salt = current_challenge_salt.clone().unwrap_or_else(|| "0000000000000000".to_string());
@@ -762,6 +776,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
                                         }
                                     }
+                                    PKT_VOICE_CHUNK => {
+                                        if slice.len() >= 10 {
+                                            #[cfg(target_os = "windows")]
+                                            {
+                                                let channels = slice[5] as u16;
+                                                let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
+                                                let pcm = &slice[10..];
+                                                crate::windows::audio::play_remote_voice_chunk(sample_rate, channels, pcm);
+                                            }
+                                        }
+                                    }
                                     PKT_CURSOR_SHAPE => {
                                         if slice.len() >= 6 {
                                             crate::p2p::set_remote_cursor_shape(slice[5]);
@@ -910,6 +935,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     _ = clipboard_notify().notified() => {}
                     _ = file_notify().notified() => {}
                     _ = admin_notify().notified() => {}
+                    _ = voice_notify().notified() => {}
                     _ = tokio::time::sleep(Duration::from_millis(20)) => {}
                 }
 

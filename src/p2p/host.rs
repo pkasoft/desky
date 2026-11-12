@@ -5,7 +5,7 @@ use crate::p2p::state::{
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
     PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS, PKT_ADMIN_REQ,
-    PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE,
+    PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE, PKT_VOICE_CHUNK,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -328,6 +328,23 @@ impl P2PManager {
                                             }
                                         } else if !sub.relay_id.is_empty() {
                                             let relay = wrap_relay_packet(&sub.relay_id, &pkt);
+                                            let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
+                                        }
+                                    }
+                                }
+
+                                // Host -> Client Intercom Voice packets flush
+                                while let Some(v_pkt) = crate::p2p::state::pop_outgoing_voice_packet() {
+                                    for sub in &subscribers {
+                                        if sub.is_direct || sub.addr != target_server_stream {
+                                            let _ = std_sock_stream_capture.send_to(&v_pkt, sub.addr);
+                                            if let Some(l_addr) = sub.lan_addr {
+                                                if l_addr != sub.addr {
+                                                    let _ = std_sock_stream_capture.send_to(&v_pkt, l_addr);
+                                                }
+                                            }
+                                        } else if !sub.relay_id.is_empty() {
+                                            let relay = wrap_relay_packet(&sub.relay_id, &v_pkt);
                                             let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
                                         }
                                     }
@@ -983,6 +1000,17 @@ impl P2PManager {
                                         if let Ok(text) = std::str::from_utf8(&slice[5..]) {
                                             crate::p2p::receive_chat_message("Client", text);
                                             crate::platform::ui::request_main_redraw();
+                                        }
+                                    }
+                                }
+                                PKT_VOICE_CHUNK => {
+                                    if slice.len() >= 10 {
+                                        #[cfg(target_os = "windows")]
+                                        {
+                                            let channels = slice[5] as u16;
+                                            let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
+                                            let pcm = &slice[10..];
+                                            crate::windows::audio::play_remote_voice_chunk(sample_rate, channels, pcm);
                                         }
                                     }
                                 }

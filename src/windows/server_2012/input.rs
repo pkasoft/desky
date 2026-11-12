@@ -12,6 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
 pub fn handle_event(event: &InputEvent) {
+    let _ = crate::windows::desktop::sync_thread_desktop_to_input();
     unsafe {
         match event {
             InputEvent::MouseMove { x, y } => {

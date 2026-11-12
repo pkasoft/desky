@@ -150,6 +150,7 @@ pub fn trigger_system_action(action: SystemAction) -> (bool, String) {
         }
         SystemAction::RebootNormal => trigger_reboot(false),
         SystemAction::RebootSafe => trigger_reboot(true),
+        SystemAction::ElevatePrivileges => (false, "Elevation is only supported on Windows hosts".into()),
     }
 }
 

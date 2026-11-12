@@ -37,7 +37,7 @@ use super::theme::{
     PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
 };
 
-pub const HOST_WIDGET_WIDTH: i32 = 380;
+pub const HOST_WIDGET_WIDTH: i32 = 440;
 pub const HOST_WIDGET_PILL_H: i32 = 50;
 pub const HOST_WIDGET_EXPANDED_H: i32 = 320;
 
@@ -49,7 +49,7 @@ static HWND_SCREEN_BORDER: AtomicIsize = AtomicIsize::new(0);
 static HWND_CHAT_EDIT: AtomicIsize = AtomicIsize::new(0);
 static PREV_HOST_CHAT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static CHAT_EXPANDED: AtomicBool = AtomicBool::new(false);
-static HOVER_BTN: AtomicI32 = AtomicI32::new(0); // 1 = Chat, 2 = Disconnect, 3 = Send
+static HOVER_BTN: AtomicI32 = AtomicI32::new(0); // 1 = Chat, 2 = Disconnect, 3 = Send, 4 = Mic
 
 unsafe extern "system" fn host_chat_edit_proc(
     hwnd: HWND,
@@ -321,10 +321,24 @@ unsafe extern "system" fn host_widget_wndproc(
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
+            let mic_btn_x = HOST_WIDGET_WIDTH - 228;
+            let mic_btn_w = 68;
             let chat_btn_x = HOST_WIDGET_WIDTH - 152;
             let chat_btn_w = 68;
             let disc_btn_x = HOST_WIDGET_WIDTH - 76;
             let disc_btn_w = 64;
+
+            // 0. Mic Toggle Button Click
+            if client_x >= mic_btn_x
+                && client_x <= mic_btn_x + mic_btn_w
+                && client_y >= 10
+                && client_y <= 40
+            {
+                let is_on = crate::windows::audio::toggle_host_mic();
+                tracing::info!("Host microphone toggled: {}", is_on);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
 
             // 1. Chat Toggle Button Click
             if client_x >= chat_btn_x
@@ -407,13 +421,21 @@ unsafe extern "system" fn host_widget_wndproc(
             let client_x = (lparam.0 & 0xffff) as i16 as i32;
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
 
+            let mic_btn_x = HOST_WIDGET_WIDTH - 228;
+            let mic_btn_w = 68;
             let chat_btn_x = HOST_WIDGET_WIDTH - 152;
             let chat_btn_w = 68;
             let disc_btn_x = HOST_WIDGET_WIDTH - 76;
             let disc_btn_w = 64;
 
             let prev_hover = HOVER_BTN.load(Ordering::Relaxed);
-            let hover = if client_x >= chat_btn_x
+            let hover = if client_x >= mic_btn_x
+                && client_x <= mic_btn_x + mic_btn_w
+                && client_y >= 10
+                && client_y <= 40
+            {
+                4
+            } else if client_x >= chat_btn_x
                 && client_x <= chat_btn_x + chat_btn_w
                 && client_y >= 10
                 && client_y <= 40
@@ -505,7 +527,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let mut title_rc = RECT {
                 left: 32,
                 top: 8,
-                right: HOST_WIDGET_WIDTH - 156,
+                right: HOST_WIDGET_WIDTH - 232,
                 bottom: 26,
             };
             DrawTextW(hdc_mem, &mut wide_title, &mut title_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
@@ -519,13 +541,47 @@ unsafe extern "system" fn host_widget_wndproc(
             let mut timer_rc = RECT {
                 left: 32,
                 top: 26,
-                right: HOST_WIDGET_WIDTH - 156,
+                right: HOST_WIDGET_WIDTH - 232,
                 bottom: 44,
             };
             DrawTextW(hdc_mem, &mut wide_timer, &mut timer_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-            // 3. Chat Button
+            // 2.5 Mic Button
             let hover = HOVER_BTN.load(Ordering::Relaxed);
+            let is_mic = crate::windows::audio::is_host_mic_active();
+            let mic_btn_x = HOST_WIDGET_WIDTH - 228;
+            let mic_btn_y = 10;
+            let mic_btn_w = 68;
+            let mic_btn_h = 30;
+
+            let (m_bg, m_border, m_fg) = if is_mic {
+                (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+            } else if hover == 4 {
+                (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+            } else {
+                (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+            };
+            draw_rounded_box(hdc_mem, mic_btn_x, mic_btn_y, mic_btn_w, mic_btn_h, m_bg, m_border, 6);
+            if is_mic {
+                crate::ui::draw_mic(hdc_mem, mic_btn_x + 8, mic_btn_y + 7, 16, m_fg, 2);
+            } else {
+                crate::ui::draw_mic_off(hdc_mem, mic_btn_x + 8, mic_btn_y + 7, 16, m_fg, 2);
+            }
+
+            let mic_label = if is_mic { "Mic ON" } else { "Mic" };
+            let mut wide_mic: Vec<u16> = mic_label.encode_utf16().collect();
+            let mut mic_rc = RECT {
+                left: mic_btn_x + 24,
+                top: mic_btn_y,
+                right: mic_btn_x + mic_btn_w,
+                bottom: mic_btn_y + mic_btn_h,
+            };
+            let font_btn = create_segoe_font(11, FW_SEMIBOLD);
+            let _ = SelectObject(hdc_mem, HGDIOBJ(font_btn.0));
+            SetTextColor(hdc_mem, m_fg);
+            DrawTextW(hdc_mem, &mut wide_mic, &mut mic_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+            // 3. Chat Button
             let chat_expanded = CHAT_EXPANDED.load(Ordering::Relaxed);
             let unread = crate::p2p::get_unread_count();
 

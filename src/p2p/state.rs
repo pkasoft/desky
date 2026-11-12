@@ -29,6 +29,39 @@ pub const PKT_CURSOR_SHAPE: u8 = 0x10;
 pub const PKT_UNATTENDED_CHALLENGE: u8 = 0x11;
 pub const PKT_UNATTENDED_AUTH: u8 = 0x12;
 pub const PKT_CHAT_MESSAGE: u8 = 0x13;
+pub const PKT_VOICE_CHUNK: u8 = 0x14;
+
+static OUTGOING_VOICE_PACKETS: OnceLock<Mutex<VecDeque<Vec<u8>>>> = OnceLock::new();
+static VOICE_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
+
+pub fn voice_notify() -> &'static Arc<Notify> {
+    VOICE_NOTIFY.get_or_init(|| Arc::new(Notify::new()))
+}
+
+fn voice_store() -> &'static Mutex<VecDeque<Vec<u8>>> {
+    OUTGOING_VOICE_PACKETS.get_or_init(|| Mutex::new(VecDeque::with_capacity(32)))
+}
+
+pub fn push_outgoing_voice_chunk(channels: u8, sample_rate: u32, pcm: &[u8]) {
+    let mut pkt = Vec::with_capacity(10 + pcm.len());
+    pkt.extend_from_slice(MAGIC_DSKY);
+    pkt.push(PKT_VOICE_CHUNK);
+    pkt.push(channels);
+    pkt.extend_from_slice(&sample_rate.to_le_bytes());
+    pkt.extend_from_slice(pcm);
+
+    if let Ok(mut q) = voice_store().lock() {
+        if q.len() >= 32 {
+            q.pop_front();
+        }
+        q.push_back(pkt);
+    }
+    voice_notify().notify_one();
+}
+
+pub fn pop_outgoing_voice_packet() -> Option<Vec<u8>> {
+    voice_store().lock().ok().and_then(|mut q| q.pop_front())
+}
 
 pub static CLIENT_REMOTE_CURSOR_SHAPE: AtomicU8 = AtomicU8::new(0);
 
@@ -385,6 +418,9 @@ pub fn disconnect_host_session() {
     if let Ok(mut g) = store.lock() {
         *g = None;
     }
+    if let Ok(mut q) = voice_store().lock() {
+        q.clear();
+    }
 
     if let Ok(socket_opt) = host_std_socket_store().lock() {
         if let Some(sock) = socket_opt.as_ref() {
@@ -529,6 +565,9 @@ pub fn stop_client_session() {
         *g = None;
     }
     if let Ok(mut q) = input_store().lock() {
+        q.clear();
+    }
+    if let Ok(mut q) = voice_store().lock() {
         q.clear();
     }
     SESSION_BITRATE_KBPS.store(0, Ordering::Relaxed);

@@ -21,9 +21,10 @@ pub use state::{
     get_active_quality_params, get_active_session_target, get_latest_remote_frame,
     get_pending_approval, get_quality_mode, get_remote_cursor_shape, get_server_ping_ms,
     get_session_bitrate_kbps, get_session_rtt_ms, get_session_status, get_transfer_progress,
-    is_client_session_active, is_server_online, normalize_id, read_clipboard_files, read_clipboard_text,
+    is_client_session_active, is_server_online, normalize_id, pop_outgoing_voice_packet,
+    push_outgoing_voice_chunk, read_clipboard_files, read_clipboard_text,
     respond_to_pending_approval, send_admin_request, send_file_transfer, send_remote_clipboard,
     send_remote_input, set_quality_mode, set_remote_cursor_shape, set_session_status,
     stop_client_session, submit_unattended_password, take_admin_response, take_unattended_password,
-    update_client_preferences, SessionStatus,
+    update_client_preferences, voice_notify, SessionStatus,
 };

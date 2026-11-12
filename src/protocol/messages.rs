@@ -74,6 +74,7 @@ pub enum SystemAction {
     OpenRun,
     RebootNormal,
     RebootSafe,
+    ElevatePrivileges,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

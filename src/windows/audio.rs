@@ -11,11 +11,11 @@ use std::sync::Mutex;
 use tracing::info;
 
 use windows::Win32::Media::Audio::{
-    eConsole, eMultimedia, eRender, waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset,
-    waveOutUnprepareHeader, waveOutWrite, HWAVEOUT, IAudioCaptureClient, IAudioClient,
-    IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, AUDCLNT_SHAREMODE_SHARED,
-    AUDCLNT_STREAMFLAGS_LOOPBACK, MIDI_WAVE_OPEN_TYPE, WAVEFORMATEX, WAVEHDR,
-    WAVE_FORMAT_PCM,
+    eCapture, eCommunications, eConsole, eMultimedia, eRender, waveOutClose, waveOutOpen,
+    waveOutPrepareHeader, waveOutReset, waveOutUnprepareHeader, waveOutWrite, HWAVEOUT,
+    IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+    AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, MIDI_WAVE_OPEN_TYPE, WAVEFORMATEX,
+    WAVEHDR, WAVE_FORMAT_PCM,
 };
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
@@ -188,6 +188,146 @@ impl WasapiLoopbackCapturer {
 }
 
 impl Drop for WasapiLoopbackCapturer {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = self.client.Stop();
+            CoUninitialize();
+        }
+    }
+}
+
+pub struct WasapiMicCapturer {
+    client: IAudioClient,
+    capture_client: IAudioCaptureClient,
+    pub channels: u16,
+    pub sample_rate: u32,
+    pub is_float: bool,
+}
+
+impl WasapiMicCapturer {
+    pub fn new() -> Result<Self> {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+
+            // Try eCommunications first (headset / mic), fallback to eConsole
+            let device: IMMDevice = match enumerator.GetDefaultAudioEndpoint(eCapture, eCommunications) {
+                Ok(d) => d,
+                Err(_) => match enumerator.GetDefaultAudioEndpoint(eCapture, eConsole) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        ensure_windows_audio_services();
+                        return Err(e.into());
+                    }
+                },
+            };
+
+            let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
+
+            let mix_format_ptr = client.GetMixFormat()?;
+            let mix_format = &*mix_format_ptr;
+
+            let sample_rate = mix_format.nSamplesPerSec;
+            let channels = mix_format.nChannels;
+            let is_float = mix_format.wFormatTag == 3 || mix_format.wBitsPerSample == 32;
+
+            let buffer_duration_hns = 200_000i64; // 20ms in 100ns units
+
+            client.Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                0,
+                buffer_duration_hns,
+                0,
+                mix_format_ptr,
+                None,
+            )?;
+
+            let capture_client: IAudioCaptureClient = client.GetService()?;
+            client.Start()?;
+
+            info!(
+                "WASAPI Microphone Capture active: {}Hz, {} channels (float={})",
+                sample_rate, channels, is_float
+            );
+
+            Ok(Self {
+                client,
+                capture_client,
+                channels,
+                sample_rate,
+                is_float,
+            })
+        }
+    }
+
+    pub fn read_packet(&self) -> Result<Option<Vec<u8>>> {
+        unsafe {
+            let mut data_ptr = std::ptr::null_mut();
+            let mut num_frames_read = 0u32;
+            let mut flags = 0u32;
+
+            let res = self.capture_client.GetBuffer(
+                &mut data_ptr,
+                &mut num_frames_read,
+                &mut flags,
+                None,
+                None,
+            );
+
+            if res.is_err() || num_frames_read == 0 || data_ptr.is_null() {
+                return Ok(None);
+            }
+
+            // WASAPI Flag 0x2 = AUDCLNT_BUFFERFLAGS_SILENT
+            if flags & 0x2 != 0 {
+                let _ = self.capture_client.ReleaseBuffer(num_frames_read);
+                return Ok(None);
+            }
+
+            let num_samples = num_frames_read as usize * self.channels as usize;
+            let mut pcm16_bytes = Vec::with_capacity(num_samples * 2);
+            let mut max_amp: i16 = 0;
+
+            if self.is_float {
+                let float_slice = std::slice::from_raw_parts(data_ptr as *const f32, num_samples);
+                for &s in float_slice {
+                    if s.is_nan() || s.is_infinite() {
+                        pcm16_bytes.extend_from_slice(&0i16.to_le_bytes());
+                        continue;
+                    }
+                    let clamped = s.clamp(-1.0, 1.0);
+                    let val = (clamped * 32767.0) as i16;
+                    let abs_val = val.saturating_abs();
+                    if abs_val > max_amp {
+                        max_amp = abs_val;
+                    }
+                    pcm16_bytes.extend_from_slice(&val.to_le_bytes());
+                }
+            } else {
+                let i16_slice = std::slice::from_raw_parts(data_ptr as *const i16, num_samples);
+                for &val in i16_slice {
+                    let abs_val = val.saturating_abs();
+                    if abs_val > max_amp {
+                        max_amp = abs_val;
+                    }
+                    pcm16_bytes.extend_from_slice(&val.to_le_bytes());
+                }
+            }
+
+            let _ = self.capture_client.ReleaseBuffer(num_frames_read);
+
+            // Adaptive noise gate for microphone: ignore ambient line noise / room hiss below 60
+            if max_amp < 60 {
+                return Ok(None);
+            }
+
+            Ok(Some(pcm16_bytes))
+        }
+    }
+}
+
+impl Drop for WasapiMicCapturer {
     fn drop(&mut self) {
         unsafe {
             let _ = self.client.Stop();
@@ -395,14 +535,110 @@ pub fn is_audio_muted() -> bool {
     CLIENT_AUDIO_MUTED.load(Ordering::Relaxed)
 }
 
+static VOICE_PLAYER: Mutex<Option<AudioPlayer>> = Mutex::new(None);
+
+/// Plays a received remote voice chunk on the peer machine (independent from system audio)
+pub fn play_remote_voice_chunk(sample_rate: u32, channels: u16, pcm_bytes: &[u8]) {
+    let mut guard = VOICE_PLAYER.lock().unwrap();
+    let need_reopen = match guard.as_ref() {
+        Some(p) => p.sample_rate != sample_rate || p.channels != channels,
+        None => true,
+    };
+
+    if need_reopen {
+        *guard = None;
+        if let Ok(player) = AudioPlayer::new(sample_rate, channels) {
+            *guard = Some(player);
+        }
+    }
+
+    if let Some(player) = guard.as_mut() {
+        player.play_chunk(pcm_bytes);
+    }
+}
+
 pub static INTERCOM_VOICE_ACTIVE: AtomicBool = AtomicBool::new(false);
+pub static HOST_MIC_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MIC_THREAD_SPAWNED: AtomicBool = AtomicBool::new(false);
 
 /// Toggles technician two-way voice intercom stream state
 pub fn toggle_intercom_voice() -> bool {
     let prev = INTERCOM_VOICE_ACTIVE.fetch_xor(true, Ordering::SeqCst);
-    !prev
+    let now = !prev;
+    if now {
+        start_mic_capture_loop();
+    }
+    now
 }
 
 pub fn is_intercom_voice_active() -> bool {
     INTERCOM_VOICE_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Toggles host floating widget microphone state
+pub fn toggle_host_mic() -> bool {
+    let prev = HOST_MIC_ACTIVE.fetch_xor(true, Ordering::SeqCst);
+    let now = !prev;
+    if now {
+        start_mic_capture_loop();
+    }
+    now
+}
+
+pub fn is_host_mic_active() -> bool {
+    HOST_MIC_ACTIVE.load(Ordering::Relaxed)
+}
+
+/// Starts the background microphone capture worker thread that samples PCM
+/// whenever either technician or host microphone is active.
+pub fn start_mic_capture_loop() {
+    if MIC_THREAD_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    std::thread::spawn(|| {
+        let mut capturer_opt: Option<WasapiMicCapturer> = None;
+
+        loop {
+            let active = INTERCOM_VOICE_ACTIVE.load(Ordering::Relaxed) || HOST_MIC_ACTIVE.load(Ordering::Relaxed);
+            if !active {
+                if capturer_opt.is_some() {
+                    capturer_opt = None; // Release microphone device when unmuted
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                continue;
+            }
+
+            if capturer_opt.is_none() {
+                match WasapiMicCapturer::new() {
+                    Ok(c) => capturer_opt = Some(c),
+                    Err(e) => {
+                        tracing::warn!("Failed to initialize WASAPI mic capture: {}", e);
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(capturer) = capturer_opt.as_ref() {
+                match capturer.read_packet() {
+                    Ok(Some(pcm)) => {
+                        crate::p2p::push_outgoing_voice_chunk(
+                            capturer.channels as u8,
+                            capturer.sample_rate,
+                            &pcm,
+                        );
+                    }
+                    Ok(None) => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(e) => {
+                        tracing::warn!("WASAPI mic capture read error: {}", e);
+                        capturer_opt = None;
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                    }
+                }
+            }
+        }
+    });
 }

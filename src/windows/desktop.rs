@@ -4,13 +4,16 @@
 
 use std::cell::RefCell;
 use tracing::debug;
-use windows::core::w;
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HANDLE, LUID};
 use windows::Win32::Security::{
-    AdjustTokenPrivileges, LookupPrivilegeValueW, LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED,
-    TOKEN_ADJUST_PRIVILEGES, TOKEN_PRIVILEGES, TOKEN_QUERY,
+    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevation,
+    LUID_AND_ATTRIBUTES, SE_PRIVILEGE_ENABLED, TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION,
+    TOKEN_PRIVILEGES, TOKEN_QUERY,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 #[link(name = "user32")]
 unsafe extern "system" {
@@ -121,5 +124,73 @@ pub fn enable_debug_privilege() {
                 debug!("SeDebugPrivilege enabled for Windows Lock Screen and UAC access");
             }
         }
+    }
+}
+
+/// Checks if current process is running with Administrator (elevated) privileges
+pub fn is_current_process_elevated() -> bool {
+    unsafe {
+        let mut token = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_ok() {
+            let mut elevation = TOKEN_ELEVATION::default();
+            let mut ret_len = 0u32;
+            if GetTokenInformation(
+                token,
+                TokenElevation,
+                Some(&mut elevation as *mut _ as *mut _),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut ret_len,
+            )
+            .is_ok()
+            {
+                return elevation.TokenIsElevated != 0;
+            }
+        }
+    }
+    false
+}
+
+/// Automatically configures Windows Group Policy registry to permit software SAS generation (Ctrl+Alt+Del)
+pub fn configure_software_sas() {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let _ = Command::new("reg")
+        .args([
+            "add",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System",
+            "/v",
+            "SoftwareSASGeneration",
+            "/t",
+            "REG_DWORD",
+            "/d",
+            "3",
+            "/f",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
+/// Triggers UAC elevation prompt on the local Windows host to re-launch Desky as Administrator
+pub fn elevate_process() -> bool {
+    unsafe {
+        if let Ok(exe_path) = std::env::current_exe() {
+            let wide_exe: Vec<u16> = exe_path
+                .to_string_lossy()
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let verb = w!("runas");
+            let h_inst = ShellExecuteW(
+                None,
+                verb,
+                PCWSTR(wide_exe.as_ptr()),
+                None,
+                None,
+                SW_SHOWNORMAL,
+            );
+            return (h_inst.0 as usize) > 32;
+        }
+        false
     }
 }
