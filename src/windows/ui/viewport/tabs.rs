@@ -1,7 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 //! Dedicated Multi-Tab Session Manager & Window Detachment
 //!
-//! AnyDesk-style tabbed multi-session management across remote computers,
+//! Tabbed multi-session management across remote computers,
 //! allowing dynamic addition, closing, switching, and drag-and-drop window detaching.
 
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicUsize, Ordering};

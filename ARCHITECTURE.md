@@ -61,7 +61,7 @@ desky/
     │       └── viewport/          # Modular Multi-Tab Remote Session Canvas Window
     │           ├── mod.rs         # Module exports & component declarations
     │           ├── window.rs      # Native Win32 window procedure & message lifecycle
-    │           ├── tabs.rs        # AnyDesk-style tabbed session manager & window detaching
+    │           ├── tabs.rs        # Tabbed session manager & window detaching
     │           ├── renderer.rs    # Double-buffered 60-120 FPS video frame canvas renderer
     │           ├── toolbar.rs     # Top tab bar, Lucide toolbar buttons, tooltips
     │           ├── quick_actions.rs # Quick Actions hotkeys menu (Ctrl+Alt+Del, Win+L...)

@@ -5,7 +5,7 @@
 use windows::core::w;
 use windows::Win32::Foundation::COLORREF;
 use windows::Win32::Graphics::Gdi::{
-    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, Rectangle, SelectObject, FONT_CHARSET,
+    CreateFontW, CreatePen, CreateSolidBrush, DeleteObject, RoundRect, SelectObject, FONT_CHARSET,
     FONT_CLIP_PRECISION, FONT_OUTPUT_PRECISION, FONT_QUALITY, FONT_WEIGHT, HBRUSH, HDC, HFONT,
     HGDIOBJ, PS_SOLID,
 };
@@ -87,7 +87,8 @@ pub unsafe fn draw_rounded_box(
         let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
         let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
 
-        let _ = Rectangle(hdc, x, y, x + w, y + h);
+        let r = _radius.max(2);
+        let _ = RoundRect(hdc, x, y, x + w + 1, y + h + 1, r, r);
 
         let _ = SelectObject(hdc, old_brush);
         let _ = SelectObject(hdc, old_pen);

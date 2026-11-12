@@ -1,4 +1,4 @@
-//! Dedicated Viewport Remote Stream Canvas Window & AnyDesk-Style Tabbed Session Manager
+//! Dedicated Viewport Remote Stream Canvas Window & Tabbed Session Manager
 //!
 //! Subdivided into focused architectural components:
 //! - `window.rs`: Native Win32 window procedure, message dispatch & lifecycle

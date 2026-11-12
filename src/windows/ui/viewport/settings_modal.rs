@@ -18,7 +18,7 @@ use super::theme::{
 // Full-Screen Settings Page state
 pub static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 
-// Active AnyDesk-style settings sidebar category:
+// Active settings sidebar category:
 // 0 = Stream & Display, 1 = Recording, 2 = Security, 3 = Connection Info
 pub static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
 

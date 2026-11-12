@@ -58,7 +58,7 @@ fn normalize_id(id: &str) -> String {
     id.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
-/// Formats a raw 9-digit string into AnyDesk-style "XXX XXX XXX"
+/// Formats a raw 9-digit string into 3-group "XXX XXX XXX"
 fn format_id(raw_digits: &str) -> String {
     if raw_digits.len() == 9 {
         format!(
