@@ -30,6 +30,7 @@ pub const PKT_UNATTENDED_CHALLENGE: u8 = 0x11;
 pub const PKT_UNATTENDED_AUTH: u8 = 0x12;
 pub const PKT_CHAT_MESSAGE: u8 = 0x13;
 pub const PKT_VOICE_CHUNK: u8 = 0x14;
+pub const PKT_FILE_NACK: u8 = 0x15;
 
 static OUTGOING_VOICE_PACKETS: OnceLock<Mutex<VecDeque<Vec<u8>>>> = OnceLock::new();
 static VOICE_NOTIFY: OnceLock<Arc<Notify>> = OnceLock::new();
@@ -829,6 +830,11 @@ pub fn send_file_transfer(path: std::path::PathBuf) {
 
             update_transfer_progress(true, &file_name, 0, total_size, false);
 
+            let cache_store = ACTIVE_OUTGOING_FILE.get_or_init(|| Mutex::new(None));
+            if let Ok(mut cg) = cache_store.lock() {
+                *cg = Some((file_name.clone(), data.clone()));
+            }
+
             let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(VecDeque::new()));
             let notify = FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()));
 
@@ -898,6 +904,41 @@ pub fn file_notify() -> &'static Arc<Notify> {
     FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()))
 }
 
+static ACTIVE_OUTGOING_FILE: OnceLock<Mutex<Option<(String, Vec<u8>)>>> = OnceLock::new();
+
+pub fn handle_outgoing_file_nack(missing_chunks: &[u32]) {
+    let cache_store = ACTIVE_OUTGOING_FILE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache_store.lock() {
+        if let Some((_file_name, data)) = guard.as_ref() {
+            let store = OUTGOING_FILE_PACKETS.get_or_init(|| Mutex::new(VecDeque::new()));
+            let notify = FILE_NOTIFY.get_or_init(|| Arc::new(Notify::new()));
+            let chunk_size = 1200;
+
+            if let Ok(mut q) = store.lock() {
+                for &idx in missing_chunks {
+                    let start = (idx as usize) * chunk_size;
+                    if start < data.len() {
+                        let end = (start + chunk_size).min(data.len());
+                        let chunk = &data[start..end];
+                        let mut chunk_pkt = Vec::with_capacity(5 + 4 + chunk.len());
+                        chunk_pkt.extend_from_slice(MAGIC_DSKY);
+                        chunk_pkt.push(PKT_FILE_CHUNK);
+                        chunk_pkt.extend_from_slice(&idx.to_le_bytes());
+                        chunk_pkt.extend_from_slice(chunk);
+                        q.push_back(chunk_pkt);
+                    }
+                }
+                let mut finish_pkt = Vec::with_capacity(5);
+                finish_pkt.extend_from_slice(MAGIC_DSKY);
+                finish_pkt.push(PKT_FILE_FINISH);
+                q.push_back(finish_pkt);
+            }
+            notify.notify_waiters();
+            tracing::info!("🔄 Selective ARQ: Re-transmitted {} missing file chunks", missing_chunks.len());
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct IncomingFileTransfer {
     pub file_name: String,
@@ -905,6 +946,8 @@ pub struct IncomingFileTransfer {
     pub received_bytes: u64,
     pub handle: Option<std::fs::File>,
     pub save_path: std::path::PathBuf,
+    pub received_chunks: std::collections::HashSet<u32>,
+    pub total_chunks: u32,
 }
 
 static INCOMING_FILE: OnceLock<Mutex<Option<IncomingFileTransfer>>> = OnceLock::new();
@@ -921,6 +964,7 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
     let dest_dir = crate::platform::get_desktop_dir();
     let _ = std::fs::create_dir_all(&dest_dir);
     let target_path = dest_dir.join(&safe_name);
+    let total_chunks = ((total_size + 1199) / 1200) as u32;
 
     if let Ok(file) = std::fs::File::create(&target_path) {
         let _ = file.set_len(total_size);
@@ -932,12 +976,14 @@ pub fn handle_incoming_file_start(total_size: u64, file_name: &str) {
                 received_bytes: 0,
                 handle: Some(file),
                 save_path: target_path.clone(),
+                received_chunks: std::collections::HashSet::with_capacity(total_chunks as usize),
+                total_chunks,
             });
         }
         crate::platform::ui::trigger_transfer_progress_window();
 
         update_transfer_progress(false, &safe_name, 0, total_size, false);
-        info!("📁 Incoming file '{}' ({} KB) starting -> {:?}", safe_name, total_size / 1024, target_path);
+        info!("📁 Incoming file '{}' ({} KB, {} chunks) starting -> {:?}", safe_name, total_size / 1024, total_chunks, target_path);
     }
 }
 
@@ -946,21 +992,42 @@ pub fn handle_incoming_file_chunk(chunk_idx: u32, data: &[u8]) {
     let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = store.lock() {
         if let Some(transfer) = guard.as_mut() {
-            if let Some(file) = transfer.handle.as_mut() {
-                let offset = (chunk_idx as u64) * 1200;
-                let _ = file.seek(SeekFrom::Start(offset));
-                let _ = file.write_all(data);
+            if !transfer.received_chunks.contains(&chunk_idx) {
+                transfer.received_chunks.insert(chunk_idx);
                 transfer.received_bytes += data.len() as u64;
+                if let Some(file) = transfer.handle.as_mut() {
+                    let offset = (chunk_idx as u64) * 1200;
+                    let _ = file.seek(SeekFrom::Start(offset));
+                    let _ = file.write_all(data);
+                }
                 update_transfer_progress(false, &transfer.file_name, transfer.received_bytes, transfer.total_size, false);
             }
         }
     }
 }
 
-pub fn handle_incoming_file_finish() {
+pub fn handle_incoming_file_finish() -> Option<Vec<u32>> {
     use std::io::Write;
     let store = INCOMING_FILE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = store.lock() {
+        if let Some(transfer) = guard.as_mut() {
+            if (transfer.received_chunks.len() as u32) < transfer.total_chunks {
+                let mut missing = Vec::new();
+                for idx in 0..transfer.total_chunks {
+                    if !transfer.received_chunks.contains(&idx) {
+                        missing.push(idx);
+                        if missing.len() >= 64 {
+                            break;
+                        }
+                    }
+                }
+                if !missing.is_empty() {
+                    tracing::warn!("⚠️ File transfer missing {} chunks, requesting Selective NACK retransmission...", missing.len());
+                    return Some(missing);
+                }
+            }
+        }
+
         if let Some(mut transfer) = guard.take() {
             if let Some(mut file) = transfer.handle.take() {
                 let _ = file.flush();
@@ -973,6 +1040,7 @@ pub fn handle_incoming_file_finish() {
             info!("✅ File transfer complete: '{}' ({} KB) saved at {:?}", transfer.file_name, transfer.total_size / 1024, transfer.save_path);
         }
     }
+    None
 }
 
 pub fn write_clipboard_files(paths: &[std::path::PathBuf]) {

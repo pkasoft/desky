@@ -10,7 +10,7 @@ use crate::p2p::state::{
     PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
     PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_ADMIN_RESP,
     PKT_AUDIO_CHUNK, PKT_CURSOR_SHAPE, PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE,
-    PKT_VOICE_CHUNK, pop_outgoing_voice_packet, voice_notify,
+    PKT_VOICE_CHUNK, pop_outgoing_voice_packet, voice_notify, PKT_FILE_NACK,
     admin_notify, pop_outgoing_admin_packet, feed_admin_resp_chunk, store_admin_response,
     clipboard_notify, pop_outgoing_clipboard, file_notify, pop_outgoing_file_packet,
     handle_incoming_file_start, handle_incoming_file_chunk, handle_incoming_file_finish,
@@ -447,7 +447,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
-                // Flush outgoing file transfer packets (in smooth batches of 16 chunks to avoid buffer starvation)
+                // Flush outgoing file transfer packets (in smooth batches of 16 chunks with micro-pacing)
                 let mut file_sent = 0;
                 while file_sent < 16 {
                     if let Some(pkt) = pop_outgoing_file_packet() {
@@ -461,6 +461,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             let _ = socket.send_to(&relay, server_addr).await;
                         }
                         file_sent += 1;
+                        if file_sent % 4 == 0 {
+                            tokio::task::yield_now().await;
+                        }
                     } else {
                         break;
                     }
@@ -763,7 +766,32 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         }
                                     }
                                     PKT_FILE_FINISH => {
-                                        handle_incoming_file_finish();
+                                        if let Some(missing) = handle_incoming_file_finish() {
+                                            let mut nack_pkt = Vec::with_capacity(5 + missing.len() * 4);
+                                            nack_pkt.extend_from_slice(MAGIC_DSKY);
+                                            nack_pkt.push(PKT_FILE_NACK);
+                                            for idx in missing {
+                                                nack_pkt.extend_from_slice(&idx.to_le_bytes());
+                                            }
+                                            if let Some(p_addr) = peer_addr {
+                                                if p_addr != server_addr {
+                                                    let _ = socket.send_to(&nack_pkt, p_addr).await;
+                                                }
+                                            }
+                                            if !is_direct_peer || is_reconnecting {
+                                                let relay = wrap_relay_packet(&norm_target, &nack_pkt);
+                                                let _ = socket.send_to(&relay, server_addr).await;
+                                            }
+                                        }
+                                    }
+                                    PKT_FILE_NACK => {
+                                        if slice.len() > 5 {
+                                            let missing: Vec<u32> = slice[5..]
+                                                .chunks_exact(4)
+                                                .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                                                .collect();
+                                            crate::p2p::state::handle_outgoing_file_nack(&missing);
+                                        }
                                     }
                                     PKT_AUDIO_CHUNK => {
                                         if slice.len() >= 10 {

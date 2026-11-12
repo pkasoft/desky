@@ -6,6 +6,7 @@ use crate::p2p::state::{
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
     PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS, PKT_ADMIN_REQ,
     PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE, PKT_VOICE_CHUNK,
+    PKT_FILE_NACK,
 };
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
@@ -306,6 +307,9 @@ impl P2PManager {
                                             }
                                         }
                                         file_pkts_sent += 1;
+                                        if file_pkts_sent % 4 == 0 {
+                                            std::thread::yield_now();
+                                        }
                                     } else {
                                         break;
                                     }
@@ -899,7 +903,41 @@ impl P2PManager {
                                             }
                                         }
                                     }
-                                    crate::p2p::state::handle_incoming_file_finish();
+                                    if let Some(missing) = crate::p2p::state::handle_incoming_file_finish() {
+                                        let mut nack_pkt = Vec::with_capacity(5 + missing.len() * 4);
+                                        nack_pkt.extend_from_slice(MAGIC_DSKY);
+                                        nack_pkt.push(PKT_FILE_NACK);
+                                        for idx in missing {
+                                            nack_pkt.extend_from_slice(&idx.to_le_bytes());
+                                        }
+                                        let targets: Vec<ClientSubscriber> = if let Ok(map) = clients_recv.lock() {
+                                            map.values().filter(|s| s.auth_state == AuthState::Approved).cloned().collect()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        for sub in targets {
+                                            if sub.is_direct || sub.addr != target_server {
+                                                let _ = socket_recv.send_to(&nack_pkt, sub.addr).await;
+                                                if let Some(l_addr) = sub.lan_addr {
+                                                    if l_addr != sub.addr {
+                                                        let _ = socket_recv.send_to(&nack_pkt, l_addr).await;
+                                                    }
+                                                }
+                                            } else if !sub.relay_id.is_empty() {
+                                                let relay = wrap_relay_packet(&sub.relay_id, &nack_pkt);
+                                                let _ = socket_recv.send_to(&relay, target_server).await;
+                                            }
+                                        }
+                                    }
+                                }
+                                PKT_FILE_NACK => {
+                                    if slice.len() > 5 {
+                                        let missing: Vec<u32> = slice[5..]
+                                            .chunks_exact(4)
+                                            .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+                                            .collect();
+                                        crate::p2p::state::handle_outgoing_file_nack(&missing);
+                                    }
                                 }
                                 PKT_ADMIN_REQ => {
                                     let maybe_dest = {
