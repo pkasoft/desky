@@ -7,7 +7,7 @@ use crate::p2p::state::{
     ACTIVE_CHROMA_444, ACTIVE_JPEG_QUALITY, ACTIVE_SCALE_PCT, AUTH_APPROVED, AUTH_DECLINED,
     AUTH_PENDING, AUTH_REQUIRES_PASSWORD, CLIENT_CAPTURE_CURSOR, CLIENT_SESSION_ACTIVE, CLIENT_SESSION_GEN,
     CLIENT_TARGET_FPS, MAGIC_DSKY, PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_DISCONNECT,
-    PKT_FRAME_CHUNK, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
+    PKT_FRAME_CHUNK, PKT_FRAME_CHUNK_H264, PKT_FRAME_CHUNK_H265, PKT_INPUT_EVENT, PKT_LAN_DISCOVERY, PKT_PONG, QUALITY_MODE,
     PKT_CLIPBOARD, PKT_FILE_START, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_ADMIN_RESP,
     PKT_AUDIO_CHUNK, PKT_CURSOR_SHAPE, PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE,
     PKT_VOICE_CHUNK, pop_outgoing_voice_packet, voice_notify, PKT_FILE_NACK,
@@ -27,6 +27,7 @@ use tracing::{error, info, warn};
 
 struct PartialFrame {
     frame_id: u32,
+    codec_type: u8,
     total_chunks: u16,
     orig_width: u16,
     orig_height: u16,
@@ -181,14 +182,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut last_relay_hb = Instant::now();
             let mut received_any_frame = false;
 
-            // Dedicated Latest-Frame JPEG Decoder Thread so UDP recv_from NEVER blocks on CPU decoding!
-            let decode_slot: Arc<(Mutex<Option<(u32, u32, u32, Vec<u8>)>>, std::sync::Condvar)> =
+            // Dedicated Latest-Frame Decoder Thread so UDP recv_from NEVER blocks on CPU decoding!
+            let decode_slot: Arc<(Mutex<Option<(u32, u32, u32, Vec<u8>, u8)>>, std::sync::Condvar)> =
                 Arc::new((Mutex::new(None), std::sync::Condvar::new()));
             {
                 let slot_worker = Arc::clone(&decode_slot);
                 let disp_worker = display_target.clone();
                 std::thread::spawn(move || {
                     let mut logged_first = false;
+                    #[cfg(target_os = "windows")]
+                    let mut h264_decoder = crate::windows::codec::H264MfDecoder::new().ok();
+
                     while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                         && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
                     {
@@ -209,11 +213,36 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             guard.take()
                         };
 
-                        if let Some((f_id, orig_w, orig_h, jpeg_bytes)) = job {
-                            crate::recorder::push_frame(&jpeg_bytes);
+                        if let Some((f_id, orig_w, orig_h, frame_bytes, codec_type)) = job {
+                            let decoded_opt = if codec_type == PKT_FRAME_CHUNK_H264 {
+                                #[cfg(target_os = "windows")]
+                                {
+                                    use crate::codec::VideoDecoder;
+                                    if let Some(ref mut dec) = h264_decoder {
+                                        if let Ok(bgra) = dec.decode(&frame_bytes, orig_w, orig_h) {
+                                            Some(crate::p2p::state::RemoteFrame {
+                                                frame_id: f_id,
+                                                orig_width: orig_w,
+                                                orig_height: orig_h,
+                                                width: orig_w,
+                                                height: orig_h,
+                                                bgra,
+                                            })
+                                        } else {
+                                            decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
+                                        }
+                                    } else {
+                                        decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
+                                    }
+                                }
+                                #[cfg(not(target_os = "windows"))]
+                                decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
+                            } else {
+                                crate::recorder::push_frame(&frame_bytes);
+                                decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
+                            };
 
-                            if let Some(decoded) =
-                                decode_jpeg_to_bgra(f_id, orig_w, orig_h, &jpeg_bytes)
+                            if let Some(decoded) = decoded_opt
                             {
                                 if !logged_first {
                                     logged_first = true;
@@ -659,7 +688,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
                                         }
                                     }
-                                    PKT_FRAME_CHUNK => {
+                                    PKT_FRAME_CHUNK | PKT_FRAME_CHUNK_H264 | PKT_FRAME_CHUNK_H265 => {
                                         if slice.len() > 17 {
                                             let frame_id = u32::from_le_bytes([
                                                 slice[5], slice[6], slice[7], slice[8],
@@ -697,6 +726,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 }
                                                 partial_frames.push(PartialFrame {
                                                     frame_id,
+                                                    codec_type: pkt_type,
                                                     total_chunks,
                                                     orig_width,
                                                     orig_height,
@@ -716,23 +746,24 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
 
                                             if pf.received_count == pf.total_chunks {
-                                                let mut jpeg_data = Vec::with_capacity(
+                                                let mut frame_data = Vec::with_capacity(
                                                     (pf.total_chunks as usize) * 1240,
                                                 );
                                                 for c in pf.chunks.iter().flatten() {
-                                                    jpeg_data.extend_from_slice(c);
+                                                    frame_data.extend_from_slice(c);
                                                 }
                                                 let orig_w = pf.orig_width as u32;
                                                 let orig_h = pf.orig_height as u32;
+                                                let codec_type = pf.codec_type;
                                                 highest_decoded_frame = frame_id;
                                                 partial_frames.retain(|f| f.frame_id > frame_id);
                                                 abr_frames_completed += 1;
                                                 received_any_frame = true;
 
-                                                // Hand off JPEG buffer to dedicated decoder thread in <1µs
+                                                // Hand off frame buffer to dedicated decoder thread in <1µs
                                                 let (lock, cvar) = &*decode_slot;
                                                 if let Ok(mut slot) = lock.lock() {
-                                                    *slot = Some((frame_id, orig_w, orig_h, jpeg_data));
+                                                    *slot = Some((frame_id, orig_w, orig_h, frame_data, codec_type));
                                                     cvar.notify_one();
                                                 }
                                             }

@@ -1,8 +1,12 @@
+pub mod admin_rpc;
 pub mod chat;
+pub mod clipboard;
 pub mod client;
+pub mod file_transfer;
 pub mod host;
 pub mod radar;
 pub mod state;
+pub mod voice;
 
 #[allow(unused_imports)]
 pub use chat::{

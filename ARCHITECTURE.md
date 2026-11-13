@@ -13,17 +13,28 @@ desky/
 ├── README.md                      # Project introduction and user guide
 └── src/
     ├── main.rs                    # Application entrypoint & CLI argument dispatcher
+    ├── codec/                     # Unified Cross-Platform Codec Abstractions & Software Fallbacks
+    │   ├── mod.rs                 # VideoEncoder, VideoDecoder, EncodedFrame, CodecType traits
+    │   └── mjpeg.rs               # Pure-Rust Motion-JPEG encoder/decoder (4:4:4 / 4:2:0 subsampling)
     ├── identity/                  # Machine hardware identity & permanent 9-digit Desky ID
     │   └── mod.rs                 # HWID extraction, persistent caching in %APPDATA%\Desky
-    ├── protocol/                  # Binary Wire Protocol & Serialization
-    │   ├── mod.rs                 # Re-exports for protocol structs and enums
-    │   └── messages.rs            # SignalMsg, InputEvent, AdminReq, AdminResp, SystemAction
+    ├── media/                     # Session Recording & Container Muxing
+    │   ├── mod.rs                 # Media module exports
+    │   └── recorder.rs            # Zero-overhead cross-platform RIFF AVI muxer (pure Rust)
     ├── p2p/                       # Peer-to-Peer Networking, Streaming & State
     │   ├── mod.rs                 # Public P2P facade
     │   ├── client.rs              # Client session runner, frame reassembly & ABR
-    │   ├── host.rs                # Host session runner, screen capture loop & JPEG encoding
+    │   ├── host.rs                # Host session runner, screen capture loop & GPU/CPU encoding
     │   ├── radar.rs               # LAN UDP discovery & radar scanner
-    │   └── state.rs               # Global P2P session state, metrics, file queues, clipboard
+    │   ├── voice.rs               # Real-time intercom audio queue & notify synchronization
+    │   ├── file_transfer.rs       # Chunked file streaming, ARQ NACK retransmission & HUD progress
+    │   ├── admin_rpc.rs           # Chunked Silent Admin RPC request/response packet store
+    │   ├── clipboard.rs           # Win32/X11 clipboard sync & FNV-1a hash deduplication
+    │   └── state.rs               # Global P2P session subscribers, active sockets & metrics
+    ├── protocol/                  # Binary Wire Protocol & Serialization
+    │   ├── mod.rs                 # Re-exports for protocol structs, enums & opcodes
+    │   ├── opcodes.rs             # Single source of truth for all MAGIC and PKT_* constants
+    │   └── messages.rs            # SignalMsg, InputEvent, AdminReq, AdminResp, SystemAction
     ├── ui/                        # Unified UI Framework & Lucide Vector Icons Suite
     │   ├── mod.rs                 # High-level icon exports
     │   └── icons/                 # 26 anti-aliased GDI+ subpixel Lucide vector icons
@@ -39,7 +50,6 @@ desky/
     │       ├── settings.rs        # Cog profile (settings.svg)
     │       ├── radio.rs           # Signal beacon (radio.svg)
     │       └── [bell, check, copy, cpu, file, folder, home, info, plus, refresh, search, server, trash, wifi, x].rs
-    ├── recorder.rs            # Zero-overhead cross-platform AVI / Motion-JPEG session video recorder
     ├── windows/                   # Windows OS Platform Layer
     │   ├── mod.rs                 # Windows subsystem re-exports
     │   ├── os_version.rs          # NT kernel version & edition detection (Win 7/8/10/11 & Server 2012-2025)
@@ -47,6 +57,10 @@ desky/
     │   ├── audio.rs               # WASAPI loopback audio capture & technician intercom
     │   ├── capture.rs             # Screen capture dispatch (DXGI Desktop Duplication / GDI)
     │   ├── clipboard.rs           # Win32 clipboard text & CF_HDROP Explorer file sync
+    │   ├── codec/                 # Windows Media Foundation (MFT) Hardware Codecs
+    │   │   ├── mod.rs             # Windows hardware codec probes & dispatch
+    │   │   ├── h264_mf.rs         # Direct3D/MF GPU H.264 Transform encoder/decoder
+    │   │   └── h265_mf.rs         # HEVC / H.265 hardware capability detector
     │   ├── cursor.rs              # Hardware cursor capture & shape translation
     │   ├── dxgi_capture.rs        # High-performance Direct3D11 / DXGI Desktop Duplication
     │   ├── input.rs               # Win32 SendInput / mouse_event / keybd_event injector
@@ -101,6 +115,10 @@ Packets use the 4-byte magic header `DSKY` followed by a 1-byte packet opcode:
 | `0x0E` | `PKT_ADMIN_RESP` | Silent admin response payload |
 | `0x0F` | `PKT_AUDIO_CHUNK` | High-fidelity Opus/PCM remote audio and voice intercom |
 | `0x10` | `PKT_CURSOR_SHAPE` | Remote host cursor shape synchronization |
+| `0x11` | `PKT_FILE_NACK` | Selective ARQ chunk retransmission request |
+| `0x12` | `PKT_VOICE_CHUNK` | Technician-to-host microphone talkback audio |
+| `0x16` | `PKT_FRAME_CHUNK_H264` | GPU-accelerated H.264 video stream packet |
+| `0x17` | `PKT_FRAME_CHUNK_H265` | GPU-accelerated H.265 / HEVC video stream packet |
 
 ---
 
@@ -146,9 +164,13 @@ Used by `get_tab_hit_state()` and window event routing in `src/windows/ui/viewpo
 3. **Controls**: Centered floating pill palette with 4 distinct high-contrast colors and a one-click Clear tool.
 
 ### C. Zero-Overhead AVI Session Recording
-1. **Architecture**: `src/recorder.rs` creates standard RIFF AVI containers containing `MJPG` video streams (pure Rust cross-platform implementation).
+1. **Architecture**: `src/media/recorder.rs` creates standard RIFF AVI containers containing `MJPG` video streams (pure Rust cross-platform implementation).
 2. **Zero Transcoding**: Direct muxing of incoming remote JPEG frames straight into the AVI `movi` chunks without decoding or re-encoding. 0% extra CPU load!
 3. **Output**: Stored automatically in `Videos\Desky_Recordings\Desky_Recording_<timestamp>.avi`.
+
+### D. Native GPU Hardware Video Acceleration (MFT) & Fallback
+1. **Hardware Acceleration**: `src/windows/codec/h264_mf.rs` uses Windows Media Foundation Transforms (`IMFTransform`) to leverage discrete and integrated GPUs (NVIDIA NVENC, Intel QuickSync, AMD AMF) directly without bundling heavy FFmpeg binaries or extra DLLs.
+2. **Software Fallback**: When hardware MFT encoders are unavailable or on non-Windows platforms, `src/codec/mjpeg.rs` seamlessly takes over using full 4:4:4 chroma subsampling for text crispness with zero dropped frames.
 
 ### D. Quick Actions Menu
 1. **Actions**: `src/windows/ui/viewport/quick_actions.rs` provides 1-click execution for `Ctrl+Alt+Del` (SAS), Workstation Lock (`Win+L`), Task Manager (`Ctrl+Shift+Esc`), Show Desktop (`Win+D`), Run Dialog (`Win+R`), and Safe Mode Reboot.

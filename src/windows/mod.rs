@@ -11,6 +11,7 @@ pub mod admin;
 pub mod audio;
 pub mod capture;
 pub mod clipboard;
+pub mod codec;
 pub mod cursor;
 pub mod desktop;
 pub mod dxgi_capture;
@@ -42,6 +43,7 @@ pub fn run() -> anyhow::Result<()> {
     desktop::enable_debug_privilege();
     let platform = get_platform();
     info!("🚀 Running Desky on Platform Engine: {:?}", platform);
+    codec::probe_hardware_codecs();
 
     match platform {
         WindowsPlatform::Win10_11 => win10_11::init(),

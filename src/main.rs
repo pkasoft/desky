@@ -3,7 +3,9 @@
 mod identity;
 mod p2p;
 mod protocol;
-pub mod recorder;
+pub mod media;
+pub use media::recorder;
+pub mod codec;
 
 #[cfg(target_os = "windows")]
 pub mod ui;

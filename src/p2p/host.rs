@@ -3,11 +3,13 @@ use crate::p2p::state::{
     host_std_socket_store, host_subscribers_store, normalize_id,
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
-    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START, PKT_FRAME_CHUNK, PKT_INPUT_EVENT,
+    PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START,
+    PKT_FRAME_CHUNK, PKT_FRAME_CHUNK_H264, PKT_INPUT_EVENT,
     PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS, PKT_ADMIN_REQ,
     PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE, PKT_VOICE_CHUNK,
     PKT_FILE_NACK,
 };
+use crate::codec::VideoEncoder;
 use crate::protocol::{InputEvent, SignalMsg};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -173,8 +175,14 @@ impl P2PManager {
 
                     std::thread::spawn(move || {
                         let mut frame_id: u32 = 1;
-                        let mut jpeg_buf: Vec<u8> = Vec::with_capacity(98304);
-                        let mut last_jpeg_len: usize = 0;
+                        let mut mjpeg_encoder = crate::codec::mjpeg::MjpegEncoder::new(76, true);
+                        let mut last_encoded_len: usize = 0;
+                        #[cfg(target_os = "windows")]
+                        let mut h264_encoder: Option<crate::windows::codec::H264MfEncoder> = None;
+                        #[cfg(target_os = "windows")]
+                        let mut h264_w: u32 = 0;
+                        #[cfg(target_os = "windows")]
+                        let mut h264_h: u32 = 0;
                         #[cfg(target_os = "windows")]
                         let mut last_cursor_shape: u8 = 0xFF;
 
@@ -226,16 +234,16 @@ impl P2PManager {
 
                             // Keep frames compact over WAN/Relay so CGNAT/home routers never tail-drop UDP bursts
                             let (jpeg_quality, use_chroma_444) = if any_relay {
-                                if last_jpeg_len > 28_000 {
+                                if last_encoded_len > 28_000 {
                                     ((req_quality.saturating_sub(12)).max(50), false)
-                                } else if last_jpeg_len > 20_000 {
+                                } else if last_encoded_len > 20_000 {
                                     ((req_quality.saturating_sub(6)).max(56), false)
                                 } else {
                                     (req_quality.min(72), false)
                                 }
-                            } else if last_jpeg_len > 68_000 {
+                            } else if last_encoded_len > 68_000 {
                                 ((req_quality.saturating_sub(10)).max(55), false)
-                            } else if last_jpeg_len > 52_000 {
+                            } else if last_encoded_len > 52_000 {
                                 ((req_quality.saturating_sub(5)).max(62), req_chroma_444)
                             } else {
                                 (req_quality, req_chroma_444)
@@ -246,15 +254,6 @@ impl P2PManager {
                             );
 
                             if let Ok((orig_w, orig_h, cap_w, cap_h, bgra)) = cap_res {
-                                jpeg_buf.clear();
-                                let mut encoder =
-                                    jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality);
-                                encoder.set_sampling_factor(if use_chroma_444 {
-                                    jpeg_encoder::SamplingFactor::R_4_4_4
-                                } else {
-                                    jpeg_encoder::SamplingFactor::R_4_2_0
-                                });
-
                                 #[cfg(target_os = "windows")]
                                 {
                                     let cur_shape = crate::windows::get_current_cursor_shape();
@@ -354,27 +353,49 @@ impl P2PManager {
                                     }
                                 }
 
-                                if encoder
-                                    .encode(
-                                        &bgra,
-                                        cap_w as u16,
-                                        cap_h as u16,
-                                        jpeg_encoder::ColorType::Bgra,
-                                    )
-                                    .is_ok()
-                                {
-                                    last_jpeg_len = jpeg_buf.len();
+                                let mut encoded_data = Vec::new();
+                                let mut encoded_pkt_type = PKT_FRAME_CHUNK;
+
+                                #[cfg(target_os = "windows")]
+                                if crate::windows::codec::is_h264_hardware_available() && !any_relay {
+                                    if h264_encoder.is_none() || h264_w != cap_w || h264_h != cap_h {
+                                        h264_encoder = crate::windows::codec::H264MfEncoder::new(cap_w, cap_h, max_fps, 4_000_000).ok();
+                                        h264_w = cap_w;
+                                        h264_h = cap_h;
+                                    }
+                                    if let Some(ref mut enc) = h264_encoder {
+                                        if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, false) {
+                                            if !frame.data.is_empty() {
+                                                encoded_data = frame.data;
+                                                encoded_pkt_type = PKT_FRAME_CHUNK_H264;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Fallback to SIMD Motion-JPEG if H.264 is unavailable or produced empty bitstream
+                                if encoded_data.is_empty() {
+                                    mjpeg_encoder.set_quality(jpeg_quality);
+                                    mjpeg_encoder.set_chroma_444(use_chroma_444);
+                                    if let Ok(frame) = mjpeg_encoder.encode(&bgra, cap_w, cap_h, true) {
+                                        encoded_data = frame.data;
+                                        encoded_pkt_type = PKT_FRAME_CHUNK;
+                                    }
+                                }
+
+                                if !encoded_data.is_empty() {
+                                    last_encoded_len = encoded_data.len();
                                     let chunk_size = 1280usize;
                                     let total_chunks =
-                                        ((jpeg_buf.len() + chunk_size - 1) / chunk_size).max(1);
+                                        ((encoded_data.len() + chunk_size - 1) / chunk_size).max(1);
 
                                     if total_chunks <= 2048 {
                                         for (idx, chunk) in
-                                            jpeg_buf.chunks(chunk_size).enumerate()
+                                            encoded_data.chunks(chunk_size).enumerate()
                                         {
                                             let mut pkt = Vec::with_capacity(17 + chunk.len());
                                             pkt.extend_from_slice(MAGIC_DSKY);
-                                            pkt.push(PKT_FRAME_CHUNK);
+                                            pkt.push(encoded_pkt_type);
                                             pkt.extend_from_slice(&frame_id.to_le_bytes());
                                             pkt.extend_from_slice(&(idx as u16).to_le_bytes());
                                             pkt.extend_from_slice(
