@@ -359,8 +359,10 @@ impl P2PManager {
                                 let force_keyframe = frame_id % (max_fps * 2).max(30) == 1;
                                 let target_bitrate = if any_relay { 2_500_000 } else { 5_000_000 };
 
-                                // TIER 1 (BEST): Hardware H.265 / HEVC GPU
-                                if crate::platform::codec::is_h265_hardware_available() {
+                                let preferred_codec = subscribers.first().map(|s| s.codec_pref).unwrap_or(0);
+
+                                // TIER 1 (H.265 / HEVC GPU)
+                                if (preferred_codec == 0 || preferred_codec == 1) && crate::platform::codec::is_h265_hardware_available() {
                                     if h265_encoder.is_none() || h265_w != cap_w || h265_h != cap_h {
                                         h265_encoder = crate::platform::codec::PlatformH265Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h265_w = cap_w;
@@ -376,8 +378,11 @@ impl P2PManager {
                                     }
                                 }
 
-                                // TIER 2 (FALLBACK 1): Hardware H.264 / AVC GPU
-                                if encoded_data.is_empty() && crate::platform::codec::is_h264_hardware_available() {
+                                // TIER 2 (H.264 / AVC GPU)
+                                if encoded_data.is_empty()
+                                    && (preferred_codec == 0 || preferred_codec == 2 || (preferred_codec == 1 && h265_encoder.is_none()))
+                                    && crate::platform::codec::is_h264_hardware_available()
+                                {
                                     if h264_encoder.is_none() || h264_w != cap_w || h264_h != cap_h {
                                         h264_encoder = crate::platform::codec::PlatformH264Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h264_w = cap_w;
@@ -394,8 +399,10 @@ impl P2PManager {
                                 }
 
                                 // TIER 3 (FALLBACK 2 / UNIVERSAL BASELINE): Pure-Rust SIMD Motion-JPEG 4:4:4
-                                // Only used if neither H.265 nor H.264 hardware encoders are available or active
-                                if encoded_data.is_empty() && h265_encoder.is_none() && h264_encoder.is_none() {
+                                let should_run_mjpeg = preferred_codec == 3
+                                    || (encoded_data.is_empty() && h265_encoder.is_none() && h264_encoder.is_none());
+
+                                if encoded_data.is_empty() && should_run_mjpeg {
                                     mjpeg_encoder.set_quality(jpeg_quality);
                                     mjpeg_encoder.set_chroma_444(use_chroma_444);
                                     if let Ok(frame) = mjpeg_encoder.encode(&bgra, cap_w, cap_h, true) {
@@ -635,6 +642,7 @@ impl P2PManager {
                                     };
                                     let client_confirmed_direct =
                                         slice.len() >= 39 && slice[38] != 0;
+                                    let client_codec_pref = if slice.len() > 39 { slice[39].min(3) } else { 0 };
 
                                     let norm_cid = normalize_id(&raw_cid);
                                     let my_own_id = normalize_id(&current_id_clone.read().await);
@@ -717,6 +725,7 @@ impl P2PManager {
                                                         scale_pct: sc_val,
                                                         chroma_444: c444,
                                                         is_direct: verified_direct,
+                                                        codec_pref: client_codec_pref,
                                                     }
                                                 });
                                             entry.client_id = client_id_disp.clone();
@@ -748,6 +757,7 @@ impl P2PManager {
                                             entry.jpeg_quality = q_val;
                                             entry.scale_pct = sc_val;
                                             entry.chroma_444 = c444;
+                                            entry.codec_pref = client_codec_pref;
 
                                             match entry.auth_state {
                                                 AuthState::Pending => AUTH_PENDING,
@@ -1232,6 +1242,7 @@ impl P2PManager {
                                                         scale_pct: 100,
                                                         chroma_444: true,
                                                         is_direct: true,
+                                                        codec_pref: 0,
                                                     }
                                                 });
                                             if entry.addr != from_addr {

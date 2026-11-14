@@ -1,6 +1,6 @@
 use crate::p2p::state::{
     apply_preset_for_mode, decode_jpeg_to_bgra, decode_lan_endpoint, encode_lan_endpoint_port,
-    fix_loopback_peer, frame_store, get_active_quality_params, input_notify, input_store,
+    fix_loopback_peer, frame_store, get_active_quality_params, get_client_codec_pref, input_notify, input_store,
     lan_broadcast_addrs, normalize_id, resolve_server_addr,
     set_active_session_target,
     set_session_status, update_client_preferences, wrap_relay_packet, SessionStatus,
@@ -445,6 +445,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     hello.extend_from_slice(my_relay_id.as_bytes());
                     hello.extend_from_slice(&my_lan_bytes);
                     hello.push(if is_direct_peer { 1u8 } else { 0u8 });
+                    hello.push(get_client_codec_pref());
 
                     // 1. Direct WAN / Active Peer path
                     if let Some(p_addr) = peer_addr {

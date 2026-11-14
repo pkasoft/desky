@@ -18,11 +18,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tracing::{debug, info, warn};
 
-use windows::core::w;
+use windows::core::{w, Interface};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform,
+    IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, IMF2DBuffer,
     MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER,
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
@@ -30,6 +30,7 @@ use windows::Win32::Media::MediaFoundation::{
     MFT_REGISTER_TYPE_INFO, MFVideoFormat_H264, MFVideoFormat_NV12,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
+    MF_MT_DEFAULT_STRIDE,
     MFSTARTUP_NOSOCKET, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
 };
 
@@ -269,9 +270,28 @@ pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
     }
 }
 
-/// Converts an NV12 buffer (Y plane followed by interleaved UV plane) to BGRA.
-pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
-    let y_plane_len = width * height;
+/// Converts an NV12 buffer (Y plane followed by interleaved UV plane) with stride and macroblock alignment to BGRA.
+pub fn nv12_to_bgra_strided(
+    nv12: &[u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    coded_h: usize,
+    bgra: &mut [u8],
+) {
+    let row_stride = stride.max(width);
+    // H.264 macroblock alignment is 16 pixels.
+    // If coded_h is not explicitly larger than height, detect if nv12 buffer length accommodates macroblock height
+    let mb_h = ((height + 15) / 16) * 16;
+    let actual_h = if coded_h >= mb_h {
+        coded_h
+    } else if nv12.len() >= row_stride * mb_h * 3 / 2 {
+        mb_h
+    } else {
+        height.max(coded_h)
+    };
+
+    let y_plane_len = row_stride * actual_h;
     if nv12.len() < y_plane_len {
         return;
     }
@@ -279,16 +299,19 @@ pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
     let uv_plane = &nv12[y_plane_len..];
 
     for y in 0..height {
-        let y_row_start = y * width;
-        let uv_row_start = (y / 2) * width;
+        let y_row_start = y * row_stride;
+        let uv_row_start = (y / 2) * row_stride;
         let bgra_row_start = y * width * 4;
+
         for x in 0..width {
             let y_idx = y_row_start + x;
             let uv_idx = uv_row_start + (x / 2) * 2;
             let px = bgra_row_start + x * 4;
+
             if y_idx >= y_plane.len() || uv_idx + 1 >= uv_plane.len() || px + 3 >= bgra.len() {
                 break;
             }
+
             let y_val = y_plane[y_idx] as i32;
             let u_val = uv_plane[uv_idx] as i32;
             let v_val = uv_plane[uv_idx + 1] as i32;
@@ -308,6 +331,7 @@ pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
         }
     }
 }
+
 pub struct H264MfEncoder {
     width: u32,
     height: u32,
@@ -424,6 +448,7 @@ impl H264MfEncoder {
             in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
             in_media.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
+            let _ = in_media.SetUINT32(&MF_MT_DEFAULT_STRIDE, self.width);
 
             transform.SetInputType(0, &in_media, 0)?;
 
@@ -678,20 +703,74 @@ impl H264MfDecoder {
             }
             if res.is_ok() {
                 if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
-                    let mut data_ptr = std::ptr::null_mut();
-                    let mut max_l = 0u32;
-                    let mut cur_l = 0u32;
-                    if m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l)).is_ok() {
-                        if cur_l > 0 && !data_ptr.is_null() {
-                            let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
-                            let bgra_len = (expected_width * expected_height * 4) as usize;
-                            let mut bgra = vec![0u8; bgra_len];
-                            nv12_to_bgra(nv12_slice, expected_width as usize, expected_height as usize, &mut bgra);
-                            let _ = m_buf.Unlock();
-                            self.last_frame = Some(bgra.clone());
-                            return Some(bgra);
+                    let mut dec_w = expected_width;
+                    let mut dec_h = expected_height;
+                    let mut dec_stride = expected_width;
+
+                    if let Ok(cur_out) = transform.GetOutputCurrentType(0) {
+                        if let Ok(fs) = cur_out.GetUINT64(&MF_MT_FRAME_SIZE) {
+                            let w = (fs >> 32) as u32;
+                            let h = (fs & 0xFFFF_FFFF) as u32;
+                            if w > 0 && h > 0 {
+                                dec_w = w;
+                                dec_h = h;
+                            }
                         }
-                        let _ = m_buf.Unlock();
+                        if let Ok(st) = cur_out.GetUINT32(&MF_MT_DEFAULT_STRIDE) {
+                            if st > 0 {
+                                dec_stride = st;
+                            }
+                        }
+                    }
+
+                    // Attempt 1: Try IMF2DBuffer::ContiguousCopyTo
+                    let mut packed_nv12: Option<Vec<u8>> = None;
+                    if let Ok(buf2d) = m_buf.cast::<IMF2DBuffer>() {
+                        if let Ok(contig_len) = buf2d.GetContiguousLength() {
+                            if contig_len > 0 {
+                                let mut dest = vec![0u8; contig_len as usize];
+                                if buf2d.ContiguousCopyTo(&mut dest).is_ok() {
+                                    packed_nv12 = Some(dest);
+                                }
+                            }
+                        }
+                    }
+
+                    let bgra_len = (expected_width * expected_height * 4) as usize;
+                    let mut bgra = vec![0u8; bgra_len];
+
+                    if let Some(ref nv12) = packed_nv12 {
+                        nv12_to_bgra_strided(
+                            nv12,
+                            expected_width as usize,
+                            expected_height as usize,
+                            dec_w as usize,
+                            dec_h as usize,
+                            &mut bgra,
+                        );
+                        self.last_frame = Some(bgra.clone());
+                        return Some(bgra);
+                    } else {
+                        let mut data_ptr = std::ptr::null_mut();
+                        let mut max_l = 0u32;
+                        let mut cur_l = 0u32;
+                        if m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l)).is_ok() {
+                            if cur_l > 0 && !data_ptr.is_null() {
+                                let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
+                                nv12_to_bgra_strided(
+                                    nv12_slice,
+                                    expected_width as usize,
+                                    expected_height as usize,
+                                    dec_stride as usize,
+                                    dec_h as usize,
+                                    &mut bgra,
+                                );
+                                let _ = m_buf.Unlock();
+                                self.last_frame = Some(bgra.clone());
+                                return Some(bgra);
+                            }
+                            let _ = m_buf.Unlock();
+                        }
                     }
                 }
             }
@@ -767,5 +846,6 @@ impl VideoDecoder for H264MfDecoder {
         }
     }
 }
+
 
 

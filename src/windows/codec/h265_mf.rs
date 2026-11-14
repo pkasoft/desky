@@ -9,19 +9,20 @@ use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, warn};
+use windows::core::Interface;
 
 use windows::Win32::Media::MediaFoundation::{
-    IMFMediaType, IMFTransform, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER,
+    IMFMediaType, IMFTransform, IMF2DBuffer, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER,
     MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
     MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO,
     MFVideoFormat_HEVC, MFVideoFormat_NV12, MF_E_TRANSFORM_NEED_MORE_INPUT,
     MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
-    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK,
+    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_MT_DEFAULT_STRIDE, MF_TRANSFORM_ASYNC_UNLOCK,
 };
 
 use super::h264_mf::{
-    bgra_to_nv12, ensure_mf_initialized, get_mfplat, nv12_to_bgra, MfPlatSymbols,
+    bgra_to_nv12, ensure_mf_initialized, get_mfplat, nv12_to_bgra_strided, MfPlatSymbols,
 };
 use crate::codec::{CodecType, EncodedFrame, VideoDecoder, VideoEncoder};
 
@@ -439,20 +440,74 @@ impl H265MfDecoder {
             }
             if res.is_ok() {
                 if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
-                    let mut data_ptr = std::ptr::null_mut();
-                    let mut max_l = 0u32;
-                    let mut cur_l = 0u32;
-                    if m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l)).is_ok() {
-                        if cur_l > 0 && !data_ptr.is_null() {
-                            let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
-                            let bgra_len = (expected_width * expected_height * 4) as usize;
-                            let mut bgra = vec![0u8; bgra_len];
-                            nv12_to_bgra(nv12_slice, expected_width as usize, expected_height as usize, &mut bgra);
-                            let _ = m_buf.Unlock();
-                            self.last_frame = Some(bgra.clone());
-                            return Some(bgra);
+                    let mut dec_w = expected_width;
+                    let mut dec_h = expected_height;
+                    let mut dec_stride = expected_width;
+
+                    if let Ok(cur_out) = transform.GetOutputCurrentType(0) {
+                        if let Ok(fs) = cur_out.GetUINT64(&MF_MT_FRAME_SIZE) {
+                            let w = (fs >> 32) as u32;
+                            let h = (fs & 0xFFFF_FFFF) as u32;
+                            if w > 0 && h > 0 {
+                                dec_w = w;
+                                dec_h = h;
+                            }
                         }
-                        let _ = m_buf.Unlock();
+                        if let Ok(st) = cur_out.GetUINT32(&MF_MT_DEFAULT_STRIDE) {
+                            if st > 0 {
+                                dec_stride = st;
+                            }
+                        }
+                    }
+
+                    // Attempt 1: Try IMF2DBuffer::ContiguousCopyTo
+                    let mut packed_nv12: Option<Vec<u8>> = None;
+                    if let Ok(buf2d) = m_buf.cast::<IMF2DBuffer>() {
+                        if let Ok(contig_len) = buf2d.GetContiguousLength() {
+                            if contig_len > 0 {
+                                let mut dest = vec![0u8; contig_len as usize];
+                                if buf2d.ContiguousCopyTo(&mut dest).is_ok() {
+                                    packed_nv12 = Some(dest);
+                                }
+                            }
+                        }
+                    }
+
+                    let bgra_len = (expected_width * expected_height * 4) as usize;
+                    let mut bgra = vec![0u8; bgra_len];
+
+                    if let Some(ref nv12) = packed_nv12 {
+                        nv12_to_bgra_strided(
+                            nv12,
+                            expected_width as usize,
+                            expected_height as usize,
+                            dec_w as usize,
+                            dec_h as usize,
+                            &mut bgra,
+                        );
+                        self.last_frame = Some(bgra.clone());
+                        return Some(bgra);
+                    } else {
+                        let mut data_ptr = std::ptr::null_mut();
+                        let mut max_l = 0u32;
+                        let mut cur_l = 0u32;
+                        if m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l)).is_ok() {
+                            if cur_l > 0 && !data_ptr.is_null() {
+                                let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
+                                nv12_to_bgra_strided(
+                                    nv12_slice,
+                                    expected_width as usize,
+                                    expected_height as usize,
+                                    dec_stride as usize,
+                                    dec_h as usize,
+                                    &mut bgra,
+                                );
+                                let _ = m_buf.Unlock();
+                                self.last_frame = Some(bgra.clone());
+                                return Some(bgra);
+                            }
+                            let _ = m_buf.Unlock();
+                        }
                     }
                 }
             }

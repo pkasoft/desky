@@ -19,7 +19,7 @@ use super::theme::{
 pub static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 
 // Active settings sidebar category:
-// 0 = Stream & Display, 1 = Recording, 2 = Security, 3 = Connection Info
+// 0 = Stream & Display, 1 = Codecs, 2 = Recording, 3 = Security, 4 = Connection Info
 pub static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
 
 // Display mode: 0 = Auto Fit, 1 = Fill Window, 2 = 1:1 Original resolution
@@ -63,21 +63,22 @@ pub unsafe fn draw_fullscreen_settings_view(
 
     SetBkMode(hdc, TRANSPARENT);
 
-    let panel_w = (client_w - 48).clamp(320, 620);
+    let panel_w = (client_w - 48).clamp(340, 640);
     let panel_x = (client_w - panel_w) / 2;
 
-    // Top Navigation & Close Bar (4 categories: Display, Recording, Security, Info)
+    // Top Navigation & Close Bar (5 categories: Display, Codecs, Recording, Security, Info)
     let tab_y = top_y + 14;
     let tab_h = 32;
-    let close_w = 80;
+    let close_w = 76;
     let close_x = panel_x + panel_w - close_w;
-    let cat_w = (panel_w - close_w - 24) / 4;
+    let cat_w = (panel_w - close_w - 30) / 5;
     let cat0_x = panel_x;
     let cat1_x = cat0_x + cat_w + 6;
     let cat2_x = cat1_x + cat_w + 6;
     let cat3_x = cat2_x + cat_w + 6;
+    let cat4_x = cat3_x + cat_w + 6;
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(3);
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(4);
 
     let old_font = SelectObject(hdc, HGDIOBJ(font_btn.0));
 
@@ -90,15 +91,10 @@ pub unsafe fn draw_fullscreen_settings_view(
     draw_rounded_box(hdc, cat0_x, tab_y, cat_w, tab_h, c0_bg, c0_border, 6);
     SetTextColor(hdc, c0_fg);
     let mut c0_txt: Vec<u16> = "Display".encode_utf16().collect();
-    let mut c0_rc = RECT {
-        left: cat0_x,
-        top: tab_y,
-        right: cat0_x + cat_w,
-        bottom: tab_y + tab_h,
-    };
+    let mut c0_rc = RECT { left: cat0_x, top: tab_y, right: cat0_x + cat_w, bottom: tab_y + tab_h };
     let _ = DrawTextW(hdc, &mut c0_txt, &mut c0_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 1: Recording Tab Button
+    // Category 1: Codecs Tab Button
     let (c1_bg, c1_border, c1_fg) = if active_cat == 1 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
@@ -106,16 +102,11 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     draw_rounded_box(hdc, cat1_x, tab_y, cat_w, tab_h, c1_bg, c1_border, 6);
     SetTextColor(hdc, c1_fg);
-    let mut c1_txt: Vec<u16> = "Recording".encode_utf16().collect();
-    let mut c1_rc = RECT {
-        left: cat1_x,
-        top: tab_y,
-        right: cat1_x + cat_w,
-        bottom: tab_y + tab_h,
-    };
+    let mut c1_txt: Vec<u16> = "Codecs".encode_utf16().collect();
+    let mut c1_rc = RECT { left: cat1_x, top: tab_y, right: cat1_x + cat_w, bottom: tab_y + tab_h };
     let _ = DrawTextW(hdc, &mut c1_txt, &mut c1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 2: Security Tab Button
+    // Category 2: Recording Tab Button
     let (c2_bg, c2_border, c2_fg) = if active_cat == 2 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
@@ -123,16 +114,11 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     draw_rounded_box(hdc, cat2_x, tab_y, cat_w, tab_h, c2_bg, c2_border, 6);
     SetTextColor(hdc, c2_fg);
-    let mut c2_txt: Vec<u16> = "Security".encode_utf16().collect();
-    let mut c2_rc = RECT {
-        left: cat2_x,
-        top: tab_y,
-        right: cat2_x + cat_w,
-        bottom: tab_y + tab_h,
-    };
+    let mut c2_txt: Vec<u16> = "Recording".encode_utf16().collect();
+    let mut c2_rc = RECT { left: cat2_x, top: tab_y, right: cat2_x + cat_w, bottom: tab_y + tab_h };
     let _ = DrawTextW(hdc, &mut c2_txt, &mut c2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 3: Info Tab Button
+    // Category 3: Security Tab Button
     let (c3_bg, c3_border, c3_fg) = if active_cat == 3 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
@@ -140,25 +126,27 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
     draw_rounded_box(hdc, cat3_x, tab_y, cat_w, tab_h, c3_bg, c3_border, 6);
     SetTextColor(hdc, c3_fg);
-    let mut c3_txt: Vec<u16> = "Info".encode_utf16().collect();
-    let mut c3_rc = RECT {
-        left: cat3_x,
-        top: tab_y,
-        right: cat3_x + cat_w,
-        bottom: tab_y + tab_h,
-    };
+    let mut c3_txt: Vec<u16> = "Security".encode_utf16().collect();
+    let mut c3_rc = RECT { left: cat3_x, top: tab_y, right: cat3_x + cat_w, bottom: tab_y + tab_h };
     let _ = DrawTextW(hdc, &mut c3_txt, &mut c3_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+    // Category 4: Info Tab Button
+    let (c4_bg, c4_border, c4_fg) = if active_cat == 4 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else {
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, cat4_x, tab_y, cat_w, tab_h, c4_bg, c4_border, 6);
+    SetTextColor(hdc, c4_fg);
+    let mut c4_txt: Vec<u16> = "Info".encode_utf16().collect();
+    let mut c4_rc = RECT { left: cat4_x, top: tab_y, right: cat4_x + cat_w, bottom: tab_y + tab_h };
+    let _ = DrawTextW(hdc, &mut c4_txt, &mut c4_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     // Close Button [ Close × ]
     draw_rounded_box(hdc, close_x, tab_y, close_w, tab_h, PK_CARD, PK_CARD_BORDER, 6);
     SetTextColor(hdc, PK_MUTED);
     let mut close_txt: Vec<u16> = "Close ×".encode_utf16().collect();
-    let mut close_rc = RECT {
-        left: close_x,
-        top: tab_y,
-        right: close_x + close_w,
-        bottom: tab_y + tab_h,
-    };
+    let mut close_rc = RECT { left: close_x, top: tab_y, right: close_x + close_w, bottom: tab_y + tab_h };
     let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
     let draw_segmented_strip = |x: i32, y: i32, w: i32, h: i32, labels: &[&str], active_idx: usize| {
@@ -204,6 +192,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     };
 
     if active_cat == 0 {
+        // Category 0: Display Settings
         let sec0_y = top_y + 60;
         let strip_h = 36;
         let step = 74;
@@ -212,12 +201,7 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
         let mut s0_lbl: Vec<u16> = "Display Scaling".encode_utf16().collect();
-        let mut s0_rc = RECT {
-            left: panel_x,
-            top: sec0_y,
-            right: panel_x + panel_w,
-            bottom: sec0_y + 20,
-        };
+        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
         let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         let scale_labels = ["Auto Fit", "Stretch", "Original (1:1)"];
@@ -228,12 +212,7 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
         let mut s1_lbl: Vec<u16> = "Stream Quality".encode_utf16().collect();
-        let mut s1_rc = RECT {
-            left: panel_x,
-            top: sec1_y,
-            right: panel_x + panel_w,
-            bottom: sec1_y + 20,
-        };
+        let mut s1_rc = RECT { left: panel_x, top: sec1_y, right: panel_x + panel_w, bottom: sec1_y + 20 };
         let _ = DrawTextW(hdc, &mut s1_lbl, &mut s1_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         let q_mode = crate::p2p::get_quality_mode() as usize;
@@ -251,15 +230,10 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
         let mut s2_lbl: Vec<u16> = "Target Framerate".encode_utf16().collect();
-        let mut s2_rc = RECT {
-            left: panel_x,
-            top: sec2_y,
-            right: panel_x + panel_w,
-            bottom: sec2_y + 20,
-        };
+        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
         let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-        let fps_labels = ["30 FPS", "60 FPS", "120 FPS"];
+        let fps_labels = ["30 FPS (Low Data)", "60 FPS (Smooth)", "120 FPS (Ultra)"];
         let fps_idx = match fps {
             30 => 0,
             120 => 2,
@@ -267,17 +241,12 @@ pub unsafe fn draw_fullscreen_settings_view(
         };
         draw_segmented_strip(panel_x, sec2_y + 22, panel_w, strip_h, &fps_labels, fps_idx);
 
-        // 4. Remote Cursor
+        // 4. Remote Cursor Rendering
         let sec3_y = sec2_y + step;
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
-        let mut s3_lbl: Vec<u16> = "Remote Cursor".encode_utf16().collect();
-        let mut s3_rc = RECT {
-            left: panel_x,
-            top: sec3_y,
-            right: panel_x + panel_w,
-            bottom: sec3_y + 20,
-        };
+        let mut s3_lbl: Vec<u16> = "Remote Cursor Rendering".encode_utf16().collect();
+        let mut s3_rc = RECT { left: panel_x, top: sec3_y, right: panel_x + panel_w, bottom: sec3_y + 20 };
         let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         let cur_labels = ["Show Cursor", "Hide Cursor"];
@@ -293,15 +262,113 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
         SetTextColor(hdc, COLORREF(0x00FFFFFF));
         let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
-        let mut done_rc = RECT {
-            left: done_x,
-            top: done_y,
-            right: done_x + done_w,
-            bottom: done_y + done_h,
-        };
+        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
         let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else if active_cat == 1 {
-        // Category 1: Recording Settings
+        // Category 1: Codec Settings
+        let sec0_y = top_y + 60;
+        let strip_h = 36;
+        let step = 74;
+
+        // 1. Codec Selection
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s0_lbl: Vec<u16> = "Video Codec Selection & Hardware Offload".encode_utf16().collect();
+        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
+        let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let codec_labels = ["Auto (Best)", "H.265 (HEVC)", "H.264 (AVC)", "Motion-JPEG"];
+        let pref_idx = crate::p2p::get_client_codec_pref() as usize;
+        draw_segmented_strip(panel_x, sec0_y + 22, panel_w, strip_h, &codec_labels, pref_idx.min(3));
+
+        // 2. Active Session Pipeline Card
+        let sec1_y = sec0_y + step;
+        let card1_h = 60;
+        draw_rounded_box(hdc, panel_x, sec1_y, panel_w, card1_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, PK_GREEN_DARK);
+        let active_name = crate::p2p::get_active_stream_codec_name();
+        let active_title = format!("Active Transmission: {}", active_name);
+        let mut at_w: Vec<u16> = active_title.encode_utf16().collect();
+        let mut at_rc = RECT { left: panel_x + 12, top: sec1_y + 8, right: panel_x + panel_w - 12, bottom: sec1_y + 30 };
+        let _ = DrawTextW(hdc, &mut at_w, &mut at_rc, DT_SINGLELINE | DT_VCENTER);
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_MUTED);
+        let desc = match crate::p2p::get_active_stream_codec() {
+            0x16 => "Hardware MFT accelerated (NV12 with macroblock & stride boundary guards)",
+            0x17 => "Hardware Transform accelerated (HEVC Main Profile 60 FPS zero-copy)",
+            _ => "Universal baseline (Pure-Rust SIMD 4:4:4 Chroma, zero-latency JPEG)",
+        };
+        let mut d_w: Vec<u16> = desc.encode_utf16().collect();
+        let mut d_rc = RECT { left: panel_x + 12, top: sec1_y + 32, right: panel_x + panel_w - 12, bottom: sec1_y + 54 };
+        let _ = DrawTextW(hdc, &mut d_w, &mut d_rc, DT_SINGLELINE | DT_VCENTER);
+
+        // 3. Hardware Capabilities Summary
+        let sec2_y = sec1_y + card1_h + 14;
+        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut s2_lbl: Vec<u16> = "Hardware Codec Capabilities".encode_utf16().collect();
+        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
+        let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+
+        let h264_hw = crate::platform::codec::is_h264_hardware_available();
+        let h265_hw = crate::platform::codec::is_h265_hardware_available();
+
+        let card2_h = 76;
+        draw_rounded_box(hdc, panel_x, sec2_y + 22, panel_w, card2_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
+
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        let cap_txt = format!(
+            "• H.264 / AVC GPU: {}\n• H.265 / HEVC GPU: {}\n• Motion-JPEG: AVAILABLE (Pure-Rust SIMD 4:4:4 Universal)",
+            if h264_hw { "AVAILABLE (Media Foundation GPU MFT)" } else { "UNAVAILABLE" },
+            if h265_hw { "AVAILABLE (Synchronous GPU MFT)" } else { "STANDBY (Async Only / Extensions Needed)" },
+        );
+        SetTextColor(hdc, PK_TEXT);
+        let mut c_w: Vec<u16> = cap_txt.encode_utf16().collect();
+        let mut c_rc = RECT { left: panel_x + 12, top: sec2_y + 26, right: panel_x + panel_w - 12, bottom: sec2_y + 22 + card2_h - 4 };
+        let _ = DrawTextW(hdc, &mut c_w, &mut c_rc, DT_WORDBREAK);
+
+        // 4. Test Codecs Action Button & Result
+        let sec3_y = sec2_y + 22 + card2_h + 14;
+        let test_btn_w = 180;
+        let test_btn_h = 36;
+        let test_btn_x = panel_x + (panel_w - test_btn_w) / 2;
+        draw_rounded_box(hdc, test_btn_x, sec3_y, test_btn_w, test_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, PK_GREEN_DARK);
+        let mut tb_txt: Vec<u16> = "Test All Codecs".encode_utf16().collect();
+        let mut tb_rc = RECT { left: test_btn_x, top: sec3_y, right: test_btn_x + test_btn_w, bottom: sec3_y + test_btn_h };
+        let _ = DrawTextW(hdc, &mut tb_txt, &mut tb_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        let diag_str = crate::p2p::get_codec_diag_result();
+        let mut diag_end_y = sec3_y + test_btn_h;
+        if !diag_str.is_empty() {
+            let diag_y = sec3_y + test_btn_h + 8;
+            let diag_h = 34;
+            draw_rounded_box(hdc, panel_x, diag_y, panel_w, diag_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
+            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+            SetTextColor(hdc, PK_TEXT);
+            let mut dg_w: Vec<u16> = diag_str.encode_utf16().collect();
+            let mut dg_rc = RECT { left: panel_x + 8, top: diag_y, right: panel_x + panel_w - 8, bottom: diag_y + diag_h };
+            let _ = DrawTextW(hdc, &mut dg_w, &mut dg_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+            diag_end_y = diag_y + diag_h;
+        }
+
+        // Bottom [ Done ] Button
+        let done_y = diag_end_y + 14;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+        SetTextColor(hdc, COLORREF(0x00FFFFFF));
+        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
+        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
+        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    } else if active_cat == 2 {
+        // Category 2: Recording Settings
         let sec0_y = top_y + 60;
         let strip_h = 36;
         let step = 70;
@@ -383,8 +450,8 @@ pub unsafe fn draw_fullscreen_settings_view(
         let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
         let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
         let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    } else if active_cat == 2 {
-        // Category 2: Unattended Security
+    } else if active_cat == 3 {
+        // Category 3: Unattended Security
         let is_unattended = crate::identity::is_unattended_enabled();
         let sec_y = top_y + 60;
 
@@ -444,7 +511,7 @@ pub unsafe fn draw_fullscreen_settings_view(
         let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
         let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
     } else {
-        // Category 3: Connection Info
+        // Category 4: Connection Info
         let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
         let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
         let rtt_ms = crate::p2p::get_session_rtt_ms();
@@ -536,18 +603,19 @@ pub fn close_settings_modal(hwnd: HWND) {
 }
 
 pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x: i32, client_y: i32, top_y: i32) -> bool {
-    let panel_w = (client_w - 48).clamp(320, 620);
+    let panel_w = (client_w - 48).clamp(340, 640);
     let panel_x = (client_w - panel_w) / 2;
 
     let tab_y = top_y + 14;
     let tab_h = 32;
-    let close_w = 80;
+    let close_w = 76;
     let close_x = panel_x + panel_w - close_w;
-    let cat_w = (panel_w - close_w - 24) / 4;
+    let cat_w = (panel_w - close_w - 30) / 5;
     let cat0_x = panel_x;
     let cat1_x = cat0_x + cat_w + 6;
     let cat2_x = cat1_x + cat_w + 6;
     let cat3_x = cat2_x + cat_w + 6;
+    let cat4_x = cat3_x + cat_w + 6;
 
     // Close Button [ Close × ]
     if client_x >= close_x && client_x <= close_x + close_w && client_y >= tab_y && client_y <= tab_y + tab_h {
@@ -562,28 +630,35 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         return true;
     }
 
-    // Category 1 Tab: Recording
+    // Category 1 Tab: Codecs
     if client_x >= cat1_x && client_x <= cat1_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
         SETTINGS_CATEGORY.store(1, Ordering::Relaxed);
         unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
         return true;
     }
 
-    // Category 2 Tab: Security
+    // Category 2 Tab: Recording
     if client_x >= cat2_x && client_x <= cat2_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
         SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
         unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
         return true;
     }
 
-    // Category 3 Tab: Info
+    // Category 3 Tab: Security
     if client_x >= cat3_x && client_x <= cat3_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
         SETTINGS_CATEGORY.store(3, Ordering::Relaxed);
         unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
         return true;
     }
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(3);
+    // Category 4 Tab: Info
+    if client_x >= cat4_x && client_x <= cat4_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
+        SETTINGS_CATEGORY.store(4, Ordering::Relaxed);
+        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+        return true;
+    }
+
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(4);
 
     if active_cat == 0 {
         let sec0_y = top_y + 60;
@@ -615,7 +690,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
         if let Some(idx) = hit_segment(sec0_y + step + 22, 4) {
             let mode_val = match idx {
                 0 => 0,
-                1 => 2,
+                1 => 1,
                 2 => 3,
                 _ => 4,
             };
@@ -658,7 +733,62 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
             return true;
         }
     } else if active_cat == 1 {
-        // Category 1: Recording Settings
+        // Category 1: Codec Settings
+        let sec0_y = top_y + 60;
+        let strip_h = 36;
+
+        let hit_segment = |sy: i32, count: i32| -> Option<usize> {
+            if client_x >= panel_x
+                && client_x <= panel_x + panel_w
+                && client_y >= sy
+                && client_y <= sy + strip_h
+            {
+                let seg_w = (panel_w / count.max(1)).max(1);
+                let idx = ((client_x - panel_x) / seg_w).clamp(0, count - 1) as usize;
+                Some(idx)
+            } else {
+                None
+            }
+        };
+
+        // 1. Codec Selection (4 options: Auto, H265, H264, MJPEG)
+        if let Some(idx) = hit_segment(sec0_y + 22, 4) {
+            crate::p2p::set_client_codec_pref(idx as u8);
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+
+        // 2. Test All Codecs button
+        let card1_h = 60;
+        let card2_h = 76;
+        let sec1_y = sec0_y + 74;
+        let sec2_y = sec1_y + card1_h + 14;
+        let sec3_y = sec2_y + 22 + card2_h + 14;
+        let test_btn_w = 180;
+        let test_btn_h = 36;
+        let test_btn_x = panel_x + (panel_w - test_btn_w) / 2;
+
+        if client_x >= test_btn_x && client_x <= test_btn_x + test_btn_w
+            && client_y >= sec3_y && client_y <= sec3_y + test_btn_h
+        {
+            crate::p2p::run_codec_diagnostics();
+            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            return true;
+        }
+
+        // Done button
+        let diag_str = crate::p2p::get_codec_diag_result();
+        let diag_end_y = if !diag_str.is_empty() { sec3_y + test_btn_h + 8 + 34 } else { sec3_y + test_btn_h };
+        let done_y = diag_end_y + 14;
+        let done_w = 140;
+        let done_x = (client_w - done_w) / 2;
+        let done_h = 36;
+        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
+            close_settings_modal(hwnd);
+            return true;
+        }
+    } else if active_cat == 2 {
+        // Category 2: Recording Settings
         let sec0_y = top_y + 60;
         let strip_h = 36;
         let step = 70;
@@ -720,8 +850,8 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
             close_settings_modal(hwnd);
             return true;
         }
-    } else if active_cat == 2 {
-        // Category 2: Unattended Security
+    } else if active_cat == 3 {
+        // Category 3: Unattended Security
         let sec_y = top_y + 60;
         let act_y = sec_y + 92;
         let btn_w = 230;
@@ -747,7 +877,7 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
             return true;
         }
     } else {
-        // Category 3: Info
+        // Category 4: Info
         let row_h = 40;
         let tbl_y = top_y + 60;
         let done_y = tbl_y + 4 * (row_h + 4) + 24;

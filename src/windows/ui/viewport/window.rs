@@ -205,7 +205,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 let hit = get_tab_hit_state(hwnd, client_x, client_y);
 
                 if hit == 9011 {
-                    super::settings_modal::SETTINGS_CATEGORY.store(3, Ordering::Relaxed);
+                    super::settings_modal::SETTINGS_CATEGORY.store(1, Ordering::Relaxed);
                     SHOW_SETTINGS_MODAL.store(true, Ordering::Relaxed);
                     sync_edit_target_visibility();
                     let _ = InvalidateRect(Some(hwnd), None, false);
