@@ -176,37 +176,29 @@ pub fn is_h264_hardware_available() -> bool {
 
         let res = mf.mft_enum_ex(
             MFT_CATEGORY_VIDEO_ENCODER,
-            MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+            MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
             None,
             Some(&output_type),
             &mut activate_ptrs,
             &mut count,
         );
 
-        let sync_found = res.is_ok() && count > 0 && !activate_ptrs.is_null();
-        if !activate_ptrs.is_null() {
+        let mut sync_found = false;
+        if res.is_ok() && count > 0 && !activate_ptrs.is_null() {
+            let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
+            for act_opt in activations {
+                if let Some(act) = act_opt {
+                    let is_async = act.GetUINT32(&windows::Win32::Media::MediaFoundation::MF_TRANSFORM_ASYNC).unwrap_or(0);
+                    if is_async == 0 {
+                        sync_found = true;
+                        break;
+                    }
+                }
+            }
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
         }
 
-        if sync_found {
-            true
-        } else {
-            let mut hw_ptrs = std::ptr::null_mut();
-            let mut hw_count = 0u32;
-            let hw_res = mf.mft_enum_ex(
-                MFT_CATEGORY_VIDEO_ENCODER,
-                MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
-                None,
-                Some(&output_type),
-                &mut hw_ptrs,
-                &mut hw_count,
-            );
-            let hw_found = hw_res.is_ok() && hw_count > 0 && !hw_ptrs.is_null();
-            if !hw_ptrs.is_null() {
-                windows::Win32::System::Com::CoTaskMemFree(Some(hw_ptrs as *const _));
-            }
-            hw_found
-        }
+        sync_found
     };
 
     info!(
@@ -382,27 +374,14 @@ impl H264MfEncoder {
             let mut activate_ptrs = std::ptr::null_mut();
             let mut count = 0u32;
 
-            // First try synchronous MFT (highest compatibility with low-latency direct pipelines)
-            let mut res = self.mf.mft_enum_ex(
+            let res = self.mf.mft_enum_ex(
                 MFT_CATEGORY_VIDEO_ENCODER,
-                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
                 None,
                 Some(&output_type),
                 &mut activate_ptrs,
                 &mut count,
             );
-
-            // Fallback to hardware MFT if synchronous enumeration returned 0
-            if res.is_err() || count == 0 || activate_ptrs.is_null() {
-                res = self.mf.mft_enum_ex(
-                    MFT_CATEGORY_VIDEO_ENCODER,
-                    MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
-                    None,
-                    Some(&output_type),
-                    &mut activate_ptrs,
-                    &mut count,
-                );
-            }
 
             res?;
 
@@ -411,13 +390,58 @@ impl H264MfEncoder {
             }
 
             let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
-            let first_act = &activations[0];
-            let transform: IMFTransform = first_act.as_ref().unwrap().ActivateObject()?;
+            let mut chosen_transform: Option<IMFTransform> = None;
+            let mut chosen_is_async = false;
+            let mut chosen_name = String::new();
+
+            // Pass 1: Prioritize synchronous encoders (async == 0) to avoid GPU driver crashes
+            for act_opt in activations {
+                if let Some(act) = act_opt {
+                    let is_async = act.GetUINT32(&windows::Win32::Media::MediaFoundation::MF_TRANSFORM_ASYNC).unwrap_or(0);
+                    if is_async == 0 {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            let mut name_buf = [0u16; 128];
+                            let mut name_len = 0u32;
+                            let _ = act.GetString(&windows::Win32::Media::MediaFoundation::MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
+                            chosen_name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+                            chosen_transform = Some(trans);
+                            chosen_is_async = false;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Pass 2: Fallback to any encoder if no sync encoder succeeded
+            if chosen_transform.is_none() {
+                for act_opt in activations {
+                    if let Some(act) = act_opt {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            let mut name_buf = [0u16; 128];
+                            let mut name_len = 0u32;
+                            let _ = act.GetString(&windows::Win32::Media::MediaFoundation::MFT_FRIENDLY_NAME_Attribute, &mut name_buf, Some(&mut name_len));
+                            chosen_name = String::from_utf16_lossy(&name_buf[..name_len as usize]);
+                            chosen_transform = Some(trans);
+                            chosen_is_async = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
 
-            // Unlock asynchronous capabilities & configure low-latency streaming
+            let transform = chosen_transform.ok_or_else(|| anyhow!("Failed to activate H.264 MFT encoder"))?;
+            info!("Selected H.264 MFT Encoder: '{}' (async={})", chosen_name, chosen_is_async);
+
+            // Only unlock async if chosen MFT is actually async
+            if chosen_is_async {
+                if let Ok(attrs) = transform.GetAttributes() {
+                    let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+                }
+            }
+
             if let Ok(attrs) = transform.GetAttributes() {
-                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
                 let low_latency = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
                 let real_time = windows::core::GUID::from_u128(0xc03eb300_0985_4228_b384_5f532f83ee18);
                 let gop_size = windows::core::GUID::from_u128(0x95f34a07_8bd9_47e8_a581_9389ac525792);
@@ -618,8 +642,31 @@ impl H264MfDecoder {
                 return Err(anyhow!("No H.264 MFT video decoder found on this system"));
             }
             let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
-            let transform: IMFTransform = activations[0].as_ref().unwrap().ActivateObject()?;
+            let mut chosen_transform: Option<IMFTransform> = None;
+            for act_opt in activations {
+                if let Some(act) = act_opt {
+                    let is_async = act.GetUINT32(&windows::Win32::Media::MediaFoundation::MF_TRANSFORM_ASYNC).unwrap_or(0);
+                    if is_async == 0 {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            chosen_transform = Some(trans);
+                            break;
+                        }
+                    }
+                }
+            }
+            if chosen_transform.is_none() {
+                for act_opt in activations {
+                    if let Some(act) = act_opt {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            chosen_transform = Some(trans);
+                            break;
+                        }
+                    }
+                }
+            }
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+
+            let transform = chosen_transform.ok_or_else(|| anyhow!("No H.264 MFT video decoder could be activated"))?;
 
             if let Ok(attrs) = transform.GetAttributes() {
                 let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
@@ -701,8 +748,10 @@ impl H264MfDecoder {
                     }
                 }
             }
+
             if res.is_ok() {
-                if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
+                let active_sample = output_data.pSample.as_ref().cloned().unwrap_or(out_sample);
+                if let Ok(m_buf) = active_sample.ConvertToContiguousBuffer() {
                     let mut dec_w = expected_width;
                     let mut dec_h = expected_height;
                     let mut dec_stride = expected_width;

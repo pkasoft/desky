@@ -61,18 +61,52 @@ pub fn is_h265_hardware_available() -> bool {
 
         let res = mf.mft_enum_ex(
             MFT_CATEGORY_VIDEO_ENCODER,
-            MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+            MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
             None,
             Some(&output_type),
             &mut activate_ptrs,
             &mut count,
         );
 
-        let found = res.is_ok() && count > 0 && !activate_ptrs.is_null();
-        if !activate_ptrs.is_null() {
+        let mut sync_enc_found = false;
+        if res.is_ok() && count > 0 && !activate_ptrs.is_null() {
+            let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
+            for act_opt in activations {
+                if let Some(act) = act_opt {
+                    let is_async = act.GetUINT32(&windows::Win32::Media::MediaFoundation::MF_TRANSFORM_ASYNC).unwrap_or(0);
+                    if is_async == 0 {
+                        sync_enc_found = true;
+                        break;
+                    }
+                }
+            }
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
         }
-        found
+
+        // Also verify that an H.265 decoder is installed on the system (Microsoft HEVC extension)
+        let mut dec_found = false;
+        if sync_enc_found {
+            let input_type = MFT_REGISTER_TYPE_INFO {
+                guidMajorType: MFMediaType_Video,
+                guidSubtype: MFVideoFormat_HEVC,
+            };
+            let mut dec_ptrs = std::ptr::null_mut();
+            let mut dec_count = 0u32;
+            let dec_res = mf.mft_enum_ex(
+                windows::Win32::Media::MediaFoundation::MFT_CATEGORY_VIDEO_DECODER,
+                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                Some(&input_type),
+                None,
+                &mut dec_ptrs,
+                &mut dec_count,
+            );
+            if dec_res.is_ok() && dec_count > 0 && !dec_ptrs.is_null() {
+                dec_found = true;
+                windows::Win32::System::Com::CoTaskMemFree(Some(dec_ptrs as *const _));
+            }
+        }
+
+        sync_enc_found && dec_found
     };
 
     info!(
@@ -152,12 +186,39 @@ impl H265MfEncoder {
             }
 
             let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
-            let first_act = &activations[0];
-            let transform: IMFTransform = first_act.as_ref().unwrap().ActivateObject()?;
+            let mut chosen_transform: Option<IMFTransform> = None;
+            let mut chosen_is_async = false;
+            for act_opt in activations {
+                if let Some(act) = act_opt {
+                    let is_async = act.GetUINT32(&windows::Win32::Media::MediaFoundation::MF_TRANSFORM_ASYNC).unwrap_or(0);
+                    if is_async == 0 {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            chosen_transform = Some(trans);
+                            chosen_is_async = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if chosen_transform.is_none() {
+                for act_opt in activations {
+                    if let Some(act) = act_opt {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            chosen_transform = Some(trans);
+                            chosen_is_async = true;
+                            break;
+                        }
+                    }
+                }
+            }
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
 
-            if let Ok(attrs) = transform.GetAttributes() {
-                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+            let transform = chosen_transform.ok_or_else(|| anyhow!("Failed to activate H.265 MFT encoder"))?;
+
+            if chosen_is_async {
+                if let Ok(attrs) = transform.GetAttributes() {
+                    let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+                }
             }
 
             let out_media: IMFMediaType = self.mf.create_media_type()?;
@@ -357,12 +418,31 @@ impl H265MfDecoder {
                 return Err(anyhow!("No H.265 MFT video decoder found on this system"));
             }
             let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
-            let transform: IMFTransform = activations[0].as_ref().unwrap().ActivateObject()?;
+            let mut chosen_transform: Option<IMFTransform> = None;
+            for act_opt in activations {
+                if let Some(act) = act_opt {
+                    let is_async = act.GetUINT32(&windows::Win32::Media::MediaFoundation::MF_TRANSFORM_ASYNC).unwrap_or(0);
+                    if is_async == 0 {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            chosen_transform = Some(trans);
+                            break;
+                        }
+                    }
+                }
+            }
+            if chosen_transform.is_none() {
+                for act_opt in activations {
+                    if let Some(act) = act_opt {
+                        if let Ok(trans) = act.ActivateObject::<IMFTransform>() {
+                            chosen_transform = Some(trans);
+                            break;
+                        }
+                    }
+                }
+            }
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
 
-            if let Ok(attrs) = transform.GetAttributes() {
-                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
-            }
+            let transform = chosen_transform.ok_or_else(|| anyhow!("No H.265 MFT video decoder could be activated"))?;
 
             let frame_size = ((width as u64) << 32) | (height as u64);
             let frame_rate = (60u64 << 32) | 1u64;

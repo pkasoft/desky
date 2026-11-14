@@ -23,6 +23,12 @@ pub(crate) use linux as platform;
 use tracing::info;
 
 fn main() -> anyhow::Result<()> {
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("DESKY_PANIC: {}\nLocation: {:?}\nBacktrace: {:?}", info, info.location(), std::backtrace::Backtrace::capture());
+        eprintln!("{}", msg);
+        let _ = std::fs::write("desky_panic.log", &msg);
+    }));
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
