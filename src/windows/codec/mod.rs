@@ -12,11 +12,13 @@ pub mod h264_mf;
 pub mod h265_mf;
 
 pub use h264_mf::{H264MfDecoder, H264MfEncoder, is_h264_hardware_available};
-pub use h265_mf::is_h265_hardware_available;
+pub use h265_mf::{H265MfDecoder, H265MfEncoder, is_h265_hardware_available};
 
 /// Platform type aliases unifying Windows & Linux codec dispatch
 pub type PlatformH264Encoder = H264MfEncoder;
 pub type PlatformH264Decoder = H264MfDecoder;
+pub type PlatformH265Encoder = H265MfEncoder;
+pub type PlatformH265Decoder = H265MfDecoder;
 
 /// Probes and logs all available GPU hardware-accelerated video transforms
 pub fn probe_hardware_codecs() {

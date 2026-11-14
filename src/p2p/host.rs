@@ -4,7 +4,7 @@ use crate::p2p::state::{
     pending_approval_store, wrap_relay_packet, AuthState, ClientSubscriber,
     PendingApprovalRequest, AUTH_APPROVED, AUTH_DECLINED, AUTH_PENDING, MAGIC_DSKY,
     PKT_AUTH_STATUS, PKT_CLIENT_HELLO, PKT_CLIPBOARD, PKT_DISCONNECT, PKT_FILE_CHUNK, PKT_FILE_FINISH, PKT_FILE_START,
-    PKT_FRAME_CHUNK, PKT_FRAME_CHUNK_H264, PKT_INPUT_EVENT,
+    PKT_FRAME_CHUNK, PKT_FRAME_CHUNK_H264, PKT_FRAME_CHUNK_H265, PKT_INPUT_EVENT,
     PKT_LAN_DISCOVERY, PKT_PONG, SERVER_ONLINE, SERVER_PING_MS, PKT_ADMIN_REQ,
     PKT_UNATTENDED_CHALLENGE, PKT_UNATTENDED_AUTH, PKT_CHAT_MESSAGE, PKT_VOICE_CHUNK,
     PKT_FILE_NACK,
@@ -180,6 +180,9 @@ impl P2PManager {
                         let mut h264_encoder: Option<crate::platform::codec::PlatformH264Encoder> = None;
                         let mut h264_w: u32 = 0;
                         let mut h264_h: u32 = 0;
+                        let mut h265_encoder: Option<crate::platform::codec::PlatformH265Encoder> = None;
+                        let mut h265_w: u32 = 0;
+                        let mut h265_h: u32 = 0;
                         #[cfg(target_os = "windows")]
                         let mut last_cursor_shape: u8 = 0xFF;
 
@@ -353,15 +356,34 @@ impl P2PManager {
                                 let mut encoded_data = Vec::new();
                                 let mut encoded_pkt_type = PKT_FRAME_CHUNK;
 
-                                if crate::platform::codec::is_h264_hardware_available() {
+                                let force_keyframe = frame_id % (max_fps * 2).max(30) == 1;
+                                let target_bitrate = if any_relay { 2_500_000 } else { 5_000_000 };
+
+                                // TIER 1 (BEST): Hardware H.265 / HEVC GPU
+                                if crate::platform::codec::is_h265_hardware_available() {
+                                    if h265_encoder.is_none() || h265_w != cap_w || h265_h != cap_h {
+                                        h265_encoder = crate::platform::codec::PlatformH265Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
+                                        h265_w = cap_w;
+                                        h265_h = cap_h;
+                                    }
+                                    if let Some(ref mut enc) = h265_encoder {
+                                        if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, force_keyframe) {
+                                            if !frame.data.is_empty() {
+                                                encoded_data = frame.data;
+                                                encoded_pkt_type = PKT_FRAME_CHUNK_H265;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // TIER 2 (FALLBACK 1): Hardware H.264 / AVC GPU
+                                if encoded_data.is_empty() && crate::platform::codec::is_h264_hardware_available() {
                                     if h264_encoder.is_none() || h264_w != cap_w || h264_h != cap_h {
-                                        let target_bitrate = if any_relay { 2_500_000 } else { 5_000_000 };
                                         h264_encoder = crate::platform::codec::PlatformH264Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h264_w = cap_w;
                                         h264_h = cap_h;
                                     }
                                     if let Some(ref mut enc) = h264_encoder {
-                                        let force_keyframe = frame_id % (max_fps * 2).max(30) == 1;
                                         if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, force_keyframe) {
                                             if !frame.data.is_empty() {
                                                 encoded_data = frame.data;
@@ -371,7 +393,7 @@ impl P2PManager {
                                     }
                                 }
 
-                                // Fallback to SIMD Motion-JPEG if H.264 is unavailable or produced empty bitstream
+                                // TIER 3 (FALLBACK 2 / UNIVERSAL BASELINE): Pure-Rust SIMD Motion-JPEG 4:4:4
                                 if encoded_data.is_empty() {
                                     mjpeg_encoder.set_quality(jpeg_quality);
                                     mjpeg_encoder.set_chroma_444(use_chroma_444);

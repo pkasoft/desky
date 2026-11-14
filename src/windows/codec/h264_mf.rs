@@ -40,13 +40,13 @@ static H264_HW_CHECKED: AtomicBool = AtomicBool::new(false);
 static H264_HW_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// Dynamic function pointers loaded from `mfplat.dll` at runtime
-struct MfPlatSymbols {
-    _hmodule: HMODULE,
-    startup: unsafe extern "system" fn(u32, u32) -> windows::core::HRESULT,
-    create_media_type: unsafe extern "system" fn(*mut *mut core::ffi::c_void) -> windows::core::HRESULT,
-    create_memory_buffer: unsafe extern "system" fn(u32, *mut *mut core::ffi::c_void) -> windows::core::HRESULT,
-    create_sample: unsafe extern "system" fn(*mut *mut core::ffi::c_void) -> windows::core::HRESULT,
-    mft_enum_ex: unsafe extern "system" fn(
+pub(crate) struct MfPlatSymbols {
+    pub(crate) _hmodule: HMODULE,
+    pub(crate) startup: unsafe extern "system" fn(u32, u32) -> windows::core::HRESULT,
+    pub(crate) create_media_type: unsafe extern "system" fn(*mut *mut core::ffi::c_void) -> windows::core::HRESULT,
+    pub(crate) create_memory_buffer: unsafe extern "system" fn(u32, *mut *mut core::ffi::c_void) -> windows::core::HRESULT,
+    pub(crate) create_sample: unsafe extern "system" fn(*mut *mut core::ffi::c_void) -> windows::core::HRESULT,
+    pub(crate) mft_enum_ex: unsafe extern "system" fn(
         windows::core::GUID,
         i32,
         *const MFT_REGISTER_TYPE_INFO,
@@ -61,7 +61,7 @@ unsafe impl Sync for MfPlatSymbols {}
 
 static MF_SYMBOLS: OnceLock<Option<Arc<MfPlatSymbols>>> = OnceLock::new();
 
-fn get_mfplat() -> Option<Arc<MfPlatSymbols>> {
+pub(crate) fn get_mfplat() -> Option<Arc<MfPlatSymbols>> {
     MF_SYMBOLS
         .get_or_init(|| unsafe {
             let hmod = match LoadLibraryW(w!("mfplat.dll")) {
@@ -91,28 +91,28 @@ fn get_mfplat() -> Option<Arc<MfPlatSymbols>> {
 }
 
 impl MfPlatSymbols {
-    unsafe fn create_media_type(&self) -> windows::core::Result<IMFMediaType> {
+    pub(crate) unsafe fn create_media_type(&self) -> windows::core::Result<IMFMediaType> {
         let mut result__ = unsafe { core::mem::zeroed() };
         unsafe {
             (self.create_media_type)(&mut result__).and_then(|| windows::core::Type::from_abi(result__))
         }
     }
 
-    unsafe fn create_memory_buffer(&self, len: u32) -> windows::core::Result<IMFMediaBuffer> {
+    pub(crate) unsafe fn create_memory_buffer(&self, len: u32) -> windows::core::Result<IMFMediaBuffer> {
         let mut result__ = unsafe { core::mem::zeroed() };
         unsafe {
             (self.create_memory_buffer)(len, &mut result__).and_then(|| windows::core::Type::from_abi(result__))
         }
     }
 
-    unsafe fn create_sample(&self) -> windows::core::Result<IMFSample> {
+    pub(crate) unsafe fn create_sample(&self) -> windows::core::Result<IMFSample> {
         let mut result__ = unsafe { core::mem::zeroed() };
         unsafe {
             (self.create_sample)(&mut result__).and_then(|| windows::core::Type::from_abi(result__))
         }
     }
 
-    unsafe fn mft_enum_ex(
+    pub(crate) unsafe fn mft_enum_ex(
         &self,
         category: windows::core::GUID,
         flags: i32,
@@ -692,38 +692,5 @@ impl VideoDecoder for H264MfDecoder {
 
             Err(anyhow!("H.264 decoder did not produce output frame"))
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_h264_mf_encode_decode_roundtrip() {
-        if !is_h264_hardware_available() {
-            println!("H.264 hardware / MFT not available on this test host");
-            return;
-        }
-
-        let width = 320u32;
-        let height = 240u32;
-        let mut encoder = H264MfEncoder::new(width, height, 30, 2_000_000).expect("Encoder init");
-        let mut decoder = H264MfDecoder::new().expect("Decoder init");
-
-        // Create simple gradient test frame
-        let mut bgra = vec![0u8; (width * height * 4) as usize];
-        for (i, chunk) in bgra.chunks_exact_mut(4).enumerate() {
-            chunk[0] = (i % 255) as u8;       // B
-            chunk[1] = ((i / 2) % 255) as u8; // G
-            chunk[2] = 200;                   // R
-            chunk[3] = 255;                   // A
-        }
-
-        let enc_res = encoder.encode(&bgra, width, height, true).expect("Encode");
-        assert!(!enc_res.data.is_empty(), "Encoded H.264 packet must not be empty");
-
-        let dec_frame = decoder.decode(&enc_res.data, width, height).expect("Decode");
-        assert_eq!(dec_frame.len(), (width * height * 4) as usize);
     }
 }

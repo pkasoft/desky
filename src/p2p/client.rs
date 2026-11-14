@@ -191,6 +191,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 std::thread::spawn(move || {
                     let mut logged_first = false;
                     let mut h264_decoder = crate::platform::codec::PlatformH264Decoder::new().ok();
+                    let mut h265_decoder = crate::platform::codec::PlatformH265Decoder::new().ok();
 
                     while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                         && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
@@ -223,7 +224,25 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     orig_h
                                 );
                             }
-                            let decoded_opt = if codec_type == PKT_FRAME_CHUNK_H264 {
+                            let decoded_opt = if codec_type == PKT_FRAME_CHUNK_H265 {
+                                use crate::codec::VideoDecoder;
+                                if let Some(ref mut dec) = h265_decoder {
+                                    if let Ok(bgra) = dec.decode(&frame_bytes, orig_w, orig_h) {
+                                        Some(crate::p2p::state::RemoteFrame {
+                                            frame_id: f_id,
+                                            orig_width: orig_w,
+                                            orig_height: orig_h,
+                                            width: orig_w,
+                                            height: orig_h,
+                                            bgra,
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else if codec_type == PKT_FRAME_CHUNK_H264 {
                                 use crate::codec::VideoDecoder;
                                 if let Some(ref mut dec) = h264_decoder {
                                     if let Ok(bgra) = dec.decode(&frame_bytes, orig_w, orig_h) {

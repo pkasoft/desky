@@ -18,13 +18,15 @@ pub use h264_vaapi::{
     is_h264_decode_hardware_available, is_h264_hardware_available, H264VaapiDecoder,
     H264VaapiEncoder,
 };
-pub use h265_vaapi::is_h265_hardware_available;
+pub use h265_vaapi::{is_h265_hardware_available, H265VaapiDecoder, H265VaapiEncoder};
 pub use v4l2::probe_v4l2_devices;
 pub use vdpau::is_vdpau_hardware_available;
 
 /// Platform type aliases unifying Windows & Linux codec dispatch
 pub type PlatformH264Encoder = H264VaapiEncoder;
 pub type PlatformH264Decoder = H264VaapiDecoder;
+pub type PlatformH265Encoder = H265VaapiEncoder;
+pub type PlatformH265Decoder = H265VaapiDecoder;
 
 /// Probes and logs all available Linux GPU hardware-accelerated video transforms
 pub fn probe_hardware_codecs() {

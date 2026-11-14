@@ -1,21 +1,505 @@
-//! Windows Media Foundation H.265 / HEVC Hardware Codec Module
+//! Windows Media Foundation H.265 / HEVC Hardware Codec Engine
 //!
-//! Provides capability detection and hardware acceleration hooks for HEVC.
+//! Provides GPU-accelerated H.265 / HEVC video encoding and decoding via Windows Media Foundation:
+//! - Supported on Windows 10 & 11 GPUs with NVIDIA NVENC (Pascal+), Intel QuickSync (Skylake+), AMD AMF.
+//! - Uses native `MFVideoFormat_HEVC` subtype.
+//! - Automatically yields to H.264 or pure-Rust SIMD Motion-JPEG if unavailable.
 
+use anyhow::{anyhow, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tracing::{info, warn};
+
+use windows::Win32::Media::MediaFoundation::{
+    IMFMediaType, IMFTransform, MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER,
+    MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER,
+    MFT_ENUM_FLAG_SYNCMFT, MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_REGISTER_TYPE_INFO,
+    MFVideoFormat_HEVC, MFVideoFormat_NV12, MF_E_TRANSFORM_NEED_MORE_INPUT,
+    MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE,
+    MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MF_TRANSFORM_ASYNC_UNLOCK,
+};
+
+use super::h264_mf::{
+    bgra_to_nv12, ensure_mf_initialized, get_mfplat, nv12_to_bgra, MfPlatSymbols,
+};
+use crate::codec::{CodecType, EncodedFrame, VideoDecoder, VideoEncoder};
 
 static H265_AVAILABLE: AtomicBool = AtomicBool::new(false);
 static H265_CHECKED: AtomicBool = AtomicBool::new(false);
 
-/// Probes whether the current system has a hardware-accelerated H.265 / HEVC MFT encoder
+/// Probes whether the current system has a hardware-accelerated H.265 / HEVC encoder
 pub fn is_h265_hardware_available() -> bool {
     if H265_CHECKED.load(Ordering::Relaxed) {
         return H265_AVAILABLE.load(Ordering::Relaxed);
     }
 
-    // Windows 10/11 requires the optional Microsoft "HEVC Video Extensions" package
-    // or vendor GPU MFTs. By default, Desky prefers H.264 for universal compatibility.
+    if ensure_mf_initialized().is_err() {
+        H265_CHECKED.store(true, Ordering::Relaxed);
+        H265_AVAILABLE.store(false, Ordering::Relaxed);
+        return false;
+    }
+
+    let mf = match get_mfplat() {
+        Some(m) => m,
+        None => {
+            H265_CHECKED.store(true, Ordering::Relaxed);
+            H265_AVAILABLE.store(false, Ordering::Relaxed);
+            return false;
+        }
+    };
+
+    let has_hevc = unsafe {
+        let output_type = MFT_REGISTER_TYPE_INFO {
+            guidMajorType: MFMediaType_Video,
+            guidSubtype: MFVideoFormat_HEVC,
+        };
+
+        let mut activate_ptrs = std::ptr::null_mut();
+        let mut count = 0u32;
+
+        let mut res = mf.mft_enum_ex(
+            MFT_CATEGORY_VIDEO_ENCODER,
+            MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+            None,
+            Some(&output_type),
+            &mut activate_ptrs,
+            &mut count,
+        );
+
+        if res.is_err() || count == 0 || activate_ptrs.is_null() {
+            res = mf.mft_enum_ex(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                None,
+                Some(&output_type),
+                &mut activate_ptrs,
+                &mut count,
+            );
+        }
+
+        let found = res.is_ok() && count > 0 && !activate_ptrs.is_null();
+        if !activate_ptrs.is_null() {
+            windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+        }
+        found
+    };
+
+    info!(
+        "Windows Media Foundation H.265 (HEVC) status: {}",
+        if has_hevc { "AVAILABLE (Hardware Accelerated)" } else { "NOT EXTENDED / NOT AVAILABLE" }
+    );
+
+    H265_AVAILABLE.store(has_hevc, Ordering::Relaxed);
     H265_CHECKED.store(true, Ordering::Relaxed);
-    H265_AVAILABLE.store(false, Ordering::Relaxed);
-    false
+    has_hevc
+}
+
+/// Windows Media Foundation Hardware H.265 / HEVC Video Encoder
+pub struct H265MfEncoder {
+    width: u32,
+    height: u32,
+    bitrate: u32,
+    fps: u32,
+    transform: Option<IMFTransform>,
+    frame_index: u64,
+    mf: Arc<MfPlatSymbols>,
+    nv12_scratch: Vec<u8>,
+    out_buf_size: u32,
+}
+
+unsafe impl Send for H265MfEncoder {}
+
+impl H265MfEncoder {
+    pub fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self> {
+        ensure_mf_initialized()?;
+        let mf = get_mfplat().ok_or_else(|| anyhow!("mfplat.dll not loaded"))?;
+        let nv12_len = (width * height * 3 / 2) as usize;
+
+        let mut encoder = Self {
+            width,
+            height,
+            bitrate: bitrate.clamp(500_000, 20_000_000),
+            fps: fps.clamp(15, 120),
+            transform: None,
+            frame_index: 0,
+            mf,
+            nv12_scratch: vec![0u8; nv12_len],
+            out_buf_size: (width * height) * 2,
+        };
+
+        if let Err(e) = encoder.init_transform() {
+            warn!("Failed to initialize Windows H.265 MFT encoder (falling back to H.264/MJPEG): {:?}", e);
+            return Err(e);
+        }
+
+        Ok(encoder)
+    }
+
+    fn init_transform(&mut self) -> Result<()> {
+        unsafe {
+            let output_type = MFT_REGISTER_TYPE_INFO {
+                guidMajorType: MFMediaType_Video,
+                guidSubtype: MFVideoFormat_HEVC,
+            };
+
+            let mut activate_ptrs = std::ptr::null_mut();
+            let mut count = 0u32;
+
+            let mut res = self.mf.mft_enum_ex(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                None,
+                Some(&output_type),
+                &mut activate_ptrs,
+                &mut count,
+            );
+
+            if res.is_err() || count == 0 || activate_ptrs.is_null() {
+                res = self.mf.mft_enum_ex(
+                    MFT_CATEGORY_VIDEO_ENCODER,
+                    MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                    None,
+                    Some(&output_type),
+                    &mut activate_ptrs,
+                    &mut count,
+                );
+            }
+
+            res?;
+
+            if count == 0 || activate_ptrs.is_null() {
+                return Err(anyhow!("No H.265 MFT video encoder found on this system"));
+            }
+
+            let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
+            let first_act = &activations[0];
+            let transform: IMFTransform = first_act.as_ref().unwrap().ActivateObject()?;
+            windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+
+            if let Ok(attrs) = transform.GetAttributes() {
+                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+            }
+
+            let out_media: IMFMediaType = self.mf.create_media_type()?;
+            out_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?;
+            out_media.SetUINT32(&MF_MT_AVG_BITRATE, self.bitrate)?;
+
+            let frame_rate = ((self.fps as u64) << 32) | 1u64;
+            out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+
+            let frame_size = ((self.width as u64) << 32) | (self.height as u64);
+            out_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
+            out_media.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
+
+            transform.SetOutputType(0, &out_media, 0)?;
+
+            let in_media: IMFMediaType = self.mf.create_media_type()?;
+            in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+            in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
+            in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            in_media.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
+
+            transform.SetInputType(0, &in_media, 0)?;
+
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+
+            if let Ok(stream_info) = transform.GetOutputStreamInfo(0) {
+                self.out_buf_size = stream_info.cbSize.max(65536);
+            }
+
+            self.transform = Some(transform);
+            info!("H.265 MFT Encoder initialized for {}x{} @ {} FPS ({} kbps)", self.width, self.height, self.fps, self.bitrate / 1000);
+            Ok(())
+        }
+    }
+}
+
+impl VideoEncoder for H265MfEncoder {
+    fn codec_type(&self) -> CodecType {
+        CodecType::H265
+    }
+
+    fn encode(
+        &mut self,
+        bgra: &[u8],
+        width: u32,
+        height: u32,
+        _force_keyframe: bool,
+    ) -> Result<EncodedFrame> {
+        let transform = self.transform.as_ref().ok_or_else(|| anyhow!("H265 encoder transform uninitialized"))?;
+
+        if width != self.width || height != self.height {
+            return Err(anyhow!("Resolution changed during H265 session: expected {}x{}, got {}x{}", self.width, self.height, width, height));
+        }
+
+        let nv12_len = (width * height * 3 / 2) as usize;
+        if self.nv12_scratch.len() != nv12_len {
+            self.nv12_scratch.resize(nv12_len, 0);
+        }
+        bgra_to_nv12(bgra, width as usize, height as usize, &mut self.nv12_scratch);
+
+        unsafe {
+            let buffer = self.mf.create_memory_buffer(nv12_len as u32)?;
+            let mut ptr = std::ptr::null_mut();
+            buffer.Lock(&mut ptr, None, None)?;
+            std::ptr::copy_nonoverlapping(self.nv12_scratch.as_ptr(), ptr, nv12_len);
+            buffer.Unlock()?;
+            buffer.SetCurrentLength(nv12_len as u32)?;
+
+            let sample = self.mf.create_sample()?;
+            sample.AddBuffer(&buffer)?;
+
+            let duration = (10_000_000u64 / self.fps as u64) as i64;
+            let time = (self.frame_index * (10_000_000u64 / self.fps as u64)) as i64;
+            self.frame_index += 1;
+
+            sample.SetSampleTime(time)?;
+            sample.SetSampleDuration(duration)?;
+
+            transform.ProcessInput(0, &sample, 0)?;
+
+            let out_mem = self.mf.create_memory_buffer(self.out_buf_size)?;
+            let out_sample = self.mf.create_sample()?;
+            out_sample.AddBuffer(&out_mem)?;
+
+            let mut output_data = MFT_OUTPUT_DATA_BUFFER {
+                dwStreamID: 0,
+                pSample: core::mem::transmute_copy(&out_sample),
+                dwStatus: 0,
+                pEvents: core::mem::zeroed(),
+            };
+
+            let mut status = 0u32;
+            let mut process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+
+            if process_res.is_err() {
+                let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+                process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            }
+
+            if let Err(e) = process_res {
+                if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
+                    return Ok(EncodedFrame {
+                        codec: CodecType::H265,
+                        is_keyframe: false,
+                        data: Vec::new(),
+                        orig_width: width,
+                        orig_height: height,
+                    });
+                }
+                return Err(anyhow!("MFT HEVC ProcessOutput failed: {:?}", e));
+            }
+
+            let mut out_bytes = Vec::new();
+            if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
+                let mut data_ptr = std::ptr::null_mut();
+                let mut max_l = 0u32;
+                let mut cur_l = 0u32;
+                m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l))?;
+                if cur_l > 0 && !data_ptr.is_null() {
+                    out_bytes = std::slice::from_raw_parts(data_ptr, cur_l as usize).to_vec();
+                }
+                m_buf.Unlock()?;
+            }
+
+            let is_keyframe = if out_bytes.len() > 4 {
+                out_bytes.windows(4).any(|w| w == [0, 0, 0, 1] || w[0..3] == [0, 0, 1])
+            } else {
+                false
+            };
+
+            Ok(EncodedFrame {
+                codec: CodecType::H265,
+                is_keyframe,
+                data: out_bytes,
+                orig_width: width,
+                orig_height: height,
+            })
+        }
+    }
+}
+
+/// Windows Media Foundation Hardware H.265 / HEVC Video Decoder
+pub struct H265MfDecoder {
+    width: u32,
+    height: u32,
+    transform: Option<IMFTransform>,
+    mf: Option<Arc<MfPlatSymbols>>,
+    out_buf_size: u32,
+}
+
+unsafe impl Send for H265MfDecoder {}
+
+impl H265MfDecoder {
+    pub fn new() -> Result<Self> {
+        ensure_mf_initialized()?;
+        let mf = get_mfplat().ok_or_else(|| anyhow!("mfplat.dll not loaded"))?;
+        Ok(Self {
+            width: 0,
+            height: 0,
+            transform: None,
+            mf: Some(mf),
+            out_buf_size: 1_728_000,
+        })
+    }
+
+    fn init_decoder(&mut self, width: u32, height: u32) -> Result<()> {
+        let mf = self.mf.as_ref().ok_or_else(|| anyhow!("mfplat not available"))?;
+        unsafe {
+            let in_type = MFT_REGISTER_TYPE_INFO {
+                guidMajorType: MFMediaType_Video,
+                guidSubtype: MFVideoFormat_HEVC,
+            };
+            let mut activate_ptrs = std::ptr::null_mut();
+            let mut count = 0u32;
+            let mut res = mf.mft_enum_ex(
+                MFT_CATEGORY_VIDEO_DECODER,
+                MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                Some(&in_type),
+                None,
+                &mut activate_ptrs,
+                &mut count,
+            );
+            if res.is_err() || count == 0 || activate_ptrs.is_null() {
+                res = mf.mft_enum_ex(
+                    MFT_CATEGORY_VIDEO_DECODER,
+                    MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                    Some(&in_type),
+                    None,
+                    &mut activate_ptrs,
+                    &mut count,
+                );
+            }
+            res?;
+            if count == 0 || activate_ptrs.is_null() {
+                return Err(anyhow!("No H.265 MFT video decoder found on this system"));
+            }
+            let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
+            let transform: IMFTransform = activations[0].as_ref().unwrap().ActivateObject()?;
+            windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+
+            if let Ok(attrs) = transform.GetAttributes() {
+                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+            }
+
+            let frame_size = ((width as u64) << 32) | (height as u64);
+            let frame_rate = (60u64 << 32) | 1u64;
+
+            let in_media: IMFMediaType = mf.create_media_type()?;
+            in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?;
+            in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
+            in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            transform.SetInputType(0, &in_media, 0)?;
+
+            let out_media: IMFMediaType = mf.create_media_type()?;
+            out_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+            out_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
+            out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            transform.SetOutputType(0, &out_media, 0)?;
+
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+
+            if let Ok(stream_info) = transform.GetOutputStreamInfo(0) {
+                self.out_buf_size = stream_info.cbSize.max((width * height * 3 / 2) as u32);
+            }
+
+            self.transform = Some(transform);
+            self.width = width;
+            self.height = height;
+            info!("H.265 Media Foundation Decoder initialized for {}x{}", width, height);
+            Ok(())
+        }
+    }
+}
+
+impl Default for H265MfDecoder {
+    fn default() -> Self {
+        Self::new().unwrap_or_else(|_| Self {
+            width: 0,
+            height: 0,
+            transform: None,
+            mf: None,
+            out_buf_size: 1_728_000,
+        })
+    }
+}
+
+impl VideoDecoder for H265MfDecoder {
+    fn codec_type(&self) -> CodecType {
+        CodecType::H265
+    }
+
+    fn decode(
+        &mut self,
+        data: &[u8],
+        expected_width: u32,
+        expected_height: u32,
+    ) -> Result<Vec<u8>> {
+        if self.transform.is_none() || self.width != expected_width || self.height != expected_height {
+            self.init_decoder(expected_width, expected_height)?;
+        }
+        let transform = self.transform.as_ref().ok_or_else(|| anyhow!("Decoder transform uninitialized"))?;
+        let mf = self.mf.as_ref().ok_or_else(|| anyhow!("mfplat not loaded"))?;
+
+        unsafe {
+            let in_buf = mf.create_memory_buffer(data.len() as u32)?;
+            let mut ptr = std::ptr::null_mut();
+            in_buf.Lock(&mut ptr, None, None)?;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+            in_buf.Unlock()?;
+            in_buf.SetCurrentLength(data.len() as u32)?;
+
+            let sample = mf.create_sample()?;
+            sample.AddBuffer(&in_buf)?;
+            sample.SetSampleTime(0)?;
+
+            let _ = transform.ProcessInput(0, &sample, 0);
+
+            let out_mem = mf.create_memory_buffer(self.out_buf_size)?;
+            let out_sample = mf.create_sample()?;
+            out_sample.AddBuffer(&out_mem)?;
+
+            let mut output_data = MFT_OUTPUT_DATA_BUFFER {
+                dwStreamID: 0,
+                pSample: core::mem::transmute_copy(&out_sample),
+                dwStatus: 0,
+                pEvents: core::mem::zeroed(),
+            };
+
+            let mut status = 0u32;
+            let mut res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+
+            if res.is_err() {
+                let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+                res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            }
+
+            if res.is_ok() {
+                if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
+                    let mut data_ptr = std::ptr::null_mut();
+                    let mut max_l = 0u32;
+                    let mut cur_l = 0u32;
+                    m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l))?;
+                    if cur_l > 0 && !data_ptr.is_null() {
+                        let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
+                        let bgra_len = (expected_width * expected_height * 4) as usize;
+                        let mut bgra = vec![0u8; bgra_len];
+                        nv12_to_bgra(nv12_slice, expected_width as usize, expected_height as usize, &mut bgra);
+                        m_buf.Unlock()?;
+                        return Ok(bgra);
+                    }
+                    m_buf.Unlock()?;
+                }
+            }
+
+            Err(anyhow!("H.265 decoder did not produce output frame"))
+        }
+    }
 }
