@@ -221,8 +221,11 @@ pub fn is_h264_hardware_available() -> bool {
 /// Converts a BGRA buffer to NV12 (Y plane followed by interleaved UV plane).
 pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
     let y_plane_len = width * height;
-    let uv_plane_start = y_plane_len;
-    let (y_plane, uv_plane) = nv12.split_at_mut(uv_plane_start);
+    let uv_plane_len = width * (height / 2);
+    if nv12.len() < y_plane_len + uv_plane_len {
+        return;
+    }
+    let (y_plane, uv_plane) = nv12.split_at_mut(y_plane_len);
 
     // Compute Y plane
     for y in 0..height {
@@ -230,6 +233,9 @@ pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
         let bgra_row_start = row_start * 4;
         for x in 0..width {
             let px = bgra_row_start + x * 4;
+            if px + 2 >= bgra.len() || row_start + x >= y_plane.len() {
+                break;
+            }
             let b = bgra[px] as i32;
             let g = bgra[px + 1] as i32;
             let r = bgra[px + 2] as i32;
@@ -248,12 +254,15 @@ pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
         for x2 in 0..half_w {
             let x = x2 * 2;
             let px = bgra_row_start + x * 4;
+            let uv_idx = uv_row_start + x2 * 2;
+            if px + 2 >= bgra.len() || uv_idx + 1 >= uv_plane.len() {
+                break;
+            }
             let b = bgra[px] as i32;
             let g = bgra[px + 1] as i32;
             let r = bgra[px + 2] as i32;
             let u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
             let v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-            let uv_idx = uv_row_start + x2 * 2;
             uv_plane[uv_idx] = u_val.clamp(16, 240) as u8;
             uv_plane[uv_idx + 1] = v_val.clamp(16, 240) as u8;
         }
@@ -263,6 +272,9 @@ pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
 /// Converts an NV12 buffer (Y plane followed by interleaved UV plane) to BGRA.
 pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
     let y_plane_len = width * height;
+    if nv12.len() < y_plane_len {
+        return;
+    }
     let y_plane = &nv12[..y_plane_len];
     let uv_plane = &nv12[y_plane_len..];
 
@@ -271,8 +283,13 @@ pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
         let uv_row_start = (y / 2) * width;
         let bgra_row_start = y * width * 4;
         for x in 0..width {
-            let y_val = y_plane[y_row_start + x] as i32;
+            let y_idx = y_row_start + x;
             let uv_idx = uv_row_start + (x / 2) * 2;
+            let px = bgra_row_start + x * 4;
+            if y_idx >= y_plane.len() || uv_idx + 1 >= uv_plane.len() || px + 3 >= bgra.len() {
+                break;
+            }
+            let y_val = y_plane[y_idx] as i32;
             let u_val = uv_plane[uv_idx] as i32;
             let v_val = uv_plane[uv_idx + 1] as i32;
 
@@ -284,7 +301,6 @@ pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
             let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
             let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
 
-            let px = bgra_row_start + x * 4;
             bgra[px] = b;
             bgra[px + 1] = g;
             bgra[px + 2] = r;
@@ -469,9 +485,9 @@ impl VideoEncoder for H264MfEncoder {
 
             let mut output_data = MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
-                pSample: core::mem::transmute_copy(&out_sample),
+                pSample: core::mem::ManuallyDrop::new(Some(out_sample.clone())),
                 dwStatus: 0,
-                pEvents: core::mem::zeroed(),
+                pEvents: core::mem::ManuallyDrop::new(None),
             };
 
             let mut status = 0u32;
@@ -659,9 +675,9 @@ impl VideoDecoder for H264MfDecoder {
 
             let mut output_data = MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
-                pSample: core::mem::transmute_copy(&out_sample),
+                pSample: core::mem::ManuallyDrop::new(Some(out_sample.clone())),
                 dwStatus: 0,
-                pEvents: core::mem::zeroed(),
+                pEvents: core::mem::ManuallyDrop::new(None),
             };
 
             let mut status = 0u32;

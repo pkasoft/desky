@@ -268,9 +268,9 @@ impl VideoEncoder for H265MfEncoder {
 
             let mut output_data = MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
-                pSample: core::mem::transmute_copy(&out_sample),
+                pSample: core::mem::ManuallyDrop::new(Some(out_sample.clone())),
                 dwStatus: 0,
-                pEvents: core::mem::zeroed(),
+                pEvents: core::mem::ManuallyDrop::new(None),
             };
 
             let mut status = 0u32;
@@ -468,9 +468,9 @@ impl VideoDecoder for H265MfDecoder {
 
             let mut output_data = MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
-                pSample: core::mem::transmute_copy(&out_sample),
+                pSample: core::mem::ManuallyDrop::new(Some(out_sample.clone())),
                 dwStatus: 0,
-                pEvents: core::mem::zeroed(),
+                pEvents: core::mem::ManuallyDrop::new(None),
             };
 
             let mut status = 0u32;
