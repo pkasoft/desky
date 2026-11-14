@@ -324,6 +324,21 @@ pub fn nv12_to_bgra_strided(
     }
 }
 
+/// RAII guard ensuring MFT_OUTPUT_DATA_BUFFER COM interface members (pSample, pEvents)
+/// are always released, completely eliminating memory accumulation over time.
+pub(crate) struct MftOutputGuard<'a> {
+    pub(crate) data: &'a mut MFT_OUTPUT_DATA_BUFFER,
+}
+
+impl<'a> Drop for MftOutputGuard<'a> {
+    fn drop(&mut self) {
+        unsafe {
+            core::mem::ManuallyDrop::drop(&mut self.data.pSample);
+            core::mem::ManuallyDrop::drop(&mut self.data.pEvents);
+        }
+    }
+}
+
 pub struct H264MfEncoder {
     width: u32,
     height: u32,
@@ -547,11 +562,13 @@ impl VideoEncoder for H264MfEncoder {
                 dwStatus: 0,
                 pEvents: core::mem::ManuallyDrop::new(None),
             };
+            let guard = MftOutputGuard { data: &mut output_data };
 
             let mut status = 0u32;
-            let process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            let process_res = transform.ProcessOutput(0, std::slice::from_mut(guard.data), &mut status);
 
             if let Err(e) = process_res {
+                drop(guard);
                 if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
                     return Ok(EncodedFrame {
                         codec: CodecType::H264,
@@ -575,6 +592,8 @@ impl VideoEncoder for H264MfEncoder {
                 }
                 m_buf.Unlock()?;
             }
+
+            drop(guard);
 
             let is_keyframe = if out_bytes.len() > 4 {
                 out_bytes.windows(4).any(|w| w == [0, 0, 0, 1] || w[0..3] == [0, 0, 1])
@@ -726,9 +745,10 @@ impl H264MfDecoder {
                 dwStatus: 0,
                 pEvents: core::mem::ManuallyDrop::new(None),
             };
+            let guard = MftOutputGuard { data: &mut output_data };
 
             let mut status = 0u32;
-            let mut res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            let mut res = transform.ProcessOutput(0, std::slice::from_mut(guard.data), &mut status);
 
             // Handle MF_E_TRANSFORM_STREAM_CHANGE (0xC00D6D61) - SPS/PPS renegotiation
             if let Err(ref e) = res {
@@ -742,15 +762,16 @@ impl H264MfDecoder {
                     if let Ok(new_mem) = mf.create_memory_buffer(self.out_buf_size) {
                         if let Ok(new_samp) = mf.create_sample() {
                             let _ = new_samp.AddBuffer(&new_mem);
-                            output_data.pSample = core::mem::ManuallyDrop::new(Some(new_samp.clone()));
-                            res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+                            core::mem::ManuallyDrop::drop(&mut guard.data.pSample);
+                            guard.data.pSample = core::mem::ManuallyDrop::new(Some(new_samp.clone()));
+                            res = transform.ProcessOutput(0, std::slice::from_mut(guard.data), &mut status);
                         }
                     }
                 }
             }
 
             if res.is_ok() {
-                let active_sample = output_data.pSample.as_ref().cloned().unwrap_or(out_sample);
+                let active_sample = guard.data.pSample.as_ref().cloned().unwrap_or(out_sample);
                 if let Ok(m_buf) = active_sample.ConvertToContiguousBuffer() {
                     let mut dec_w = expected_width;
                     let mut dec_h = expected_height;
