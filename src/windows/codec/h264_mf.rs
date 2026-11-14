@@ -23,12 +23,14 @@ use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform,
-    MFMediaType_Video, MFT_CATEGORY_VIDEO_ENCODER, MFT_ENUM_FLAG_HARDWARE,
-    MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT, MFT_OUTPUT_DATA_BUFFER,
-    MFT_REGISTER_TYPE_INFO, MFVideoFormat_ARGB32, MFVideoFormat_H264,
+    MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER,
+    MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
+    MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
+    MFT_REGISTER_TYPE_INFO, MFVideoFormat_H264, MFVideoFormat_NV12,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_INTERLACE_MODE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE,
-    MFSTARTUP_NOSOCKET, MF_VERSION,
+    MFSTARTUP_NOSOCKET, MF_TRANSFORM_ASYNC_UNLOCK, MF_VERSION,
 };
 
 use crate::codec::{CodecType, EncodedFrame, VideoDecoder, VideoEncoder};
@@ -173,24 +175,42 @@ pub fn is_h264_hardware_available() -> bool {
 
         let res = mf.mft_enum_ex(
             MFT_CATEGORY_VIDEO_ENCODER,
-            MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+            MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
             None,
             Some(&output_type),
             &mut activate_ptrs,
             &mut count,
         );
 
-        if res.is_ok() && count > 0 && !activate_ptrs.is_null() {
+        let sync_found = res.is_ok() && count > 0 && !activate_ptrs.is_null();
+        if !activate_ptrs.is_null() {
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+        }
+
+        if sync_found {
             true
         } else {
-            false
+            let mut hw_ptrs = std::ptr::null_mut();
+            let mut hw_count = 0u32;
+            let hw_res = mf.mft_enum_ex(
+                MFT_CATEGORY_VIDEO_ENCODER,
+                MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                None,
+                Some(&output_type),
+                &mut hw_ptrs,
+                &mut hw_count,
+            );
+            let hw_found = hw_res.is_ok() && hw_count > 0 && !hw_ptrs.is_null();
+            if !hw_ptrs.is_null() {
+                windows::Win32::System::Com::CoTaskMemFree(Some(hw_ptrs as *const _));
+            }
+            hw_found
         }
     };
 
     info!(
-        "Windows Media Foundation H.264 GPU Hardware status: {}",
-        if has_hw { "AVAILABLE (NVENC/QSV/AMF)" } else { "UNAVAILABLE (Will use software or MJPEG fallback)" }
+        "Windows Media Foundation H.264 Hardware status: {}",
+        if has_hw { "AVAILABLE (Media Foundation H.264 Encoder)" } else { "UNAVAILABLE (Will use Motion-JPEG fallback)" }
     );
 
     H264_HW_AVAILABLE.store(has_hw, Ordering::Relaxed);
@@ -198,7 +218,80 @@ pub fn is_h264_hardware_available() -> bool {
     has_hw
 }
 
-/// Windows Media Foundation Hardware H.264 Video Encoder
+/// Converts a BGRA buffer to NV12 (Y plane followed by interleaved UV plane).
+pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
+    let y_plane_len = width * height;
+    let uv_plane_start = y_plane_len;
+    let (y_plane, uv_plane) = nv12.split_at_mut(uv_plane_start);
+
+    // Compute Y plane
+    for y in 0..height {
+        let row_start = y * width;
+        let bgra_row_start = row_start * 4;
+        for x in 0..width {
+            let px = bgra_row_start + x * 4;
+            let b = bgra[px] as i32;
+            let g = bgra[px + 1] as i32;
+            let r = bgra[px + 2] as i32;
+            let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+            y_plane[row_start + x] = y_val.clamp(16, 235) as u8;
+        }
+    }
+
+    // Compute interleaved UV plane (subsampled 2x2)
+    let half_h = height / 2;
+    let half_w = width / 2;
+    for y2 in 0..half_h {
+        let y = y2 * 2;
+        let uv_row_start = y2 * width;
+        let bgra_row_start = y * width * 4;
+        for x2 in 0..half_w {
+            let x = x2 * 2;
+            let px = bgra_row_start + x * 4;
+            let b = bgra[px] as i32;
+            let g = bgra[px + 1] as i32;
+            let r = bgra[px + 2] as i32;
+            let u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+            let v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+            let uv_idx = uv_row_start + x2 * 2;
+            uv_plane[uv_idx] = u_val.clamp(16, 240) as u8;
+            uv_plane[uv_idx + 1] = v_val.clamp(16, 240) as u8;
+        }
+    }
+}
+
+/// Converts an NV12 buffer (Y plane followed by interleaved UV plane) to BGRA.
+pub fn nv12_to_bgra(nv12: &[u8], width: usize, height: usize, bgra: &mut [u8]) {
+    let y_plane_len = width * height;
+    let y_plane = &nv12[..y_plane_len];
+    let uv_plane = &nv12[y_plane_len..];
+
+    for y in 0..height {
+        let y_row_start = y * width;
+        let uv_row_start = (y / 2) * width;
+        let bgra_row_start = y * width * 4;
+        for x in 0..width {
+            let y_val = y_plane[y_row_start + x] as i32;
+            let uv_idx = uv_row_start + (x / 2) * 2;
+            let u_val = uv_plane[uv_idx] as i32;
+            let v_val = uv_plane[uv_idx + 1] as i32;
+
+            let c = y_val - 16;
+            let d = u_val - 128;
+            let e = v_val - 128;
+
+            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+
+            let px = bgra_row_start + x * 4;
+            bgra[px] = b;
+            bgra[px + 1] = g;
+            bgra[px + 2] = r;
+            bgra[px + 3] = 255;
+        }
+    }
+}
 pub struct H264MfEncoder {
     width: u32,
     height: u32,
@@ -207,6 +300,8 @@ pub struct H264MfEncoder {
     transform: Option<IMFTransform>,
     frame_index: u64,
     mf: Arc<MfPlatSymbols>,
+    nv12_scratch: Vec<u8>,
+    out_buf_size: u32,
 }
 
 unsafe impl Send for H264MfEncoder {}
@@ -215,6 +310,7 @@ impl H264MfEncoder {
     pub fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self> {
         ensure_mf_initialized()?;
         let mf = get_mfplat().ok_or_else(|| anyhow!("mfplat.dll not loaded"))?;
+        let nv12_len = (width * height * 3 / 2) as usize;
 
         let mut encoder = Self {
             width,
@@ -224,6 +320,8 @@ impl H264MfEncoder {
             transform: None,
             frame_index: 0,
             mf,
+            nv12_scratch: vec![0u8; nv12_len],
+            out_buf_size: (width * height) * 2,
         };
 
         if let Err(e) = encoder.init_transform() {
@@ -244,20 +342,29 @@ impl H264MfEncoder {
             let mut activate_ptrs = std::ptr::null_mut();
             let mut count = 0u32;
 
-            let enum_flags = if is_h264_hardware_available() {
-                MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0
-            } else {
-                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0
-            };
-
-            self.mf.mft_enum_ex(
+            // First try synchronous MFT (highest compatibility with low-latency direct pipelines)
+            let mut res = self.mf.mft_enum_ex(
                 MFT_CATEGORY_VIDEO_ENCODER,
-                enum_flags,
+                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
                 None,
                 Some(&output_type),
                 &mut activate_ptrs,
                 &mut count,
-            )?;
+            );
+
+            // Fallback to hardware MFT if synchronous enumeration returned 0
+            if res.is_err() || count == 0 || activate_ptrs.is_null() {
+                res = self.mf.mft_enum_ex(
+                    MFT_CATEGORY_VIDEO_ENCODER,
+                    MFT_ENUM_FLAG_HARDWARE.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                    None,
+                    Some(&output_type),
+                    &mut activate_ptrs,
+                    &mut count,
+                );
+            }
+
+            res?;
 
             if count == 0 || activate_ptrs.is_null() {
                 return Err(anyhow!("No H.264 MFT video encoder found on this system"));
@@ -267,6 +374,11 @@ impl H264MfEncoder {
             let first_act = &activations[0];
             let transform: IMFTransform = first_act.as_ref().unwrap().ActivateObject()?;
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+
+            // Unlock asynchronous capabilities if supported by the MFT
+            if let Ok(attrs) = transform.GetAttributes() {
+                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+            }
 
             // Configure Output Media Type (H.264)
             let out_media: IMFMediaType = self.mf.create_media_type()?;
@@ -283,21 +395,25 @@ impl H264MfEncoder {
 
             transform.SetOutputType(0, &out_media, 0)?;
 
-            // Configure Input Media Type (ARGB32)
+            // Configure Input Media Type (NV12)
             let in_media: IMFMediaType = self.mf.create_media_type()?;
             in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-            in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_ARGB32)?;
+            in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
             in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
             in_media.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
 
-            if let Err(e) = transform.SetInputType(0, &in_media, 0) {
-                debug!("H.264 MFT does not directly accept ARGB32 input: {:?}", e);
-                return Err(anyhow!("H.264 MFT input configuration error: {:?}", e));
+            transform.SetInputType(0, &in_media, 0)?;
+
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+
+            if let Ok(stream_info) = transform.GetOutputStreamInfo(0) {
+                self.out_buf_size = stream_info.cbSize.max(65536);
             }
 
             self.transform = Some(transform);
-            info!("H.264 MFT Hardware Encoder initialized for {}x{} @ {} FPS ({} kbps)", self.width, self.height, self.fps, self.bitrate / 1000);
+            info!("H.264 MFT Encoder initialized for {}x{} @ {} FPS ({} kbps)", self.width, self.height, self.fps, self.bitrate / 1000);
             Ok(())
         }
     }
@@ -321,15 +437,19 @@ impl VideoEncoder for H264MfEncoder {
             return Err(anyhow!("Resolution changed during H264 session: expected {}x{}, got {}x{}", self.width, self.height, width, height));
         }
 
+        let nv12_len = (width * height * 3 / 2) as usize;
+        if self.nv12_scratch.len() != nv12_len {
+            self.nv12_scratch.resize(nv12_len, 0);
+        }
+        bgra_to_nv12(bgra, width as usize, height as usize, &mut self.nv12_scratch);
+
         unsafe {
-            let buffer = self.mf.create_memory_buffer(bgra.len() as u32)?;
+            let buffer = self.mf.create_memory_buffer(nv12_len as u32)?;
             let mut ptr = std::ptr::null_mut();
-            let mut max_len = 0u32;
-            let mut cur_len = 0u32;
-            buffer.Lock(&mut ptr, Some(&mut max_len), Some(&mut cur_len))?;
-            std::ptr::copy_nonoverlapping(bgra.as_ptr(), ptr, bgra.len());
+            buffer.Lock(&mut ptr, None, None)?;
+            std::ptr::copy_nonoverlapping(self.nv12_scratch.as_ptr(), ptr, nv12_len);
             buffer.Unlock()?;
-            buffer.SetCurrentLength(bgra.len() as u32)?;
+            buffer.SetCurrentLength(nv12_len as u32)?;
 
             let sample = self.mf.create_sample()?;
             sample.AddBuffer(&buffer)?;
@@ -343,8 +463,7 @@ impl VideoEncoder for H264MfEncoder {
 
             transform.ProcessInput(0, &sample, 0)?;
 
-            let out_buf_len = (self.width * self.height) as usize;
-            let out_mem = self.mf.create_memory_buffer(out_buf_len as u32)?;
+            let out_mem = self.mf.create_memory_buffer(self.out_buf_size)?;
             let out_sample = self.mf.create_sample()?;
             out_sample.AddBuffer(&out_mem)?;
 
@@ -356,7 +475,13 @@ impl VideoEncoder for H264MfEncoder {
             };
 
             let mut status = 0u32;
-            let process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            let mut process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+
+            if process_res.is_err() {
+                // Drain to force immediate emission of compressed frame (zero-latency remote desktop pipeline)
+                let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+                process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            }
 
             if let Err(e) = process_res {
                 if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
@@ -402,7 +527,11 @@ impl VideoEncoder for H264MfEncoder {
 
 /// Windows Media Foundation Hardware H.264 Video Decoder
 pub struct H264MfDecoder {
-    _output_bgra: Vec<u8>,
+    width: u32,
+    height: u32,
+    transform: Option<IMFTransform>,
+    mf: Option<Arc<MfPlatSymbols>>,
+    out_buf_size: u32,
 }
 
 unsafe impl Send for H264MfDecoder {}
@@ -410,17 +539,86 @@ unsafe impl Send for H264MfDecoder {}
 impl H264MfDecoder {
     pub fn new() -> Result<Self> {
         ensure_mf_initialized()?;
+        let mf = get_mfplat().ok_or_else(|| anyhow!("mfplat.dll not loaded"))?;
         Ok(Self {
-            _output_bgra: Vec::new(),
+            width: 0,
+            height: 0,
+            transform: None,
+            mf: Some(mf),
+            out_buf_size: 1_728_000,
         })
+    }
+
+    fn init_decoder(&mut self, width: u32, height: u32) -> Result<()> {
+        let mf = self.mf.as_ref().ok_or_else(|| anyhow!("mfplat not available"))?;
+        unsafe {
+            let in_type = MFT_REGISTER_TYPE_INFO {
+                guidMajorType: MFMediaType_Video,
+                guidSubtype: MFVideoFormat_H264,
+            };
+            let mut activate_ptrs = std::ptr::null_mut();
+            let mut count = 0u32;
+            mf.mft_enum_ex(
+                MFT_CATEGORY_VIDEO_DECODER,
+                MFT_ENUM_FLAG_SYNCMFT.0 | MFT_ENUM_FLAG_SORTANDFILTER.0,
+                Some(&in_type),
+                None,
+                &mut activate_ptrs,
+                &mut count,
+            )?;
+            if count == 0 || activate_ptrs.is_null() {
+                return Err(anyhow!("No H.264 MFT video decoder found on this system"));
+            }
+            let activations = std::slice::from_raw_parts(activate_ptrs, count as usize);
+            let transform: IMFTransform = activations[0].as_ref().unwrap().ActivateObject()?;
+            windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
+
+            if let Ok(attrs) = transform.GetAttributes() {
+                let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+            }
+
+            let frame_size = ((width as u64) << 32) | (height as u64);
+            let frame_rate = (60u64 << 32) | 1u64;
+
+            let in_media: IMFMediaType = mf.create_media_type()?;
+            in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+            in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
+            in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            transform.SetInputType(0, &in_media, 0)?;
+
+            let out_media: IMFMediaType = mf.create_media_type()?;
+            out_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
+            out_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
+            out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            transform.SetOutputType(0, &out_media, 0)?;
+
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);
+            let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0);
+
+            if let Ok(stream_info) = transform.GetOutputStreamInfo(0) {
+                self.out_buf_size = stream_info.cbSize.max((width * height * 3 / 2) as u32);
+            }
+
+            self.transform = Some(transform);
+            self.width = width;
+            self.height = height;
+            info!("H.264 Media Foundation Decoder initialized for {}x{}", width, height);
+            Ok(())
+        }
     }
 }
 
 impl Default for H264MfDecoder {
     fn default() -> Self {
-        Self {
-            _output_bgra: Vec::new(),
-        }
+        Self::new().unwrap_or_else(|_| Self {
+            width: 0,
+            height: 0,
+            transform: None,
+            mf: None,
+            out_buf_size: 1_728_000,
+        })
     }
 }
 
@@ -435,7 +633,97 @@ impl VideoDecoder for H264MfDecoder {
         expected_width: u32,
         expected_height: u32,
     ) -> Result<Vec<u8>> {
-        let _ = (data, expected_width, expected_height);
-        Err(anyhow!("H.264 MFT hardware decoder requires active DXVA context"))
+        if self.transform.is_none() || self.width != expected_width || self.height != expected_height {
+            self.init_decoder(expected_width, expected_height)?;
+        }
+        let transform = self.transform.as_ref().ok_or_else(|| anyhow!("Decoder transform uninitialized"))?;
+        let mf = self.mf.as_ref().ok_or_else(|| anyhow!("mfplat not loaded"))?;
+
+        unsafe {
+            let in_buf = mf.create_memory_buffer(data.len() as u32)?;
+            let mut ptr = std::ptr::null_mut();
+            in_buf.Lock(&mut ptr, None, None)?;
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+            in_buf.Unlock()?;
+            in_buf.SetCurrentLength(data.len() as u32)?;
+
+            let sample = mf.create_sample()?;
+            sample.AddBuffer(&in_buf)?;
+            sample.SetSampleTime(0)?;
+
+            let _ = transform.ProcessInput(0, &sample, 0);
+
+            let out_mem = mf.create_memory_buffer(self.out_buf_size)?;
+            let out_sample = mf.create_sample()?;
+            out_sample.AddBuffer(&out_mem)?;
+
+            let mut output_data = MFT_OUTPUT_DATA_BUFFER {
+                dwStreamID: 0,
+                pSample: core::mem::transmute_copy(&out_sample),
+                dwStatus: 0,
+                pEvents: core::mem::zeroed(),
+            };
+
+            let mut status = 0u32;
+            let mut res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+
+            if res.is_err() {
+                let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+                res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+            }
+
+            if res.is_ok() {
+                if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
+                    let mut data_ptr = std::ptr::null_mut();
+                    let mut max_l = 0u32;
+                    let mut cur_l = 0u32;
+                    m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l))?;
+                    if cur_l > 0 && !data_ptr.is_null() {
+                        let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
+                        let bgra_len = (expected_width * expected_height * 4) as usize;
+                        let mut bgra = vec![0u8; bgra_len];
+                        nv12_to_bgra(nv12_slice, expected_width as usize, expected_height as usize, &mut bgra);
+                        m_buf.Unlock()?;
+                        return Ok(bgra);
+                    }
+                    m_buf.Unlock()?;
+                }
+            }
+
+            Err(anyhow!("H.264 decoder did not produce output frame"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_h264_mf_encode_decode_roundtrip() {
+        if !is_h264_hardware_available() {
+            println!("H.264 hardware / MFT not available on this test host");
+            return;
+        }
+
+        let width = 320u32;
+        let height = 240u32;
+        let mut encoder = H264MfEncoder::new(width, height, 30, 2_000_000).expect("Encoder init");
+        let mut decoder = H264MfDecoder::new().expect("Decoder init");
+
+        // Create simple gradient test frame
+        let mut bgra = vec![0u8; (width * height * 4) as usize];
+        for (i, chunk) in bgra.chunks_exact_mut(4).enumerate() {
+            chunk[0] = (i % 255) as u8;       // B
+            chunk[1] = ((i / 2) % 255) as u8; // G
+            chunk[2] = 200;                   // R
+            chunk[3] = 255;                   // A
+        }
+
+        let enc_res = encoder.encode(&bgra, width, height, true).expect("Encode");
+        assert!(!enc_res.data.is_empty(), "Encoded H.264 packet must not be empty");
+
+        let dec_frame = decoder.decode(&enc_res.data, width, height).expect("Decode");
+        assert_eq!(dec_frame.len(), (width * height * 4) as usize);
     }
 }

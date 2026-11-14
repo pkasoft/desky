@@ -353,14 +353,16 @@ impl P2PManager {
                                 let mut encoded_data = Vec::new();
                                 let mut encoded_pkt_type = PKT_FRAME_CHUNK;
 
-                                if crate::platform::codec::is_h264_hardware_available() && !any_relay {
+                                if crate::platform::codec::is_h264_hardware_available() {
                                     if h264_encoder.is_none() || h264_w != cap_w || h264_h != cap_h {
-                                        h264_encoder = crate::platform::codec::PlatformH264Encoder::new(cap_w, cap_h, max_fps, 4_000_000).ok();
+                                        let target_bitrate = if any_relay { 2_500_000 } else { 5_000_000 };
+                                        h264_encoder = crate::platform::codec::PlatformH264Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h264_w = cap_w;
                                         h264_h = cap_h;
                                     }
                                     if let Some(ref mut enc) = h264_encoder {
-                                        if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, false) {
+                                        let force_keyframe = frame_id % (max_fps * 2).max(30) == 1;
+                                        if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, force_keyframe) {
                                             if !frame.data.is_empty() {
                                                 encoded_data = frame.data;
                                                 encoded_pkt_type = PKT_FRAME_CHUNK_H264;
