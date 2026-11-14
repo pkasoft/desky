@@ -1,17 +1,21 @@
 //! Linux VA-API (Video Acceleration API) Hardware H.264 / AVC Codec Engine
 //!
-//! Directly interfaces with Linux GPU hardware transforms (`libva.so.2` and `libva-drm.so.2`)
+//! Directly interfaces with Linux GPU hardware transforms (`libva.so.2` / `libva-drm.so.2` / `libva-x11.so.2`)
 //! via dynamic runtime symbol loading.
 //!
 //! ZERO compile-time C dependencies or static link requirements:
-//! - If `libva.so.2` / `libva-drm.so.2` and `/dev/dri/renderD128` (or compatible DRM render node)
-//!   are present on the Linux host, hardware GPU acceleration (Intel QSV / VA-API, AMD Mesa VA-API)
-//!   is engaged.
-//! - If unavailable, it gracefully yields to SIMD Motion-JPEG fallback without crashing or aborting.
+//! - Multi-distribution probe support:
+//!   - Debian / Ubuntu / Mint / Pop!_OS
+//!   - Fedora / RHEL / CentOS Stream / Rocky / AlmaLinux
+//!   - Arch Linux / Manjaro / EndeavourOS
+//!   - openSUSE Tumbleweed / Leap / SLES
+//!   - Alpine Linux (musl) / Void / Gentoo
+//! - Supports DRM render nodes (`/dev/dri/renderD128..renderD144`) and card nodes (`/dev/dri/card0..card8`)
+//! - If hardware acceleration is unavailable, it gracefully yields to SIMD Motion-JPEG fallback without crashing.
 
 use anyhow::{anyhow, Result};
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
@@ -37,7 +41,19 @@ static VA_HW_CHECKED: AtomicBool = AtomicBool::new(false);
 static VA_H264_HW_ENCODER: AtomicBool = AtomicBool::new(false);
 static VA_H264_HW_DECODER: AtomicBool = AtomicBool::new(false);
 
-/// Dynamic function pointers loaded from `libva.so.2` and `libva-drm.so.2`
+const LIBVA_CANDIDATES: &[&CStr] = &[
+    c"libva.so.2",
+    c"libva.so.1",
+    c"libva.so",
+];
+
+const LIBVA_DRM_CANDIDATES: &[&CStr] = &[
+    c"libva-drm.so.2",
+    c"libva-drm.so.1",
+    c"libva-drm.so",
+];
+
+/// Dynamic function pointers loaded from `libva` and `libva-drm`
 struct VaapiSymbols {
     va_get_display_drm: unsafe extern "C" fn(c_int) -> VADisplay,
     va_initialize: unsafe extern "C" fn(VADisplay, *mut c_int, *mut c_int) -> VAStatus,
@@ -55,14 +71,33 @@ fn get_vaapi() -> Option<&'static VaapiSymbols> {
     VAAPI_SYMBOLS
         .get_or_init(|| {
             unsafe {
-                // 1. Try loading libva.so.2 and libva-drm.so.2
-                let libva = libc::dlopen(c"libva.so.2".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                // 1. Try loading libva across candidate sonames
+                let mut libva = std::ptr::null_mut();
+                for &cand in LIBVA_CANDIDATES {
+                    let handle = libc::dlopen(cand.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                    if !handle.is_null() {
+                        debug!("Loaded Linux VA-API core library: {}", cand.to_string_lossy());
+                        libva = handle;
+                        break;
+                    }
+                }
+
                 if libva.is_null() {
-                    debug!("Linux VA-API: libva.so.2 not found in system library paths");
+                    debug!("Linux VA-API: libva not found in system library paths (checked libva.so.2/1/so)");
                     return None;
                 }
 
-                let libva_drm = libc::dlopen(c"libva-drm.so.2".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                // 2. Try loading libva-drm across candidate sonames
+                let mut libva_drm = std::ptr::null_mut();
+                for &cand in LIBVA_DRM_CANDIDATES {
+                    let handle = libc::dlopen(cand.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+                    if !handle.is_null() {
+                        debug!("Loaded Linux VA-API DRM backend: {}", cand.to_string_lossy());
+                        libva_drm = handle;
+                        break;
+                    }
+                }
+
                 let drm_handle = if !libva_drm.is_null() {
                     libva_drm
                 } else {
@@ -87,7 +122,7 @@ fn get_vaapi() -> Option<&'static VaapiSymbols> {
                     || sym_max_entrypoints.is_null()
                     || sym_error_str.is_null()
                 {
-                    warn!("Linux VA-API: Missing required symbols in libva.so.2 / libva-drm.so.2");
+                    warn!("Linux VA-API: Missing required entrypoints in libva / libva-drm");
                     return None;
                 }
 
@@ -106,17 +141,38 @@ fn get_vaapi() -> Option<&'static VaapiSymbols> {
         .as_ref()
 }
 
-/// Attempts to open a DRM render node (e.g. /dev/dri/renderD128 .. /dev/dri/renderD136)
+/// Attempts to open a DRM render node (e.g. /dev/dri/renderD128..renderD144 or card0..card8)
+///
+/// Tries Read/Write (O_RDWR) first for optimal hardware driver ioctl access,
+/// falling back to Read-Only if group permissions restrict write access.
 fn open_drm_render_node() -> Option<File> {
-    for i in 128..=136 {
+    // 1. Try render nodes first (preferred for headless / non-display GPU operations)
+    for i in 128..=144 {
         let path = format!("/dev/dri/renderD{}", i);
+        if let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) {
+            debug!("Opened DRM render node (read/write): {}", path);
+            return Some(file);
+        }
         if let Ok(file) = File::open(&path) {
-            debug!("Opened DRM render node for hardware video acceleration: {}", path);
+            debug!("Opened DRM render node (read-only): {}", path);
             return Some(file);
         }
     }
-    // Fallback to card0
-    File::open("/dev/dri/card0").ok()
+
+    // 2. Try primary card nodes
+    for i in 0..=8 {
+        let path = format!("/dev/dri/card{}", i);
+        if let Ok(file) = OpenOptions::new().read(true).write(true).open(&path) {
+            debug!("Opened DRM card node (read/write): {}", path);
+            return Some(file);
+        }
+        if let Ok(file) = File::open(&path) {
+            debug!("Opened DRM card node (read-only): {}", path);
+            return Some(file);
+        }
+    }
+
+    None
 }
 
 /// Probes whether Linux GPU hardware acceleration for H.264 is available
@@ -153,7 +209,7 @@ fn probe_vaapi() {
     let drm_file = match open_drm_render_node() {
         Some(f) => f,
         None => {
-            debug!("Linux VA-API: No DRM render node found under /dev/dri/");
+            debug!("Linux VA-API: No accessible DRM node found under /dev/dri/ (check user group membership: video / render)");
             VA_HW_CHECKED.store(true, Ordering::Relaxed);
             VA_H264_HW_ENCODER.store(false, Ordering::Relaxed);
             VA_H264_HW_DECODER.store(false, Ordering::Relaxed);
@@ -179,7 +235,7 @@ fn probe_vaapi() {
             } else {
                 "Unknown".into()
             };
-            debug!("Linux VA-API initialization failed: {}", err_msg);
+            debug!("Linux VA-API driver initialization returned: {}", err_msg);
             VA_HW_CHECKED.store(true, Ordering::Relaxed);
             return;
         }
@@ -227,9 +283,11 @@ fn probe_vaapi() {
             VA_H264_HW_ENCODER.store(has_enc, Ordering::Relaxed);
             VA_H264_HW_DECODER.store(has_dec, Ordering::Relaxed);
             info!(
-                "Linux VA-API Hardware Codecs: H.264 Encoder = {}, H.264 Decoder = {}",
+                "Linux VA-API Hardware Codecs: H.264 Encoder = {}, H.264 Decoder = {} (VA-API v{}.{})",
                 if has_enc { "READY" } else { "NOT SUPPORTED" },
-                if has_dec { "READY" } else { "NOT SUPPORTED" }
+                if has_dec { "READY" } else { "NOT SUPPORTED" },
+                major,
+                minor
             );
         }
 
