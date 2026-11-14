@@ -255,10 +255,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             bgra,
                                         })
                                     } else {
-                                        decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
+                                        None
                                     }
                                 } else {
-                                    decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
+                                    None
                                 }
                             } else {
                                 crate::recorder::push_frame(&frame_bytes);

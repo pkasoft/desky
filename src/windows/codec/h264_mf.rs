@@ -25,7 +25,7 @@ use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform,
     MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER,
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
-    MFT_MESSAGE_COMMAND_DRAIN, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
     MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
     MFT_REGISTER_TYPE_INFO, MFVideoFormat_H264, MFVideoFormat_NV12,
     MF_E_TRANSFORM_NEED_MORE_INPUT, MF_MT_AVG_BITRATE, MF_MT_FRAME_RATE,
@@ -391,9 +391,15 @@ impl H264MfEncoder {
             let transform: IMFTransform = first_act.as_ref().unwrap().ActivateObject()?;
             windows::Win32::System::Com::CoTaskMemFree(Some(activate_ptrs as *const _));
 
-            // Unlock asynchronous capabilities if supported by the MFT
+            // Unlock asynchronous capabilities & configure low-latency streaming
             if let Ok(attrs) = transform.GetAttributes() {
                 let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+                let low_latency = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
+                let real_time = windows::core::GUID::from_u128(0xc03eb300_0985_4228_b384_5f532f83ee18);
+                let gop_size = windows::core::GUID::from_u128(0x95f34a07_8bd9_47e8_a581_9389ac525792);
+                let _ = attrs.SetUINT32(&low_latency, 1);
+                let _ = attrs.SetUINT32(&real_time, 1);
+                let _ = attrs.SetUINT32(&gop_size, 30);
             }
 
             // Configure Output Media Type (H.264)
@@ -476,6 +482,9 @@ impl VideoEncoder for H264MfEncoder {
 
             sample.SetSampleTime(time)?;
             sample.SetSampleDuration(duration)?;
+            if _force_keyframe {
+                let _ = sample.SetUINT32(&windows::Win32::Media::MediaFoundation::MFSampleExtension_CleanPoint, 1);
+            }
 
             transform.ProcessInput(0, &sample, 0)?;
 
@@ -491,13 +500,7 @@ impl VideoEncoder for H264MfEncoder {
             };
 
             let mut status = 0u32;
-            let mut process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
-
-            if process_res.is_err() {
-                // Drain to force immediate emission of compressed frame (zero-latency remote desktop pipeline)
-                let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
-                process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
-            }
+            let process_res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
 
             if let Err(e) = process_res {
                 if e.code() == MF_E_TRANSFORM_NEED_MORE_INPUT {
@@ -548,6 +551,8 @@ pub struct H264MfDecoder {
     transform: Option<IMFTransform>,
     mf: Option<Arc<MfPlatSymbols>>,
     out_buf_size: u32,
+    frame_index: u64,
+    last_frame: Option<Vec<u8>>,
 }
 
 unsafe impl Send for H264MfDecoder {}
@@ -562,6 +567,8 @@ impl H264MfDecoder {
             transform: None,
             mf: Some(mf),
             out_buf_size: 1_728_000,
+            frame_index: 0,
+            last_frame: None,
         })
     }
 
@@ -591,6 +598,8 @@ impl H264MfDecoder {
 
             if let Ok(attrs) = transform.GetAttributes() {
                 let _ = attrs.SetUINT32(&MF_TRANSFORM_ASYNC_UNLOCK, 1);
+                let low_latency = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
+                let _ = attrs.SetUINT32(&low_latency, 1);
             }
 
             let frame_size = ((width as u64) << 32) | (height as u64);
@@ -620,8 +629,73 @@ impl H264MfDecoder {
             self.transform = Some(transform);
             self.width = width;
             self.height = height;
+            self.frame_index = 0;
+            self.last_frame = None;
             info!("H.264 Media Foundation Decoder initialized for {}x{}", width, height);
             Ok(())
+        }
+    }
+
+    fn try_pull_output(
+        &mut self,
+        expected_width: u32,
+        expected_height: u32,
+    ) -> Option<Vec<u8>> {
+        let transform = self.transform.as_ref()?;
+        let mf = self.mf.as_ref()?;
+        unsafe {
+            let out_mem = mf.create_memory_buffer(self.out_buf_size).ok()?;
+            let out_sample = mf.create_sample().ok()?;
+            out_sample.AddBuffer(&out_mem).ok()?;
+
+            let mut output_data = MFT_OUTPUT_DATA_BUFFER {
+                dwStreamID: 0,
+                pSample: core::mem::ManuallyDrop::new(Some(out_sample.clone())),
+                dwStatus: 0,
+                pEvents: core::mem::ManuallyDrop::new(None),
+            };
+
+            let mut status = 0u32;
+            let mut res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+
+            // Handle MF_E_TRANSFORM_STREAM_CHANGE (0xC00D6D61) - SPS/PPS renegotiation
+            if let Err(ref e) = res {
+                if e.code().0 as u32 == 0xC00D6D61 || (status & 0x100 != 0) {
+                    if let Ok(new_out_type) = transform.GetOutputAvailableType(0, 0) {
+                        let _ = transform.SetOutputType(0, &new_out_type, 0);
+                        if let Ok(info) = transform.GetOutputStreamInfo(0) {
+                            self.out_buf_size = info.cbSize.max((expected_width * expected_height * 3 / 2) as u32);
+                        }
+                    }
+                    if let Ok(new_mem) = mf.create_memory_buffer(self.out_buf_size) {
+                        if let Ok(new_samp) = mf.create_sample() {
+                            let _ = new_samp.AddBuffer(&new_mem);
+                            output_data.pSample = core::mem::ManuallyDrop::new(Some(new_samp.clone()));
+                            res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
+                        }
+                    }
+                }
+            }
+            if res.is_ok() {
+                if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
+                    let mut data_ptr = std::ptr::null_mut();
+                    let mut max_l = 0u32;
+                    let mut cur_l = 0u32;
+                    if m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l)).is_ok() {
+                        if cur_l > 0 && !data_ptr.is_null() {
+                            let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
+                            let bgra_len = (expected_width * expected_height * 4) as usize;
+                            let mut bgra = vec![0u8; bgra_len];
+                            nv12_to_bgra(nv12_slice, expected_width as usize, expected_height as usize, &mut bgra);
+                            let _ = m_buf.Unlock();
+                            self.last_frame = Some(bgra.clone());
+                            return Some(bgra);
+                        }
+                        let _ = m_buf.Unlock();
+                    }
+                }
+            }
+            None
         }
     }
 }
@@ -634,6 +708,8 @@ impl Default for H264MfDecoder {
             transform: None,
             mf: None,
             out_buf_size: 1_728_000,
+            frame_index: 0,
+            last_frame: None,
         })
     }
 }
@@ -652,8 +728,8 @@ impl VideoDecoder for H264MfDecoder {
         if self.transform.is_none() || self.width != expected_width || self.height != expected_height {
             self.init_decoder(expected_width, expected_height)?;
         }
-        let transform = self.transform.as_ref().ok_or_else(|| anyhow!("Decoder transform uninitialized"))?;
-        let mf = self.mf.as_ref().ok_or_else(|| anyhow!("mfplat not loaded"))?;
+        let transform = self.transform.clone().ok_or_else(|| anyhow!("Decoder transform uninitialized"))?;
+        let mf = self.mf.clone().ok_or_else(|| anyhow!("mfplat not loaded"))?;
 
         unsafe {
             let in_buf = mf.create_memory_buffer(data.len() as u32)?;
@@ -665,48 +741,31 @@ impl VideoDecoder for H264MfDecoder {
 
             let sample = mf.create_sample()?;
             sample.AddBuffer(&in_buf)?;
-            sample.SetSampleTime(0)?;
+            let time = (self.frame_index * (10_000_000 / 60)) as i64;
+            self.frame_index += 1;
+            sample.SetSampleTime(time)?;
+            sample.SetSampleDuration(166_666)?;
 
-            let _ = transform.ProcessInput(0, &sample, 0);
-
-            let out_mem = mf.create_memory_buffer(self.out_buf_size)?;
-            let out_sample = mf.create_sample()?;
-            out_sample.AddBuffer(&out_mem)?;
-
-            let mut output_data = MFT_OUTPUT_DATA_BUFFER {
-                dwStreamID: 0,
-                pSample: core::mem::ManuallyDrop::new(Some(out_sample.clone())),
-                dwStatus: 0,
-                pEvents: core::mem::ManuallyDrop::new(None),
-            };
-
-            let mut status = 0u32;
-            let mut res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
-
-            if res.is_err() {
-                let _ = transform.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
-                res = transform.ProcessOutput(0, std::slice::from_mut(&mut output_data), &mut status);
-            }
-
-            if res.is_ok() {
-                if let Ok(m_buf) = out_sample.ConvertToContiguousBuffer() {
-                    let mut data_ptr = std::ptr::null_mut();
-                    let mut max_l = 0u32;
-                    let mut cur_l = 0u32;
-                    m_buf.Lock(&mut data_ptr, Some(&mut max_l), Some(&mut cur_l))?;
-                    if cur_l > 0 && !data_ptr.is_null() {
-                        let nv12_slice = std::slice::from_raw_parts(data_ptr, cur_l as usize);
-                        let bgra_len = (expected_width * expected_height * 4) as usize;
-                        let mut bgra = vec![0u8; bgra_len];
-                        nv12_to_bgra(nv12_slice, expected_width as usize, expected_height as usize, &mut bgra);
-                        m_buf.Unlock()?;
-                        return Ok(bgra);
-                    }
-                    m_buf.Unlock()?;
+            let mut inp_res = transform.ProcessInput(0, &sample, 0);
+            if let Err(ref e) = inp_res {
+                if e.code() == windows::Win32::Media::MediaFoundation::MF_E_NOTACCEPTING {
+                    let _ = self.try_pull_output(expected_width, expected_height);
+                    inp_res = transform.ProcessInput(0, &sample, 0);
                 }
             }
+            let _ = inp_res;
 
-            Err(anyhow!("H.264 decoder did not produce output frame"))
+            if let Some(bgra) = self.try_pull_output(expected_width, expected_height) {
+                return Ok(bgra);
+            }
+
+            if let Some(ref last) = self.last_frame {
+                return Ok(last.clone());
+            }
+
+            Err(anyhow!("H.264 decoder needs more input"))
         }
     }
 }
+
+
