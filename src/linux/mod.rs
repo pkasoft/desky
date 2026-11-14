@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod input;
 pub mod system;
 pub mod ui;
+pub mod codec;
 
 pub use capture::capture_screen_frame;
 #[allow(unused_imports)]
@@ -28,6 +29,8 @@ pub fn run() -> anyhow::Result<()> {
 
     let p2p = crate::p2p::P2PManager::new(ident.machine_id, ident.desky_id, vds_server);
     p2p.start_host_registration();
+
+    codec::probe_hardware_codecs();
 
     let app = ui::LinuxApp::new()?;
     app.run();

@@ -190,8 +190,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 let disp_worker = display_target.clone();
                 std::thread::spawn(move || {
                     let mut logged_first = false;
-                    #[cfg(target_os = "windows")]
-                    let mut h264_decoder = crate::windows::codec::H264MfDecoder::new().ok();
+                    let mut h264_decoder = crate::platform::codec::PlatformH264Decoder::new().ok();
 
                     while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                         && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
@@ -215,28 +214,23 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                         if let Some((f_id, orig_w, orig_h, frame_bytes, codec_type)) = job {
                             let decoded_opt = if codec_type == PKT_FRAME_CHUNK_H264 {
-                                #[cfg(target_os = "windows")]
-                                {
-                                    use crate::codec::VideoDecoder;
-                                    if let Some(ref mut dec) = h264_decoder {
-                                        if let Ok(bgra) = dec.decode(&frame_bytes, orig_w, orig_h) {
-                                            Some(crate::p2p::state::RemoteFrame {
-                                                frame_id: f_id,
-                                                orig_width: orig_w,
-                                                orig_height: orig_h,
-                                                width: orig_w,
-                                                height: orig_h,
-                                                bgra,
-                                            })
-                                        } else {
-                                            decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
-                                        }
+                                use crate::codec::VideoDecoder;
+                                if let Some(ref mut dec) = h264_decoder {
+                                    if let Ok(bgra) = dec.decode(&frame_bytes, orig_w, orig_h) {
+                                        Some(crate::p2p::state::RemoteFrame {
+                                            frame_id: f_id,
+                                            orig_width: orig_w,
+                                            orig_height: orig_h,
+                                            width: orig_w,
+                                            height: orig_h,
+                                            bgra,
+                                        })
                                     } else {
                                         decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
                                     }
+                                } else {
+                                    decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
                                 }
-                                #[cfg(not(target_os = "windows"))]
-                                decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
                             } else {
                                 crate::recorder::push_frame(&frame_bytes);
                                 decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)

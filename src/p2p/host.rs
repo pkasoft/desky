@@ -177,11 +177,8 @@ impl P2PManager {
                         let mut frame_id: u32 = 1;
                         let mut mjpeg_encoder = crate::codec::mjpeg::MjpegEncoder::new(76, true);
                         let mut last_encoded_len: usize = 0;
-                        #[cfg(target_os = "windows")]
-                        let mut h264_encoder: Option<crate::windows::codec::H264MfEncoder> = None;
-                        #[cfg(target_os = "windows")]
+                        let mut h264_encoder: Option<crate::platform::codec::PlatformH264Encoder> = None;
                         let mut h264_w: u32 = 0;
-                        #[cfg(target_os = "windows")]
                         let mut h264_h: u32 = 0;
                         #[cfg(target_os = "windows")]
                         let mut last_cursor_shape: u8 = 0xFF;
@@ -356,10 +353,9 @@ impl P2PManager {
                                 let mut encoded_data = Vec::new();
                                 let mut encoded_pkt_type = PKT_FRAME_CHUNK;
 
-                                #[cfg(target_os = "windows")]
-                                if crate::windows::codec::is_h264_hardware_available() && !any_relay {
+                                if crate::platform::codec::is_h264_hardware_available() && !any_relay {
                                     if h264_encoder.is_none() || h264_w != cap_w || h264_h != cap_h {
-                                        h264_encoder = crate::windows::codec::H264MfEncoder::new(cap_w, cap_h, max_fps, 4_000_000).ok();
+                                        h264_encoder = crate::platform::codec::PlatformH264Encoder::new(cap_w, cap_h, max_fps, 4_000_000).ok();
                                         h264_w = cap_w;
                                         h264_h = cap_h;
                                     }

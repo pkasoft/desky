@@ -88,6 +88,13 @@ desky/
         ├── admin.rs
         ├── capture.rs
         ├── clipboard.rs
+        ├── codec/                 # Linux Hardware Video Codecs (VA-API / V4L2)
+        │   ├── mod.rs             # Linux hardware codec probes & unified platform dispatch
+        │   ├── h264_vaapi.rs      # VA-API GPU H.264 Transform encoder/decoder (Intel/AMD)
+        │   ├── h265_vaapi.rs      # HEVC / H.265 hardware capability detector
+        │   └── v4l2.rs            # Video4Linux2 M2M hardware device detector
+        ├── input.rs
+        ├── system.rs
         └── ui.rs
 ```
 
