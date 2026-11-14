@@ -575,7 +575,7 @@ pub fn decode_jpeg_to_bgra(
     orig_height: u32,
     jpeg_bytes: &[u8],
 ) -> Option<RemoteFrame> {
-    let mut decoder = zune_jpeg::JpegDecoder::new(jpeg_bytes);
+    let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(jpeg_bytes));
     let rgb = decoder.decode().ok()?;
     let info = decoder.info()?;
     let w = info.width as u32;

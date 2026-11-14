@@ -112,7 +112,7 @@ impl VideoDecoder for MjpegDecoder {
             return Err(anyhow!("Empty JPEG data buffer"));
         }
 
-        let mut decoder = zune_jpeg::JpegDecoder::new(data);
+        let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(data));
         let rgb = decoder.decode().map_err(|e| anyhow!("JPEG decode error: {:?}", e))?;
         let info = decoder.info().ok_or_else(|| anyhow!("Missing JPEG header metadata"))?;
 
