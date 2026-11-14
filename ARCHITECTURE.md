@@ -148,6 +148,8 @@ Used by `get_tab_hit_state()` and window event routing in `src/windows/ui/viewpo
 | `9007` | **Quick Actions** | Opens Quick Actions hotkeys dropdown (`QUICK_ACTIONS`) |
 | `9008` | **Whiteboard Pen** | Toggles interactive screen annotation drawing mode |
 | `9009` | **Record Session** | Starts / stops zero-overhead AVI Motion-JPEG session recording |
+| `9010` | **In-Session Chat** | Toggles technician-host floating chat flyout |
+| `9011` | **Video Codec Badge** | Displays active stream codec (`H.264 GPU`, `H.265 GPU`, `MJPEG 4:4:4`); click opens Connection Info |
 | `9101` | **Monitor 1** | Switches captured host display to Monitor 1 |
 | `9102` | **Monitor 2** | Switches captured host display to Monitor 2 |
 | `9103` | **Monitor 3** | Switches captured host display to Monitor 3 |

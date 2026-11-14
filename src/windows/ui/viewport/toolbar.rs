@@ -383,6 +383,30 @@ pub unsafe fn draw_tab_bar(
         };
         FillRect(hdc, &div_rc, border_brush);
 
+        // Active Codec Badge (Hit 9011)
+        let codec_str = crate::p2p::get_active_stream_codec_badge();
+        let is_hw = crate::p2p::get_active_stream_codec() == 0x16 || crate::p2p::get_active_stream_codec() == 0x17;
+        let pill_w = 80;
+        let pill_x = mon1_x - pill_w - 8;
+        let (c_bg, c_border, c_fg, c_bw) = if hover_state == 9011 {
+            (TB_HOVER_BG, TB_HOVER_BORDER, TB_HOVER_FG, 1)
+        } else if is_hw {
+            (TB_ACTIVE_BG, TB_ACTIVE_BORDER, TB_ACTIVE_FG, 1)
+        } else {
+            (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG, 1)
+        };
+        draw_tb_button_box(hdc, pill_x, mode_y, pill_w, tab_h, c_bg, c_border, c_bw);
+        let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
+        SetTextColor(hdc, c_fg);
+        let mut codec_txt: Vec<u16> = codec_str.encode_utf16().collect();
+        let mut codec_rc = RECT {
+            left: pill_x,
+            top: mode_y,
+            right: pill_x + pill_w,
+            bottom: mode_y + tab_h,
+        };
+        let _ = DrawTextW(hdc, &mut codec_txt, &mut codec_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
         // Mon 1, 2, 3
         for (idx, mx, hid) in [(0u32, mon1_x, 9101), (1, mon2_x, 9102), (2, mon3_x, 9103)] {
             let m_hover = hover_state == hid;
@@ -534,6 +558,7 @@ pub unsafe fn draw_tab_bar(
     };
 
     let tooltip_data: Option<(&str, i32)> = match hover_state {
+        9011 if !is_home => Some((crate::p2p::get_active_stream_codec_name(), mon1_x - 48)),
         9006 => Some((if is_settings_open { "Close Settings" } else { "Settings" }, settings_x + btn_w / 2)),
         9010 if !is_home => Some((if crate::p2p::is_chat_open() { "Close Chat" } else { "In-Session Chat" }, chat_x + btn_w / 2)),
         9002 if !is_home => Some((if is_admin { "Admin Terminal: Active" } else { "Open Remote Admin Terminal" }, admin_x + btn_w / 2)),
@@ -641,6 +666,9 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
             if client_x >= rec_x && client_x < rec_x + btn_w { return 9009; }
             if client_x >= wb_x && client_x < wb_x + btn_w { return 9008; }
             if client_x >= zap_x && client_x < zap_x + btn_w { return 9007; }
+            let pill_w = 80;
+            let pill_x = mon1_x - pill_w - 8;
+            if client_x >= pill_x && client_x < pill_x + pill_w { return 9011; }
             if client_x >= mon1_x && client_x < mon1_x + btn_w { return 9101; }
             if client_x >= mon2_x && client_x < mon2_x + btn_w { return 9102; }
             if client_x >= mon3_x && client_x < mon3_x + btn_w { return 9103; }

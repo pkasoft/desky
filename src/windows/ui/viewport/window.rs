@@ -204,7 +204,13 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if client_y < TOOLBAR_HEIGHT {
                 let hit = get_tab_hit_state(hwnd, client_x, client_y);
 
-                if hit == 9006 {
+                if hit == 9011 {
+                    super::settings_modal::SETTINGS_CATEGORY.store(3, Ordering::Relaxed);
+                    SHOW_SETTINGS_MODAL.store(true, Ordering::Relaxed);
+                    sync_edit_target_visibility();
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                } else if hit == 9006 {
                     SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
                     sync_edit_target_visibility();
                     let _ = InvalidateRect(Some(hwnd), None, false);

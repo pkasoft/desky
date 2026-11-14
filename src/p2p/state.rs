@@ -419,6 +419,32 @@ pub fn get_session_bitrate_kbps() -> u32 {
     SESSION_BITRATE_KBPS.load(Ordering::Relaxed)
 }
 
+pub static ACTIVE_STREAM_CODEC: AtomicU8 = AtomicU8::new(0x02);
+
+pub fn get_active_stream_codec() -> u8 {
+    ACTIVE_STREAM_CODEC.load(Ordering::Relaxed)
+}
+
+pub fn set_active_stream_codec(codec: u8) {
+    ACTIVE_STREAM_CODEC.store(codec, Ordering::Relaxed);
+}
+
+pub fn get_active_stream_codec_name() -> &'static str {
+    match ACTIVE_STREAM_CODEC.load(Ordering::Relaxed) {
+        0x16 => "H.264 (Hardware GPU)",
+        0x17 => "H.265 / HEVC (Hardware GPU)",
+        _ => "Motion-JPEG (SIMD 4:4:4)",
+    }
+}
+
+pub fn get_active_stream_codec_badge() -> &'static str {
+    match ACTIVE_STREAM_CODEC.load(Ordering::Relaxed) {
+        0x16 => "H.264 GPU",
+        0x17 => "H.265 GPU",
+        _ => "MJPEG 4:4:4",
+    }
+}
+
 pub fn is_server_online() -> bool {
     SERVER_ONLINE.load(Ordering::Relaxed)
 }

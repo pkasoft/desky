@@ -465,6 +465,7 @@ pub unsafe fn draw_fullscreen_settings_view(
             ),
             ("Stream Bitrate", bitrate_str),
             ("Resolution", res_str),
+            ("Video Codec", crate::p2p::get_active_stream_codec_name().to_string()),
             ("Encryption", "ChaCha20-Poly1305 E2EE".to_string()),
         ];
 
@@ -499,7 +500,7 @@ pub unsafe fn draw_fullscreen_settings_view(
         }
 
         // Bottom [ Done ] Button
-        let done_y = tbl_y + 4 * (row_h + 4) + 24;
+        let done_y = tbl_y + (rows.len() as i32) * (row_h + 4) + 24;
         let done_w = 140;
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;

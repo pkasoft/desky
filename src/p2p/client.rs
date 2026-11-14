@@ -213,6 +213,16 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         };
 
                         if let Some((f_id, orig_w, orig_h, frame_bytes, codec_type)) = job {
+                            crate::p2p::state::set_active_stream_codec(codec_type);
+                            if !logged_first {
+                                logged_first = true;
+                                tracing::info!(
+                                    "Active Remote Video Stream: Codec = '{}' ({}x{})",
+                                    crate::p2p::state::get_active_stream_codec_name(),
+                                    orig_w,
+                                    orig_h
+                                );
+                            }
                             let decoded_opt = if codec_type == PKT_FRAME_CHUNK_H264 {
                                 use crate::codec::VideoDecoder;
                                 if let Some(ref mut dec) = h264_decoder {
