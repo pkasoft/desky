@@ -1,4 +1,3 @@
-use crate::codec::{VideoDecoder, VideoEncoder};
 use crate::protocol::InputEvent;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -459,75 +458,13 @@ pub fn get_client_codec_pref() -> u8 {
 }
 
 pub fn set_client_codec_pref(pref: u8) {
-    CLIENT_CODEC_PREF.store(pref.min(3), Ordering::Relaxed);
-}
-
-static CODEC_DIAG_RESULT: OnceLock<Mutex<String>> = OnceLock::new();
-
-pub fn get_codec_diag_result() -> String {
-    CODEC_DIAG_RESULT
-        .get_or_init(|| Mutex::new(String::new()))
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default()
-}
-
-pub fn set_codec_diag_result(msg: String) {
-    if let Ok(mut g) = CODEC_DIAG_RESULT.get_or_init(|| Mutex::new(String::new())).lock() {
-        *g = msg;
-    }
-}
-
-pub fn run_codec_diagnostics() {
-    let mut results = Vec::new();
-
-    // 1. Motion-JPEG test
-    let test_bgra = vec![128u8; 64 * 64 * 4];
-    let mut mjpeg_enc = crate::codec::mjpeg::MjpegEncoder::new(75, true);
-    match mjpeg_enc.encode(&test_bgra, 64, 64, true) {
-        Ok(frame) => {
-            let mut mjpeg_dec = crate::codec::mjpeg::MjpegDecoder::new();
-            match mjpeg_dec.decode(&frame.data, 64, 64) {
-                Ok(_) => results.push("MJPEG: [OK] Pure-Rust SIMD Functional".to_string()),
-                Err(e) => results.push(format!("MJPEG: [ERR] {}", e)),
-            }
-        }
-        Err(e) => results.push(format!("MJPEG: [ERR] {}", e)),
-    }
-
-    // 2. H.264 Hardware test
-    if crate::platform::codec::is_h264_hardware_available() {
-        match crate::platform::codec::PlatformH264Encoder::new(64, 64, 30, 1_000_000) {
-            Ok(mut enc) => {
-                let _ = enc.encode(&test_bgra, 64, 64, true);
-                match crate::platform::codec::PlatformH264Decoder::new() {
-                    Ok(_) => results.push("H.264: [OK] Hardware MFT Ready".to_string()),
-                    Err(e) => results.push(format!("H.264: [ERR] {}", e)),
-                }
-            }
-            Err(e) => results.push(format!("H.264: [ERR] {}", e)),
-        }
-    } else {
-        results.push("H.264: [UNAVAILABLE] No hardware MFT found".to_string());
-    }
-
-    // 3. H.265 Hardware test
-    if crate::platform::codec::is_h265_hardware_available() {
-        match crate::platform::codec::PlatformH265Encoder::new(64, 64, 30, 1_000_000) {
-            Ok(mut enc) => {
-                let _ = enc.encode(&test_bgra, 64, 64, true);
-                match crate::platform::codec::PlatformH265Decoder::new() {
-                    Ok(_) => results.push("H.265: [OK] Hardware Transform Ready".to_string()),
-                    Err(e) => results.push(format!("H.265: [ERR] {}", e)),
-                }
-            }
-            Err(e) => results.push(format!("H.265: [ERR] {}", e)),
-        }
-    } else {
-        results.push("H.265: [STANDBY] Synchronous MFT not registered".to_string());
-    }
-
-    set_codec_diag_result(results.join("  |  "));
+    let sanitized = match pref {
+        1 if crate::platform::codec::is_h265_hardware_available() => 1,
+        2 if crate::platform::codec::is_h264_hardware_available() => 2,
+        3 => 3,
+        _ => 0,
+    };
+    CLIENT_CODEC_PREF.store(sanitized, Ordering::Relaxed);
 }
 
 pub fn is_server_online() -> bool {

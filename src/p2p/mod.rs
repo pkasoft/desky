@@ -25,7 +25,7 @@ pub use state::{
     get_active_quality_params, get_active_session_target, get_latest_remote_frame,
     get_pending_approval, get_quality_mode, get_remote_cursor_shape, get_server_ping_ms,
     get_session_bitrate_kbps, get_active_stream_codec, get_active_stream_codec_badge, get_active_stream_codec_name, set_active_stream_codec, get_session_rtt_ms, get_session_status, get_transfer_progress,
-    get_client_codec_pref, set_client_codec_pref, get_codec_diag_result, run_codec_diagnostics,
+    get_client_codec_pref, set_client_codec_pref,
     is_client_session_active, is_server_online, normalize_id, pop_outgoing_voice_packet,
     push_outgoing_voice_chunk, read_clipboard_files, read_clipboard_text,
     respond_to_pending_approval, send_admin_request, send_file_transfer, send_remote_clipboard,

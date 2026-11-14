@@ -56,6 +56,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     let green_brush = CreateSolidBrush(PK_GREEN);
     let green_dark_brush = CreateSolidBrush(PK_GREEN_DARK);
     let input_brush = CreateSolidBrush(PK_INPUT_BG);
+    let disabled_brush = CreateSolidBrush(COLORREF(0x00EAEAEA));
 
     let font_title = create_segoe_font(16, FW_BOLD);
     let font_lbl = create_segoe_font(13, FW_SEMIBOLD);
@@ -149,7 +150,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     let mut close_rc = RECT { left: close_x, top: tab_y, right: close_x + close_w, bottom: tab_y + tab_h };
     let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    let draw_segmented_strip = |x: i32, y: i32, w: i32, h: i32, labels: &[&str], active_idx: usize| {
+    let draw_segmented_strip_ext = |x: i32, y: i32, w: i32, h: i32, labels: &[&str], enabled: &[bool], active_idx: usize| {
         let count = labels.len().max(1) as i32;
         let seg_w = w / count;
 
@@ -160,6 +161,7 @@ pub unsafe fn draw_fullscreen_settings_view(
             let sx = x + (i as i32) * seg_w;
             let sr = if i as i32 == count - 1 { x + w } else { sx + seg_w };
             let is_active = i == active_idx;
+            let is_enabled = enabled.get(i).copied().unwrap_or(true);
 
             let cell_rc = RECT {
                 left: sx + 1,
@@ -167,7 +169,10 @@ pub unsafe fn draw_fullscreen_settings_view(
                 right: sr - 1,
                 bottom: y + h - 1,
             };
-            if is_active {
+            if !is_enabled {
+                FillRect(hdc, &cell_rc, disabled_brush);
+                SetTextColor(hdc, COLORREF(0x00A0A0A0));
+            } else if is_active {
                 FillRect(hdc, &cell_rc, green_brush);
                 SetTextColor(hdc, COLORREF(0x00FFFFFF));
             } else {
@@ -205,7 +210,8 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         let scale_labels = ["Auto Fit", "Stretch", "Original (1:1)"];
-        draw_segmented_strip(panel_x, sec0_y + 22, panel_w, strip_h, &scale_labels, (mode as usize).min(2));
+        let all_enabled = [true, true, true];
+        draw_segmented_strip_ext(panel_x, sec0_y + 22, panel_w, strip_h, &scale_labels, &all_enabled, (mode as usize).min(2));
 
         // 2. Stream Quality
         let sec1_y = sec0_y + step;
@@ -217,13 +223,14 @@ pub unsafe fn draw_fullscreen_settings_view(
 
         let q_mode = crate::p2p::get_quality_mode() as usize;
         let q_labels = ["Auto (ABR)", "High Quality", "Balanced", "Low Data"];
+        let q_enabled = [true, true, true, true];
         let q_idx = match q_mode {
             0 => 0,
             1 | 2 => 1,
             3 => 2,
             _ => 3,
         };
-        draw_segmented_strip(panel_x, sec1_y + 22, panel_w, strip_h, &q_labels, q_idx);
+        draw_segmented_strip_ext(panel_x, sec1_y + 22, panel_w, strip_h, &q_labels, &q_enabled, q_idx);
 
         // 3. Target Framerate
         let sec2_y = sec1_y + step;
@@ -234,12 +241,13 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         let fps_labels = ["30 FPS (Low Data)", "60 FPS (Smooth)", "120 FPS (Ultra)"];
+        let fps_enabled = [true, true, true];
         let fps_idx = match fps {
             30 => 0,
             120 => 2,
             _ => 1,
         };
-        draw_segmented_strip(panel_x, sec2_y + 22, panel_w, strip_h, &fps_labels, fps_idx);
+        draw_segmented_strip_ext(panel_x, sec2_y + 22, panel_w, strip_h, &fps_labels, &fps_enabled, fps_idx);
 
         // 4. Remote Cursor Rendering
         let sec3_y = sec2_y + step;
@@ -250,8 +258,9 @@ pub unsafe fn draw_fullscreen_settings_view(
         let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
         let cur_labels = ["Show Cursor", "Hide Cursor"];
+        let cur_enabled = [true, true];
         let cursor_on = CAPTURE_CURSOR.load(Ordering::Relaxed);
-        draw_segmented_strip(panel_x, sec3_y + 22, panel_w, strip_h, &cur_labels, if cursor_on { 0 } else { 1 });
+        draw_segmented_strip_ext(panel_x, sec3_y + 22, panel_w, strip_h, &cur_labels, &cur_enabled, if cursor_on { 0 } else { 1 });
 
         // Bottom [ Done ] Button
         let done_y = sec3_y + step + 6;
@@ -270,16 +279,25 @@ pub unsafe fn draw_fullscreen_settings_view(
         let strip_h = 36;
         let step = 74;
 
-        // 1. Codec Selection
+        // 1. Codec Selection Strip with Active / Passive indicators
+        let h264_hw = crate::platform::codec::is_h264_hardware_available();
+        let h265_hw = crate::platform::codec::is_h265_hardware_available();
+
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
         let mut s0_lbl: Vec<u16> = "Video Codec Selection & Hardware Offload".encode_utf16().collect();
         let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
         let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-        let codec_labels = ["Auto (Best)", "H.265 (HEVC)", "H.264 (AVC)", "Motion-JPEG"];
+        let codec_labels = [
+            "Auto (Best)",
+            if h265_hw { "H.265 (HEVC)" } else { "H.265 (N/A)" },
+            if h264_hw { "H.264 (AVC)" } else { "H.264 (N/A)" },
+            "Motion-JPEG",
+        ];
+        let codec_enabled = [true, h265_hw, h264_hw, true];
         let pref_idx = crate::p2p::get_client_codec_pref() as usize;
-        draw_segmented_strip(panel_x, sec0_y + 22, panel_w, strip_h, &codec_labels, pref_idx.min(3));
+        draw_segmented_strip_ext(panel_x, sec0_y + 22, panel_w, strip_h, &codec_labels, &codec_enabled, pref_idx.min(3));
 
         // 2. Active Session Pipeline Card
         let sec1_y = sec0_y + step;
@@ -305,59 +323,30 @@ pub unsafe fn draw_fullscreen_settings_view(
         let mut d_rc = RECT { left: panel_x + 12, top: sec1_y + 32, right: panel_x + panel_w - 12, bottom: sec1_y + 54 };
         let _ = DrawTextW(hdc, &mut d_w, &mut d_rc, DT_SINGLELINE | DT_VCENTER);
 
-        // 3. Hardware Capabilities Summary
+        // 3. Hardware Capabilities Summary Box
         let sec2_y = sec1_y + card1_h + 14;
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
-        let mut s2_lbl: Vec<u16> = "Hardware Codec Capabilities".encode_utf16().collect();
+        let mut s2_lbl: Vec<u16> = "Hardware Codec Availability".encode_utf16().collect();
         let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
         let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
 
-        let h264_hw = crate::platform::codec::is_h264_hardware_available();
-        let h265_hw = crate::platform::codec::is_h265_hardware_available();
-
-        let card2_h = 76;
+        let card2_h = 82;
         draw_rounded_box(hdc, panel_x, sec2_y + 22, panel_w, card2_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
 
         let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
         let cap_txt = format!(
-            "• H.264 / AVC GPU: {}\n• H.265 / HEVC GPU: {}\n• Motion-JPEG: AVAILABLE (Pure-Rust SIMD 4:4:4 Universal)",
-            if h264_hw { "AVAILABLE (Media Foundation GPU MFT)" } else { "UNAVAILABLE" },
-            if h265_hw { "AVAILABLE (Synchronous GPU MFT)" } else { "STANDBY (Async Only / Extensions Needed)" },
+            "• H.264 / AVC GPU: {}\n• H.265 / HEVC GPU: {}\n• Motion-JPEG: ACTIVE (Universal Pure-Rust SIMD 4:4:4 Baseline)",
+            if h264_hw { "ACTIVE (Hardware MFT Acceleration Ready)" } else { "PASSIVE (No Hardware MFT)" },
+            if h265_hw { "ACTIVE (Hardware MFT Ready)" } else { "PASSIVE (Requires HEVC Video Extensions from Microsoft)" },
         );
         SetTextColor(hdc, PK_TEXT);
         let mut c_w: Vec<u16> = cap_txt.encode_utf16().collect();
         let mut c_rc = RECT { left: panel_x + 12, top: sec2_y + 26, right: panel_x + panel_w - 12, bottom: sec2_y + 22 + card2_h - 4 };
         let _ = DrawTextW(hdc, &mut c_w, &mut c_rc, DT_WORDBREAK);
 
-        // 4. Test Codecs Action Button & Result
-        let sec3_y = sec2_y + 22 + card2_h + 14;
-        let test_btn_w = 180;
-        let test_btn_h = 36;
-        let test_btn_x = panel_x + (panel_w - test_btn_w) / 2;
-        draw_rounded_box(hdc, test_btn_x, sec3_y, test_btn_w, test_btn_h, PK_GREEN_TINT, PK_GREEN, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, PK_GREEN_DARK);
-        let mut tb_txt: Vec<u16> = "Test All Codecs".encode_utf16().collect();
-        let mut tb_rc = RECT { left: test_btn_x, top: sec3_y, right: test_btn_x + test_btn_w, bottom: sec3_y + test_btn_h };
-        let _ = DrawTextW(hdc, &mut tb_txt, &mut tb_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
-        let diag_str = crate::p2p::get_codec_diag_result();
-        let mut diag_end_y = sec3_y + test_btn_h;
-        if !diag_str.is_empty() {
-            let diag_y = sec3_y + test_btn_h + 8;
-            let diag_h = 34;
-            draw_rounded_box(hdc, panel_x, diag_y, panel_w, diag_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
-            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-            SetTextColor(hdc, PK_TEXT);
-            let mut dg_w: Vec<u16> = diag_str.encode_utf16().collect();
-            let mut dg_rc = RECT { left: panel_x + 8, top: diag_y, right: panel_x + panel_w - 8, bottom: diag_y + diag_h };
-            let _ = DrawTextW(hdc, &mut dg_w, &mut dg_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-            diag_end_y = diag_y + diag_h;
-        }
-
         // Bottom [ Done ] Button
-        let done_y = diag_end_y + 14;
+        let done_y = sec2_y + 22 + card2_h + 24;
         let done_w = 140;
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;
@@ -373,6 +362,9 @@ pub unsafe fn draw_fullscreen_settings_view(
         let strip_h = 36;
         let step = 70;
 
+        let all_2_enabled = [true, true];
+        let all_3_enabled = [true, true, true];
+
         // 1. Audio Capture: Remote Media
         let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
         SetTextColor(hdc, PK_TEXT);
@@ -382,7 +374,7 @@ pub unsafe fn draw_fullscreen_settings_view(
 
         let rem_audio_on = crate::recorder::is_remote_audio_recording_enabled();
         let rem_labels = ["Capture Target Media (ON)", "Mute Target Audio"];
-        draw_segmented_strip(panel_x, sec0_y + 22, panel_w, strip_h, &rem_labels, if rem_audio_on { 0 } else { 1 });
+        draw_segmented_strip_ext(panel_x, sec0_y + 22, panel_w, strip_h, &rem_labels, &all_2_enabled, if rem_audio_on { 0 } else { 1 });
 
         // 2. Audio Capture: This Machine (Local)
         let sec1_y = sec0_y + step;
@@ -394,7 +386,7 @@ pub unsafe fn draw_fullscreen_settings_view(
 
         let loc_audio_on = crate::recorder::is_local_audio_recording_enabled();
         let loc_labels = ["Capture This Machine (ON)", "Mute Local Audio"];
-        draw_segmented_strip(panel_x, sec1_y + 22, panel_w, strip_h, &loc_labels, if loc_audio_on { 0 } else { 1 });
+        draw_segmented_strip_ext(panel_x, sec1_y + 22, panel_w, strip_h, &loc_labels, &all_2_enabled, if loc_audio_on { 0 } else { 1 });
 
         // 3. Recording Quality Scale
         let sec2_y = sec1_y + step;
@@ -406,7 +398,7 @@ pub unsafe fn draw_fullscreen_settings_view(
 
         let scale_val = crate::recorder::get_recording_quality_scale() as usize;
         let scale_labels = ["Native (100%)", "Balanced (75%)", "Compact (50%)"];
-        draw_segmented_strip(panel_x, sec2_y + 22, panel_w, strip_h, &scale_labels, scale_val.min(2));
+        draw_segmented_strip_ext(panel_x, sec2_y + 22, panel_w, strip_h, &scale_labels, &all_3_enabled, scale_val.min(2));
 
         // 4. Storage Folder card with Open Folder button
         let sec3_y = sec2_y + step;
@@ -589,6 +581,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     let _ = DeleteObject(HGDIOBJ(green_brush.0));
     let _ = DeleteObject(HGDIOBJ(green_dark_brush.0));
     let _ = DeleteObject(HGDIOBJ(input_brush.0));
+    let _ = DeleteObject(HGDIOBJ(disabled_brush.0));
     let _ = DeleteObject(HGDIOBJ(font_title.0));
     let _ = DeleteObject(HGDIOBJ(font_lbl.0));
     let _ = DeleteObject(HGDIOBJ(font_btn.0));
@@ -753,33 +746,26 @@ pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x
 
         // 1. Codec Selection (4 options: Auto, H265, H264, MJPEG)
         if let Some(idx) = hit_segment(sec0_y + 22, 4) {
-            crate::p2p::set_client_codec_pref(idx as u8);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
-
-        // 2. Test All Codecs button
-        let card1_h = 60;
-        let card2_h = 76;
-        let sec1_y = sec0_y + 74;
-        let sec2_y = sec1_y + card1_h + 14;
-        let sec3_y = sec2_y + 22 + card2_h + 14;
-        let test_btn_w = 180;
-        let test_btn_h = 36;
-        let test_btn_x = panel_x + (panel_w - test_btn_w) / 2;
-
-        if client_x >= test_btn_x && client_x <= test_btn_x + test_btn_w
-            && client_y >= sec3_y && client_y <= sec3_y + test_btn_h
-        {
-            crate::p2p::run_codec_diagnostics();
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            let h265_hw = crate::platform::codec::is_h265_hardware_available();
+            let h264_hw = crate::platform::codec::is_h264_hardware_available();
+            let is_enabled = match idx {
+                1 => h265_hw,
+                2 => h264_hw,
+                _ => true,
+            };
+            if is_enabled {
+                crate::p2p::set_client_codec_pref(idx as u8);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+            }
             return true;
         }
 
         // Done button
-        let diag_str = crate::p2p::get_codec_diag_result();
-        let diag_end_y = if !diag_str.is_empty() { sec3_y + test_btn_h + 8 + 34 } else { sec3_y + test_btn_h };
-        let done_y = diag_end_y + 14;
+        let card1_h = 60;
+        let card2_h = 82;
+        let sec1_y = sec0_y + 74;
+        let sec2_y = sec1_y + card1_h + 14;
+        let done_y = sec2_y + 22 + card2_h + 24;
         let done_w = 140;
         let done_x = (client_w - done_w) / 2;
         let done_h = 36;

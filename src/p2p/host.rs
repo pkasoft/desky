@@ -398,11 +398,8 @@ impl P2PManager {
                                     }
                                 }
 
-                                // TIER 3 (FALLBACK 2 / UNIVERSAL BASELINE): Pure-Rust SIMD Motion-JPEG 4:4:4
-                                let should_run_mjpeg = preferred_codec == 3
-                                    || (encoded_data.is_empty() && h265_encoder.is_none() && h264_encoder.is_none());
-
-                                if encoded_data.is_empty() && should_run_mjpeg {
+                                // TIER 3 (FALLBACK / UNIVERSAL BASELINE): Pure-Rust SIMD Motion-JPEG 4:4:4
+                                if encoded_data.is_empty() {
                                     mjpeg_encoder.set_quality(jpeg_quality);
                                     mjpeg_encoder.set_chroma_444(use_chroma_444);
                                     if let Ok(frame) = mjpeg_encoder.encode(&bgra, cap_w, cap_h, true) {
