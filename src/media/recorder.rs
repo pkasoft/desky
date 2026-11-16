@@ -5,15 +5,25 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::info;
 
+#[derive(Debug, Clone)]
+pub enum RecordedFrame {
+    Jpeg(Vec<u8>),
+    Bgra {
+        data: Vec<u8>,
+        width: u32,
+        height: u32,
+    },
+}
+
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
 static RECORD_FRAMES: AtomicU32 = AtomicU32::new(0);
 static RECORD_START_TIME: AtomicU64 = AtomicU64::new(0);
-static RECORDER_SENDER: Mutex<Option<Sender<Vec<u8>>>> = Mutex::new(None);
+static RECORDER_SENDER: Mutex<Option<SyncSender<RecordedFrame>>> = Mutex::new(None);
 static LAST_SAVED_INFO: Mutex<Option<(PathBuf, u64, u32, Duration)>> = Mutex::new(None);
 
 pub static RECORD_CAPTURE_REMOTE_AUDIO: AtomicBool = AtomicBool::new(true);
@@ -114,7 +124,7 @@ pub fn start_recording(width: u32, height: u32, fps: u32) -> Result<PathBuf, Str
     };
 
     let target_fps = fps.clamp(15, 120);
-    let (tx, rx) = channel::<Vec<u8>>();
+    let (tx, rx) = sync_channel::<RecordedFrame>(30);
 
     if let Ok(mut guard) = RECORDER_SENDER.lock() {
         *guard = Some(tx);
@@ -146,7 +156,27 @@ pub fn push_frame(jpeg_bytes: &[u8]) {
     }
     if let Ok(guard) = RECORDER_SENDER.lock() {
         if let Some(ref tx) = *guard {
-            let _ = tx.send(jpeg_bytes.to_vec());
+            let _ = tx.try_send(RecordedFrame::Jpeg(jpeg_bytes.to_vec()));
+        }
+    }
+}
+
+/// Push incoming uncompressed BGRA frame to the background AVI writer (encoded to JPEG asynchronously)
+pub fn push_bgra_frame(bgra: &[u8], width: u32, height: u32) {
+    if !is_recording() || bgra.is_empty() || width == 0 || height == 0 {
+        return;
+    }
+    let expected_len = (width as usize) * (height as usize) * 4;
+    if bgra.len() < expected_len {
+        return;
+    }
+    if let Ok(guard) = RECORDER_SENDER.lock() {
+        if let Some(ref tx) = *guard {
+            let _ = tx.try_send(RecordedFrame::Bgra {
+                data: bgra[..expected_len].to_vec(),
+                width,
+                height,
+            });
         }
     }
 }
@@ -218,7 +248,7 @@ const HEADER_SIZE: usize = 2048;
 fn run_recorder_writer(
     path: PathBuf,
     file: &mut File,
-    rx: Receiver<Vec<u8>>,
+    rx: Receiver<RecordedFrame>,
     mut width: u32,
     mut height: u32,
     fps: u32,
@@ -236,20 +266,58 @@ fn run_recorder_writer(
     // First data chunk starts exactly at byte HEADER_SIZE = 2048
     let movi_fourcc_pos = (HEADER_SIZE - 4) as u32;
 
+    let mut jpeg_buf = Vec::with_capacity(256 * 1024);
+
     // 2. Receive and write frames
-    while let Ok(frame_jpeg) = rx.recv() {
+    while let Ok(frame) = rx.recv() {
+        let frame_jpeg: &[u8] = match &frame {
+            RecordedFrame::Jpeg(bytes) => {
+                if bytes.is_empty() {
+                    continue;
+                }
+                // Dynamically detect frame resolution from actual JPEG headers
+                if frames_written == 0 || width == 0 || height == 0 {
+                    if let Some((w, h)) = parse_jpeg_dimensions(bytes) {
+                        if w > 0 && h > 0 {
+                            width = w;
+                            height = h;
+                        }
+                    }
+                }
+                bytes.as_slice()
+            }
+            RecordedFrame::Bgra { data, width: w, height: h } => {
+                let expected_len = (*w as usize) * (*h as usize) * 4;
+                if data.len() < expected_len || *w == 0 || *h == 0 {
+                    continue;
+                }
+                if frames_written == 0 || width == 0 || height == 0 {
+                    width = *w;
+                    height = *h;
+                }
+                jpeg_buf.clear();
+                let quality = match RECORD_QUALITY_SCALE.load(Ordering::Relaxed) {
+                    0 => 82,
+                    1 => 75,
+                    _ => 65,
+                };
+                let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, quality);
+                encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
+                if let Err(e) = encoder.encode(
+                    &data[..expected_len],
+                    *w as u16,
+                    *h as u16,
+                    jpeg_encoder::ColorType::Bgra,
+                ) {
+                    tracing::warn!("Recorder failed to encode BGRA frame to JPEG: {}", e);
+                    continue;
+                }
+                jpeg_buf.as_slice()
+            }
+        };
+
         if frame_jpeg.is_empty() {
             continue;
-        }
-
-        // Dynamically detect frame resolution from actual JPEG headers
-        if frames_written == 0 || width == 0 || height == 0 {
-            if let Some((w, h)) = parse_jpeg_dimensions(&frame_jpeg) {
-                if w > 0 && h > 0 {
-                    width = w;
-                    height = h;
-                }
-            }
         }
 
         let chunk_pos = match file.seek(SeekFrom::Current(0)) {
@@ -262,7 +330,7 @@ fn run_recorder_writer(
 
         let _ = file.write_all(&chunk_fourcc);
         let _ = file.write_all(&chunk_len.to_le_bytes());
-        let _ = file.write_all(&frame_jpeg);
+        let _ = file.write_all(frame_jpeg);
 
         // Pad to word boundary (2 bytes)
         if chunk_len % 2 != 0 {
@@ -555,5 +623,20 @@ mod tests {
         // Check JUNK chunk tag exists right after strf
         let junk_tag_idx = 212; // 12 (RIFF) + 200 (hdrl)
         assert_eq!(&hdr[junk_tag_idx..junk_tag_idx + 4], b"JUNK");
+    }
+
+    #[test]
+    fn test_bgra_to_jpeg_encoding() {
+        let w = 64u16;
+        let h = 48u16;
+        let bgra = vec![128u8; (w as usize) * (h as usize) * 4];
+        let mut jpeg_buf = Vec::new();
+        let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, 80);
+        encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
+        let res = encoder.encode(&bgra, w, h, jpeg_encoder::ColorType::Bgra);
+        assert!(res.is_ok());
+        assert!(!jpeg_buf.is_empty());
+        let dims = parse_jpeg_dimensions(&jpeg_buf);
+        assert_eq!(dims, Some((64, 48)));
     }
 }

@@ -261,7 +261,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     None
                                 }
                             } else {
-                                crate::recorder::push_frame(&frame_bytes);
                                 decode_jpeg_to_bgra(f_id, orig_w, orig_h, &frame_bytes)
                             };
 
@@ -280,6 +279,15 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         disp_worker, decoded.orig_width, decoded.orig_height
                                     ));
                                 }
+
+                                if crate::recorder::is_recording() {
+                                    if codec_type == PKT_FRAME_CHUNK_H264 || codec_type == PKT_FRAME_CHUNK_H265 {
+                                        crate::recorder::push_bgra_frame(&decoded.bgra, decoded.width, decoded.height);
+                                    } else {
+                                        crate::recorder::push_frame(&frame_bytes);
+                                    }
+                                }
+
                                 if let Ok(mut g) = frame_store().lock() {
                                     *g = Some(Arc::new(decoded));
                                 }
