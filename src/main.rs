@@ -1,5 +1,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+pub mod config;
 mod identity;
 mod p2p;
 mod protocol;

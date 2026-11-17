@@ -589,10 +589,10 @@ pub fn format_id_display(raw: &str) -> String {
 
 pub fn resolve_server_addr() -> SocketAddr {
     let server_str = std::env::var("DESKY_VDS_SERVER")
-        .unwrap_or_else(|_| "0.0.0.0:21116".into());
+        .unwrap_or_else(|_| crate::config::DEFAULT_VDS_SERVER.into());
     server_str
         .parse()
-        .unwrap_or_else(|_| "0.0.0.0:21116".parse().unwrap())
+        .unwrap_or_else(|_| crate::config::DEFAULT_VDS_SERVER.parse().unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 21116))))
 }
 
 /// Wraps a standard DSKY packet into a VDS Relay packet addressed to `target_id`

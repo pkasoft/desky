@@ -105,11 +105,16 @@ impl P2PManager {
                 let target_server: SocketAddr = match server_addr_str.parse() {
                     Ok(a) => a,
                     Err(_) => {
-                        warn!(
-                            "Could not parse VDS server address '{}', using default 0.0.0.0:21116",
-                            server_addr_str
-                        );
-                        "0.0.0.0:21116".parse().unwrap()
+                        use std::net::ToSocketAddrs;
+                        if let Ok(mut addrs) = server_addr_str.to_socket_addrs() {
+                            if let Some(a) = addrs.next() {
+                                a
+                            } else {
+                                crate::config::DEFAULT_VDS_SERVER.to_socket_addrs().ok().and_then(|mut x| x.next()).unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 21116)))
+                            }
+                        } else {
+                            crate::config::DEFAULT_VDS_SERVER.to_socket_addrs().ok().and_then(|mut x| x.next()).unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 21116)))
+                        }
                     }
                 };
 

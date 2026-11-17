@@ -1,2 +1,4 @@
 target/
 **/target/
+src/config.rs
+desky_panic.log

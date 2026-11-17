@@ -1,0 +1,8 @@
+//! Desky Network & Infrastructure Configuration (Example Template)
+//! Copy this file to `src/config.rs` to configure your custom rendezvous server.
+
+/// Default matchmaking, signaling, and NAT traversal rendezvous server
+pub const DEFAULT_VDS_SERVER: &str = "relay.example.com:21116";
+
+/// Secondary fallback STUN/Signaling server
+pub const FALLBACK_VDS_SERVER: &str = "127.0.0.1:21116";

@@ -363,7 +363,7 @@ pub unsafe fn draw_session_status_view(
                 "An authorization prompt was displayed on the remote computer's screen. Waiting for the operator to accept your request...".to_string()
             }
             SessionStatus::Connecting(_) => {
-                "Contacting rendezvous server at 0.0.0.0:21116...\nEstablishing secure P2P hole-punching and relay fallback link...".to_string()
+                "Contacting rendezvous server...\nEstablishing secure P2P hole-punching and relay fallback link...".to_string()
             }
             _ => {
                 "This session is currently inactive or closed. Click Retry to reconnect to this Desky ID.".to_string()

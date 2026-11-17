@@ -60,7 +60,7 @@ pub fn run() -> anyhow::Result<()> {
     );
 
     let vds_server = std::env::var("DESKY_VDS_SERVER")
-        .unwrap_or_else(|_| "0.0.0.0:21116".into());
+        .unwrap_or_else(|_| crate::config::DEFAULT_VDS_SERVER.into());
     tracing::info!("Connecting P2P Engine to VDS Matchmaker: {}", vds_server);
 
     let p2p = crate::p2p::P2PManager::new(ident.machine_id, ident.desky_id, vds_server);
