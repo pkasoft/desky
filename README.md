@@ -65,4 +65,4 @@ cargo build --release
 
 Desky is distributed under a **Dual-Licensing Model**:
 - **Personal & Home Use:** 100% Free under the **GNU Affero General Public License v3.0 (AGPLv3)**.
-- **Commercial & Enterprise Use:** Commercial users and organizations must obtain a commercial license. See [LICENSE.md](LICENSE.md) or contact `contact@pkasoft.com` for details.
+- **Commercial & Enterprise Use:** Commercial users and organizations must obtain a commercial license. See [LICENSE.md](LICENSE.md) or contact `info@pkasoft.com` for details.

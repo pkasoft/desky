@@ -2,7 +2,7 @@
 name = "desky"
 version = "0.1.0"
 edition = "2024"
-authors = ["pkasoft <pkasoft.studio@gmail.com>"]
+authors = ["pkasoft <info@pkasoft.com>"]
 description = "Zero-friction, high-performance peer-to-peer remote desktop built with Rust"
 license = "AGPL-3.0-or-later"
 

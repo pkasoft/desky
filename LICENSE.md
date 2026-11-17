@@ -23,5 +23,5 @@ If you represent a business or commercial organization, or intend to use Desky i
 - **Applicability:** Required for businesses, managed IT service providers, proprietary embedding, closed-source integrations, white-labeling, or organizations that cannot comply with the copyleft and source-disclosure obligations of the AGPLv3.
 - **Benefits:** Grants permission for proprietary distribution, priority commercial support, and releases your organization from AGPL copyleft requirements.
 - **Inquiries & Licensing:** To purchase a commercial license or request enterprise terms, please contact:
-  - **Email:** `contact@pkasoft.com` or `pkasoft.studio@gmail.com`
+  - **Email:** `info@pkasoft.com`
   - **Website:** <https://pkasoft.com/desky>
