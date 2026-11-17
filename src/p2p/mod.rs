@@ -40,7 +40,7 @@ pub use state::{
     get_client_codec_pref, set_client_codec_pref,
     is_client_session_active, is_server_online, normalize_id, pop_outgoing_voice_packet,
     push_outgoing_voice_chunk, read_clipboard_files, read_clipboard_text,
-    respond_to_pending_approval, send_admin_request, send_file_transfer, send_remote_clipboard,
+    respond_to_pending_approval, is_host_remote_input_allowed, toggle_host_remote_input, set_host_remote_input_allowed, send_admin_request, send_file_transfer, send_remote_clipboard,
     send_remote_input, set_quality_mode, set_remote_cursor_shape, set_session_status,
     stop_client_session, submit_unattended_password, take_admin_response, take_unattended_password,
     update_client_preferences, voice_notify, SessionStatus,

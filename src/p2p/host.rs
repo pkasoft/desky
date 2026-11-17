@@ -901,6 +901,9 @@ impl P2PManager {
                                     }
                                 }
                                 PKT_INPUT_EVENT => {
+                                    if !crate::p2p::is_host_remote_input_allowed() {
+                                        continue;
+                                    }
                                     let is_approved = {
                                         if let Ok(mut map) = clients_recv.lock() {
                                             let mut approved = false;

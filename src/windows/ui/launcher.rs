@@ -28,7 +28,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::theme::{
     copy_to_clipboard, create_segoe_font, draw_rounded_box, PK_BG, PK_BTN_HOVER, PK_CARD,
-    PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
+    PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_TEXT,
 };
 use super::viewport::{viewport_wndproc, VIEWPORT_BRUSH};
 
@@ -62,6 +62,7 @@ pub fn request_main_redraw() {
     }
 }
 
+#[allow(dead_code)]
 pub fn bring_main_window_to_front() {
     unsafe {
         if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
@@ -142,10 +143,10 @@ pub fn trigger_lan_radar_scan() {
 
 pub fn prompt_incoming_request(client_id: &str) {
     append_status_log(&format!(
-        "Incoming request from ID: {} - Click Accept or Decline!",
+        "Incoming request from ID: {} - Host approval prompt opened.",
         client_id
     ));
-    bring_main_window_to_front();
+    super::host_widget::sync_host_session_ui();
 }
 
 pub fn set_assigned_desky_id(id: &str) {
@@ -190,7 +191,6 @@ pub fn should_show_edit_target() -> bool {
     use crate::windows::ui::viewport::{ACTIVE_TAB_INDEX, SHOW_SETTINGS_MODAL};
     ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0
         && !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed)
-        && crate::p2p::get_pending_approval().is_none()
 }
 
 /// Re-applies the desired visibility of the edit box (no-op when already correct).
@@ -510,93 +510,6 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
     let font_btn = create_segoe_font(f_btn, FW_BOLD);
     let font_console = create_segoe_font(f_console, FW_NORMAL);
 
-    let pending_req = crate::p2p::get_pending_approval();
-
-    if let Some(req) = pending_req {
-        // INCOMING SESSION APPROVAL VIEW (Modal Card)
-        let mw = (w - 64).clamp(440, 620);
-        let mh = 290;
-        let mx = (w - mw) / 2;
-        let my = ((h - mh) / 2).max(68);
-
-        draw_rounded_box(mem_dc, mx, my, mw, mh, PK_CARD, PK_GREEN, 14);
-
-        // Badge Pill with Lucide Bell vector icon
-        let badge_w = 260;
-        let badge_x = mx + (mw - badge_w) / 2;
-        draw_rounded_box(mem_dc, badge_x, my + 22, badge_w, 28, PK_GREEN_TINT, PK_GREEN, 14);
-        crate::ui::draw_bell(mem_dc, badge_x + 10, my + 28, 16, PK_GREEN, 2);
-        let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
-        SetTextColor(mem_dc, PK_GREEN);
-        let mut b_txt: Vec<u16> = "INCOMING CONNECTION REQUEST".encode_utf16().collect();
-        let mut b_rc = RECT {
-            left: badge_x + 28,
-            top: my + 22,
-            right: badge_x + badge_w - 6,
-            bottom: my + 50,
-        };
-        let _ = DrawTextW(mem_dc, &mut b_txt, &mut b_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-
-        // Client ID Display
-        let _ = SelectObject(mem_dc, HGDIOBJ(font_id.0));
-        SetTextColor(mem_dc, PK_TEXT);
-        let mut cid_txt: Vec<u16> = format!("ID: {}", req.client_id).encode_utf16().collect();
-        let mut cid_rc = RECT {
-            left: mx + 20,
-            top: my + 66,
-            right: mx + mw - 20,
-            bottom: my + 116,
-        };
-        let _ = DrawTextW(mem_dc, &mut cid_txt, &mut cid_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-
-        // Subtitle prompt
-        let _ = SelectObject(mem_dc, HGDIOBJ(font_sub.0));
-        SetTextColor(mem_dc, PK_MUTED);
-        let mut p_txt: Vec<u16> =
-            "This remote client is requesting permission to view and control your desktop."
-                .encode_utf16()
-                .collect();
-        let mut p_rc = RECT {
-            left: mx + 24,
-            top: my + 124,
-            right: mx + mw - 24,
-            bottom: my + 156,
-        };
-        let _ = DrawTextW(mem_dc, &mut p_txt, &mut p_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-
-        // [ Accept ] and [ Decline ] buttons with Lucide Check & X vector icons
-        let btn_w = (mw - 72) / 2;
-        let btn_h = 50;
-        let btn_y = my + 190;
-        let acc_x = mx + 24;
-        let dec_x = mx + 48 + btn_w;
-
-        let acc_bg = if hover == 3 { PK_GREEN_DARK } else { PK_GREEN };
-        draw_rounded_box(mem_dc, acc_x, btn_y, btn_w, btn_h, acc_bg, acc_bg, 10);
-        crate::ui::draw_check(mem_dc, acc_x + 18, btn_y + 16, 18, COLORREF(0x00FFFFFF), 2);
-        let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
-        SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
-        let mut acc_txt: Vec<u16> = "Accept Connection".encode_utf16().collect();
-        let mut acc_rc = RECT {
-            left: acc_x + 36,
-            top: btn_y,
-            right: acc_x + btn_w,
-            bottom: btn_y + btn_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut acc_txt, &mut acc_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-
-        draw_rounded_box(mem_dc, dec_x, btn_y, btn_w, btn_h, PK_RED, PK_RED, 10);
-        crate::ui::draw_x(mem_dc, dec_x + 22, btn_y + 16, 18, COLORREF(0x00FFFFFF), 2);
-        SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
-        let mut dec_txt: Vec<u16> = "Decline".encode_utf16().collect();
-        let mut dec_rc = RECT {
-            left: dec_x + 36,
-            top: btn_y,
-            right: dec_x + btn_w,
-            bottom: btn_y + btn_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut dec_txt, &mut dec_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    } else {
         // Normal Homepage Cards
 
         // 1. Card 1: THIS DESK (Left)
@@ -1140,7 +1053,6 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 DT_SINGLELINE | DT_VCENTER,
             );
         }
-    }
 
     let _ = DeleteObject(HGDIOBJ(font_sub.0));
     let _ = DeleteObject(HGDIOBJ(font_badge.0));
@@ -1151,30 +1063,6 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
 
 /// Handles mouse clicks on the Homepage view
 pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) -> bool {
-    // 1. Pending Approval Modal clicks
-    if crate::p2p::get_pending_approval().is_some() {
-        let mw = (w - 64).clamp(440, 620);
-        let mh = 290;
-        let mx = (w - mw) / 2;
-        let my = ((h - mh) / 2).max(68);
-        let btn_w = (mw - 72) / 2;
-        let btn_h = 50;
-        let btn_y = my + 190;
-        let acc_x = mx + 24;
-        let dec_x = mx + 48 + btn_w;
-
-        if x >= acc_x && x <= acc_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-            crate::p2p::respond_to_pending_approval(true);
-            let _ = InvalidateRect(Some(hwnd), None, false);
-            return true;
-        } else if x >= dec_x && x <= dec_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-            crate::p2p::respond_to_pending_approval(false);
-            let _ = InvalidateRect(Some(hwnd), None, false);
-            return true;
-        }
-        return false;
-    }
-
     let l = get_responsive_layout(w, h);
 
     // 2. Copy Button Clicked
@@ -1457,41 +1345,21 @@ pub unsafe fn handle_homepage_connect(hwnd: HWND) {
 
 /// Tracks hover state for Homepage buttons and changes cursor
 pub unsafe fn handle_homepage_mousemove(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
-    let new_hover = if crate::p2p::get_pending_approval().is_some() {
-        let mw = (w - 64).clamp(440, 620);
-        let mh = 290;
-        let mx = (w - mw) / 2;
-        let my = ((h - mh) / 2).max(68);
-        let btn_w = (mw - 72) / 2;
-        let btn_h = 50;
-        let btn_y = my + 190;
-        let acc_x = mx + 24;
-        let dec_x = mx + 48 + btn_w;
-
-        if x >= acc_x && x <= acc_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-            3
-        } else if x >= dec_x && x <= dec_x + btn_w && y >= btn_y && y <= btn_y + btn_h {
-            4
-        } else {
-            0
-        }
+    let l = get_responsive_layout(w, h);
+    let new_hover = if x >= l.copy_btn_x
+        && x <= l.copy_btn_x + l.copy_btn_w
+        && y >= l.copy_btn_y
+        && y <= l.copy_btn_y + l.copy_btn_h
+    {
+        1
+    } else if x >= l.conn_btn_x
+        && x <= l.conn_btn_x + l.conn_btn_w
+        && y >= l.conn_btn_y
+        && y <= l.conn_btn_y + l.conn_btn_h
+    {
+        2
     } else {
-        let l = get_responsive_layout(w, h);
-        if x >= l.copy_btn_x
-            && x <= l.copy_btn_x + l.copy_btn_w
-            && y >= l.copy_btn_y
-            && y <= l.copy_btn_y + l.copy_btn_h
-        {
-            1
-        } else if x >= l.conn_btn_x
-            && x <= l.conn_btn_x + l.conn_btn_w
-            && y >= l.conn_btn_y
-            && y <= l.conn_btn_y + l.conn_btn_h
-        {
-            2
-        } else {
-            0
-        }
+        0
     };
 
     let prev_hover = HOVER_BUTTON.swap(new_hover, Ordering::Relaxed);

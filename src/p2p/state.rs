@@ -141,6 +141,7 @@ pub static SESSION_RTT_MS: AtomicU32 = AtomicU32::new(0);
 pub static SESSION_BITRATE_KBPS: AtomicU32 = AtomicU32::new(0);
 pub static SERVER_ONLINE: AtomicBool = AtomicBool::new(false);
 pub static SERVER_PING_MS: AtomicU32 = AtomicU32::new(0);
+static HOST_ALLOW_REMOTE_INPUT: AtomicBool = AtomicBool::new(true);
 
 pub fn frame_store() -> &'static Mutex<Option<Arc<RemoteFrame>>> {
     LATEST_REMOTE_FRAME.get_or_init(|| Mutex::new(None))
@@ -357,6 +358,19 @@ pub fn get_active_host_session_info() -> Option<(String, u64)> {
 }
 
 /// Disconnects all connected client subscribers from this host and sends PKT_DISCONNECT
+pub fn is_host_remote_input_allowed() -> bool {
+    HOST_ALLOW_REMOTE_INPUT.load(Ordering::Relaxed)
+}
+
+pub fn toggle_host_remote_input() -> bool {
+    let prev = HOST_ALLOW_REMOTE_INPUT.fetch_xor(true, Ordering::SeqCst);
+    !prev
+}
+
+pub fn set_host_remote_input_allowed(allowed: bool) {
+    HOST_ALLOW_REMOTE_INPUT.store(allowed, Ordering::SeqCst);
+}
+
 pub fn disconnect_host_session() {
     let mut to_send: Vec<(SocketAddr, Option<SocketAddr>, String)> = Vec::new();
     if let Ok(mut map) = host_subscribers_store().lock() {
