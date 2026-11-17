@@ -1,6 +1,6 @@
 # Desky Dual License Agreement
 
-Copyright (c) 2026 Pkasoft Studio (PraxiumX). All rights reserved.
+Copyright (c) 2026 Pkasoft Studio (pkasoft). All rights reserved.
 
 Desky is released under a **Dual-Licensing Model**:
 
