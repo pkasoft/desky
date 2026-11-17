@@ -141,6 +141,8 @@ pub fn execute_toolbar_action(hit: i32) {
         crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
             monitor_index: 2,
         });
+    } else if hit == 9090 {
+        crate::linux::ui::host_widget::disconnect_active_host_client();
     } else if hit == 997 {
         scroll_tabs(1);
     } else if hit == 998 {

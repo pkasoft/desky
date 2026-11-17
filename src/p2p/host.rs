@@ -237,21 +237,21 @@ impl P2PManager {
                             let req_chroma_444 =
                                 subscribers.iter().any(|s| s.chroma_444);
 
-                            // Preserve high-clarity 4:4:4 chroma and crisp JPEG quality for desktop text
+                            // Preserve high-clarity 4:4:4 chroma and crisp JPEG quality while respecting client ABR
                             let (jpeg_quality, use_chroma_444) = if any_relay {
-                                if last_encoded_len > 140_000 {
-                                    ((req_quality.saturating_sub(8)).max(68), false)
-                                } else if last_encoded_len > 95_000 {
-                                    ((req_quality.saturating_sub(4)).max(74), req_chroma_444)
+                                if last_encoded_len > 110_000 {
+                                    ((req_quality.saturating_sub(8)).max(64), false)
+                                } else if last_encoded_len > 78_000 {
+                                    ((req_quality.saturating_sub(4)).max(70), req_chroma_444)
                                 } else {
-                                    (req_quality.max(82), req_chroma_444)
+                                    (req_quality, req_chroma_444)
                                 }
-                            } else if last_encoded_len > 360_000 {
-                                ((req_quality.saturating_sub(8)).max(74), false)
-                            } else if last_encoded_len > 260_000 {
-                                ((req_quality.saturating_sub(4)).max(80), req_chroma_444)
+                            } else if last_encoded_len > 280_000 {
+                                ((req_quality.saturating_sub(8)).max(70), false)
+                            } else if last_encoded_len > 190_000 {
+                                ((req_quality.saturating_sub(4)).max(76), req_chroma_444)
                             } else {
-                                (req_quality.max(86), req_chroma_444)
+                                (req_quality, req_chroma_444)
                             };
 
                             let cap_res = crate::platform::capture_screen_frame(
@@ -284,7 +284,9 @@ impl P2PManager {
                                     }
                                 }
 
-                                // Fallback periodic host clipboard check (every ~1s / 30 frames)
+                                // Fallback periodic host clipboard check (Windows in-process Win32 API only;
+                                // avoids spawning blocking xclip/wl-paste subprocesses inside the 60 FPS capture loop on Linux)
+                                #[cfg(target_os = "windows")]
                                 if frame_id % 30 == 0 {
                                     if let Some(text) = crate::p2p::state::read_clipboard_text() {
                                         if !text.is_empty() {
@@ -486,14 +488,15 @@ impl P2PManager {
                                             };
 
                                             for sub in &subscribers {
-                                                if sub.is_direct || sub.addr != target_server_stream {
+                                                if sub.addr != target_server_stream {
                                                     send_chunk_retry(&std_sock_stream_capture, &pkt, sub.addr);
-                                                    if let Some(l_addr) = sub.lan_addr {
-                                                        if l_addr != sub.addr {
-                                                            send_chunk_retry(&std_sock_stream_capture, &pkt, l_addr);
-                                                        }
+                                                }
+                                                if let Some(l_addr) = sub.lan_addr {
+                                                    if l_addr != sub.addr {
+                                                        send_chunk_retry(&std_sock_stream_capture, &pkt, l_addr);
                                                     }
-                                                } else if !sub.relay_id.is_empty() {
+                                                }
+                                                if !sub.is_direct && !sub.relay_id.is_empty() {
                                                     let relay_pkt =
                                                         wrap_relay_packet(&sub.relay_id, &pkt);
                                                     let _ = std_sock_stream_capture
@@ -789,6 +792,8 @@ impl P2PManager {
                                                 && entry.addr != target_server
                                             {
                                                 entry.is_direct = true;
+                                            } else if !client_confirmed_direct {
+                                                entry.is_direct = false;
                                             }
                                             entry.last_seen = Instant::now();
                                             entry.target_fps = fps;

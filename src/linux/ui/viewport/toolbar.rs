@@ -15,7 +15,7 @@ use super::tabs::{
     VIEWPORT_IS_ADMIN_MODE,
 };
 use super::whiteboard::is_whiteboard_active;
-use crate::linux::ui::host_widget::{draw_host_session_banner, handle_host_banner_click};
+use crate::linux::ui::host_widget::draw_host_session_banner;
 use crate::linux::ui::theme::{
     PixelCanvas, PK_BG, PK_BTN_HOVER, PK_CARD, PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK,
     PK_INPUT_BG, PK_MUTED, PK_RED, PK_RED_TINT, PK_TEXT, TB_ACTIVE_BG, TB_ACTIVE_BORDER,
@@ -884,13 +884,13 @@ pub fn get_tab_hit_state(client_w: i32, client_x: i32, client_y: i32) -> i32 {
 
         if active_idx == 0 {
             if let Some(pill_x) = layout.home_pill_x {
-                if handle_host_banner_click(
-                    client_x as i16,
-                    client_y as i16,
+                if crate::linux::ui::host_widget::is_host_banner_disconnect_hit(
+                    client_x,
+                    client_y,
                     pill_x,
                     layout.plus_x + layout.plus_w + 8,
                 ) {
-                    return -1;
+                    return 9090;
                 }
             }
         } else {

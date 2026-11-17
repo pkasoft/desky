@@ -30,17 +30,29 @@ pub fn draw_host_session_banner(
     None
 }
 
-pub fn handle_host_banner_click(mx: i16, my: i16, right_edge_x: i32, min_left_x: i32) -> bool {
+pub fn is_host_banner_disconnect_hit(
+    mx: i32,
+    my: i32,
+    right_edge_x: i32,
+    min_left_x: i32,
+) -> bool {
     if crate::p2p::get_active_host_session_info().is_some() {
         let banner_w = 270;
         let banner_x = (right_edge_x - banner_w - 8).max(min_left_x);
-        let x = mx as i32;
-        let y = my as i32;
-        if x >= banner_x && x <= banner_x + banner_w && (6..=34).contains(&y) {
-            crate::p2p::disconnect_host_session();
-            append_status_log("Disconnected active remote client.");
-            return true;
+        if banner_x + banner_w <= right_edge_x {
+            let btn_x = banner_x + banner_w - 96;
+            if mx >= btn_x && mx <= banner_x + banner_w && (6..=34).contains(&my) {
+                return true;
+            }
         }
     }
     false
 }
+
+pub fn disconnect_active_host_client() {
+    if crate::p2p::get_active_host_session_info().is_some() {
+        crate::p2p::disconnect_host_session();
+        append_status_log("Disconnected active remote client.");
+    }
+}
+
