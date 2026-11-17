@@ -204,60 +204,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if client_y < TOOLBAR_HEIGHT {
                 let hit = get_tab_hit_state(hwnd, client_x, client_y);
 
-                if hit == 9020 {
-                    if super::toolbar::JUST_INSTALLED.load(Ordering::Relaxed) {
-                        crate::windows::ui::launcher::append_status_log("[i] Desky is installed and up to date.");
-                        let _ = InvalidateRect(Some(hwnd), None, false);
-                        return LRESULT(0);
-                    }
-
-                    match crate::windows::install::install_to_system() {
-                        Ok(dest) => {
-                            super::toolbar::JUST_INSTALLED.store(true, Ordering::Relaxed);
-                            crate::windows::ui::launcher::append_status_log(&format!(
-                                "[✓] Installed to Start Menu & Desktop: {}",
-                                dest.display()
-                            ));
-                            unsafe {
-                                use windows::core::PCWSTR;
-                                use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
-                                let msg = format!(
-                                    "Desky has been successfully installed!\n\n\
-                                    • Desktop shortcut created\n\
-                                    • Windows Start Menu integrated (search 'Desky' in Windows Search)\n\
-                                    • Installed to: {}\n\n\
-                                    You can now launch Desky anytime from your Desktop or Start Menu.",
-                                    dest.display()
-                                );
-                                let wide_msg: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-                                let wide_title: Vec<u16> = "Desky - Installed Successfully"
-                                    .encode_utf16()
-                                    .chain(std::iter::once(0))
-                                    .collect();
-                                let _ = MessageBoxW(Some(hwnd), PCWSTR(wide_msg.as_ptr()), PCWSTR(wide_title.as_ptr()), MB_OK | MB_ICONINFORMATION);
-                            }
-                        }
-                        Err(e) => {
-                            crate::windows::ui::launcher::append_status_log(&format!(
-                                "[!] Installation error: {}",
-                                e
-                            ));
-                            unsafe {
-                                use windows::core::PCWSTR;
-                                use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-                                let msg = format!("Failed to install Desky:\n\n{}", e);
-                                let wide_msg: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
-                                let wide_title: Vec<u16> = "Desky - Installation Error"
-                                    .encode_utf16()
-                                    .chain(std::iter::once(0))
-                                    .collect();
-                                let _ = MessageBoxW(Some(hwnd), PCWSTR(wide_msg.as_ptr()), PCWSTR(wide_title.as_ptr()), MB_OK | MB_ICONERROR);
-                            }
-                        }
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9011 {
+                if hit == 9011 {
                     super::settings_modal::SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
                     SHOW_SETTINGS_MODAL.store(true, Ordering::Relaxed);
                     sync_edit_target_visibility();
@@ -404,16 +351,14 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
 
             if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                if !handle_settings_click(
+                let _ = handle_settings_click(
                     hwnd,
                     client_w,
                     client_h,
                     client_x,
                     client_y,
                     TOOLBAR_HEIGHT,
-                ) {
-                    close_settings_modal(hwnd);
-                }
+                );
                 return LRESULT(0);
             }
 

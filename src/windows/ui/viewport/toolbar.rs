@@ -3,7 +3,7 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::AtomicI32;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetTextExtentPoint32W,
@@ -23,9 +23,6 @@ use super::{SessionTab, ACTIVE_REMOTE_MONITOR, ACTIVE_TAB_INDEX, REMOTE_PRIVACY_
 
 pub const TOOLBAR_HEIGHT: i32 = 40;
 pub static TAB_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
-pub static JUST_INSTALLED: AtomicBool = AtomicBool::new(false);
-pub static INSTALL_BTN_X: AtomicI32 = AtomicI32::new(0);
-pub static INSTALL_BTN_W: AtomicI32 = AtomicI32::new(0);
 
 // Modern high-visibility active vs passive button colors:
 pub const TB_ACTIVE_BG: COLORREF = COLORREF(0x00D0F5E0);     // Vibrant emerald mint fill (RGB 224, 245, 208)
@@ -362,56 +359,8 @@ pub unsafe fn draw_tab_bar(
             bottom: mode_y + tab_h,
         };
         let _ = DrawTextW(hdc, &mut pill_text, &mut pill_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-
-        // INSTALL / PIN TO START & DESKTOP BUTTON (Hit ID 9020)
-        let is_installed = crate::windows::install::is_installed();
-        let just_installed = JUST_INSTALLED.load(Ordering::Relaxed);
-        let btn_label = if just_installed {
-            "✓ Installed"
-        } else if !is_installed {
-            "📌 Pin to Start & Desktop"
-        } else {
-            "📌 Create Desktop Shortcut"
-        };
-
-        let mut inst_txt: Vec<u16> = btn_label.encode_utf16().collect();
-        let mut inst_sz = SIZE::default();
-        let _ = GetTextExtentPoint32W(hdc, &mut inst_txt, &mut inst_sz);
-        let inst_w = inst_sz.cx + 22;
-        let inst_x = pill_x - inst_w - 8;
-
-        if inst_x > (plus_x + 36) {
-            INSTALL_BTN_X.store(inst_x, Ordering::Relaxed);
-            INSTALL_BTN_W.store(inst_w, Ordering::Relaxed);
-
-            let is_inst_hover = hover_state == 9020;
-            let (i_bg, i_border, i_fg) = if just_installed {
-                (TB_ACTIVE_BG, TB_ACTIVE_BORDER, PK_GREEN_DARK)
-            } else if is_inst_hover {
-                (TB_HOVER_BG, PK_GREEN_DARK, PK_GREEN_DARK)
-            } else if !is_installed {
-                (COLORREF(0x00F0FDF4), PK_GREEN, PK_GREEN_DARK)
-            } else {
-                (TB_PASSIVE_BG, TB_PASSIVE_BORDER, TB_PASSIVE_FG)
-            };
-
-            draw_rounded_box(hdc, inst_x, mode_y, inst_w, tab_h, i_bg, i_border, 6);
-            let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
-            SetTextColor(hdc, i_fg);
-            let mut inst_rc = RECT {
-                left: inst_x,
-                top: mode_y,
-                right: inst_x + inst_w,
-                bottom: mode_y + tab_h,
-            };
-            let _ = DrawTextW(hdc, &mut inst_txt, &mut inst_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-        } else {
-            INSTALL_BTN_W.store(0, Ordering::Relaxed);
-        }
-
         (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     } else {
-        INSTALL_BTN_W.store(0, Ordering::Relaxed);
         let chat_x = settings_x - btn_w - 5;
         let admin_x = chat_x - btn_w - 5;
         let desk_x = admin_x - btn_w - 5;
@@ -609,16 +558,6 @@ pub unsafe fn draw_tab_bar(
     };
 
     let tooltip_data: Option<(&str, i32)> = match hover_state {
-        9020 => Some((
-            if JUST_INSTALLED.load(Ordering::Relaxed) {
-                "Desky is installed & integrated into Windows Start Search"
-            } else if !crate::windows::install::is_installed() {
-                "Install Desky to Start Menu, Desktop & Windows Search"
-            } else {
-                "Create shortcut on Windows Desktop"
-            },
-            INSTALL_BTN_X.load(Ordering::Relaxed) + INSTALL_BTN_W.load(Ordering::Relaxed) / 2,
-        )),
         9011 if !is_home => Some((crate::p2p::get_active_stream_codec_name(), mon1_x - 48)),
         9006 => Some((if is_settings_open { "Close Settings" } else { "Settings" }, settings_x + btn_w / 2)),
         9010 if !is_home => Some((if crate::p2p::is_chat_open() { "Close Chat" } else { "In-Session Chat" }, chat_x + btn_w / 2)),
@@ -702,15 +641,7 @@ pub fn get_tab_hit_state(hwnd: HWND, client_x: i32, client_y: i32) -> i32 {
     }
 
     let active_idx = ACTIVE_TAB_INDEX.load(std::sync::atomic::Ordering::Relaxed);
-    if active_idx == 0 {
-        let inst_w = INSTALL_BTN_W.load(Ordering::Relaxed);
-        if inst_w > 0 && client_y >= tab_y && client_y < tab_y + tab_h {
-            let inst_x = INSTALL_BTN_X.load(Ordering::Relaxed);
-            if client_x >= inst_x && client_x < inst_x + inst_w {
-                return 9020;
-            }
-        }
-    } else {
+    if active_idx > 0 {
         let chat_x = settings_x - btn_w - 5;
         let admin_x = chat_x - btn_w - 5;
         let desk_x = admin_x - btn_w - 5;
