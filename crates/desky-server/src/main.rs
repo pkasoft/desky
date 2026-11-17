@@ -1,14 +1,19 @@
+mod web;
+
 use anyhow::Result;
 use rand::Rng;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
+
+use web::{run_web_server, ServerStats, WebConfig};
 
 /// Signaling & Matchmaking messages exchanged over UDP with the VDS Matchmaker
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,18 +53,29 @@ pub enum SignalMsg {
 pub const MAGIC_DSKY: &[u8; 4] = b"DSKY";
 pub const PKT_RELAY: u8 = 0x08;
 
-struct HostEntry {
-    addr: SocketAddr,
-    last_seen: Instant,
+pub struct HostEntry {
+    pub addr: SocketAddr,
+    pub last_seen: Instant,
+}
+
+/// Record of a peer stored in SQLite
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerRecord {
+    pub desky_id: String,
+    pub machine_id: String,
+    pub created_at: i64,
+    pub last_seen: i64,
+    pub last_ip: String,
+    pub last_port: u16,
 }
 
 /// Normalizes any input ID (stripping spaces, hyphens, and non-digits)
-fn normalize_id(id: &str) -> String {
+pub fn normalize_id(id: &str) -> String {
     id.chars().filter(|c| c.is_ascii_digit()).collect()
 }
 
 /// Formats a raw 9-digit string into 3-group "XXX XXX XXX"
-fn format_id(raw_digits: &str) -> String {
+pub fn format_id(raw_digits: &str) -> String {
     if raw_digits.len() == 9 {
         format!(
             "{} {} {}",
@@ -73,12 +89,12 @@ fn format_id(raw_digits: &str) -> String {
 }
 
 /// SQLite Database Manager for peer identity persistence
-struct Database {
+pub struct Database {
     conn: Mutex<Connection>,
 }
 
 impl Database {
-    fn new(db_path: &str) -> Result<Self> {
+    pub fn new(db_path: &str) -> Result<Self> {
         let conn = Connection::open(db_path)?;
         conn.execute_batch(
             "
@@ -99,7 +115,7 @@ impl Database {
     }
 
     /// Resolves or assigns a permanent 9-digit Desky ID for a machine_id
-    fn get_or_create_peer_id(
+    pub fn get_or_create_peer_id(
         &self,
         machine_id: &str,
         cached_id: Option<&str>,
@@ -168,7 +184,7 @@ impl Database {
     }
 
     /// Updates heartbeat timestamp and public endpoint
-    fn touch_peer(&self, desky_id: &str, ip: &str, port: u16) {
+    pub fn touch_peer(&self, desky_id: &str, ip: &str, port: u16) {
         let conn = self.conn.lock().unwrap();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -178,6 +194,38 @@ impl Database {
             "UPDATE peers SET last_seen = ?1, last_ip = ?2, last_port = ?3 WHERE desky_id = ?4",
             params![now, ip, port as i64, desky_id],
         );
+    }
+
+    /// Counts total registered peers in SQLite database
+    pub fn count_total_peers(&self) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM peers", [], |r| r.get(0))?;
+        Ok(count as u64)
+    }
+
+    /// Lists most recently seen registered peers
+    pub fn list_peers(&self, limit: usize) -> Result<Vec<PeerRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT desky_id, machine_id, created_at, last_seen, last_ip, last_port FROM peers ORDER BY last_seen DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |row| {
+            Ok(PeerRecord {
+                desky_id: row.get(0)?,
+                machine_id: row.get(1)?,
+                created_at: row.get(2)?,
+                last_seen: row.get(3)?,
+                last_ip: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                last_port: row.get::<_, Option<u16>>(5)?.unwrap_or_default(),
+            })
+        })?;
+        let mut list = Vec::new();
+        for r in rows {
+            if let Ok(rec) = r {
+                list.push(rec);
+            }
+        }
+        Ok(list)
     }
 }
 
@@ -190,19 +238,52 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    // Parse port from CLI argument or environment variable, default to 21116
+    // Parse CLI arguments and environment variables
     let mut port = 21116u16;
+    let mut web_port = 21117u16;
+    let mut admin_token: Option<String> = None;
+
     let args: Vec<String> = std::env::args().collect();
-    for i in 1..args.len() {
-        if (args[i] == "--port" || args[i] == "-p") && i + 1 < args.len() {
-            if let Ok(p) = args[i + 1].parse::<u16>() {
-                port = p;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" | "-p" if i + 1 < args.len() => {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    port = p;
+                }
+                i += 1;
             }
+            "--web-port" | "-w" if i + 1 < args.len() => {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    web_port = p;
+                }
+                i += 1;
+            }
+            "--admin-token" | "-t" if i + 1 < args.len() => {
+                admin_token = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--no-web" => {
+                web_port = 0;
+            }
+            _ => {}
         }
+        i += 1;
     }
+
     if let Ok(env_port) = std::env::var("DESKY_PORT") {
         if let Ok(p) = env_port.parse::<u16>() {
             port = p;
+        }
+    }
+    if let Ok(env_web) = std::env::var("DESKY_WEB_PORT") {
+        if let Ok(p) = env_web.parse::<u16>() {
+            web_port = p;
+        }
+    }
+    if let Ok(env_token) = std::env::var("DESKY_ADMIN_TOKEN") {
+        if !env_token.trim().is_empty() {
+            admin_token = Some(env_token.trim().to_string());
         }
     }
 
@@ -212,9 +293,19 @@ async fn main() -> Result<()> {
     let bind_addr = format!("0.0.0.0:{}", port);
     let socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
 
+    let stats = Arc::new(ServerStats::new());
+
     info!("========================================================");
     info!(" ⚡ DESKY P2P MATCHMAKER & RELAY SERVER");
     info!(" Listening on: UDP {}", bind_addr);
+    if web_port > 0 {
+        info!(" Web Dashboard & Stats API: http://0.0.0.0:{}", web_port);
+        if admin_token.is_some() {
+            info!(" Authentication: Enabled via Admin Token");
+        } else {
+            info!(" Authentication: Open (Tip: pass --admin-token to secure)");
+        }
+    }
     info!(" Database: SQLite '{}'", db_path);
     info!(" Mode: Direct UDP Hole-Punching + Instant Zero-Copy Relay");
     info!(" Ready for peer matchmaking and high-speed data forwarding!");
@@ -223,6 +314,25 @@ async fn main() -> Result<()> {
     let hosts: Arc<RwLock<HashMap<String, HostEntry>>> = Arc::new(RwLock::new(HashMap::new()));
     let client_sessions: Arc<RwLock<HashMap<String, SocketAddr>>> =
         Arc::new(RwLock::new(HashMap::new()));
+
+    // Launch Commercial Web Management Dashboard & Metrics API
+    if web_port > 0 {
+        let web_cfg = WebConfig {
+            bind_ip: "0.0.0.0".into(),
+            port: web_port,
+            admin_token: admin_token.clone(),
+            udp_port: port,
+            db_path: db_path.clone(),
+        };
+        let s_stats = Arc::clone(&stats);
+        let s_hosts = Arc::clone(&hosts);
+        let s_db = Arc::clone(&db);
+        tokio::spawn(async move {
+            if let Err(e) = run_web_server(web_cfg, s_stats, s_hosts, s_db).await {
+                error!("Web server encountered an error: {:?}", e);
+            }
+        });
+    }
 
     // Background task: Purge expired host routing entries that missed heartbeats (> 60 seconds)
     let cleaner_hosts = Arc::clone(&hosts);
@@ -265,6 +375,11 @@ async fn main() -> Result<()> {
             let target_raw = String::from_utf8_lossy(&buf[5..14]);
             let norm_target = normalize_id(&target_raw);
             let payload = buf[14..len].to_vec();
+
+            stats.relayed_packets.fetch_add(1, Ordering::Relaxed);
+            stats
+                .relayed_bytes
+                .fetch_add(payload.len() as u64, Ordering::Relaxed);
 
             let socket_relay = Arc::clone(&socket);
             let hosts_relay = Arc::clone(&hosts);
@@ -317,6 +432,7 @@ async fn main() -> Result<()> {
         let hosts_clone = Arc::clone(&hosts);
         let sessions_clone = Arc::clone(&client_sessions);
         let db_clone = Arc::clone(&db);
+        let stats_clone = Arc::clone(&stats);
 
         tokio::spawn(async move {
             match msg {
@@ -326,6 +442,10 @@ async fn main() -> Result<()> {
                 } => {
                     let ip_str = src_addr.ip().to_string();
                     let port_u16 = src_addr.port();
+
+                    stats_clone
+                        .total_registrations
+                        .fetch_add(1, Ordering::Relaxed);
 
                     // Query or assign permanent 9-digit Desky ID from SQLite
                     let desky_id = match db_clone.get_or_create_peer_id(
@@ -374,6 +494,10 @@ async fn main() -> Result<()> {
                     let ip_str = src_addr.ip().to_string();
                     let port_u16 = src_addr.port();
 
+                    stats_clone
+                        .total_heartbeats
+                        .fetch_add(1, Ordering::Relaxed);
+
                     db_clone.touch_peer(&norm_id, &ip_str, port_u16);
 
                     let mut table = hosts_clone.write().await;
@@ -418,6 +542,10 @@ async fn main() -> Result<()> {
 
                     match host_target {
                         Some(host_addr) => {
+                            stats_clone
+                                .matches_brokered
+                                .fetch_add(1, Ordering::Relaxed);
+
                             info!(
                                 "⚡ [P2P MATCHMAKING] Matching Client {} <===> Host ID {} ({})",
                                 src_addr, display_id, host_addr

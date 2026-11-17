@@ -2,7 +2,7 @@
 name = "desky-server"
 version = "0.1.0"
 edition = "2024"
-authors = ["PraxiumX <pkasoft.studio@gmail.com>"]
+authors = ["pkasoft <info@pkasoft.com>"]
 description = "High-performance, zero-relay P2P rendezvous and STUN matchmaking server for Desky"
 license = "MIT OR Apache-2.0"
 
