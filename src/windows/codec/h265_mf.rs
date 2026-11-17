@@ -236,10 +236,34 @@ impl H265MfEncoder {
                 }
             }
 
+            if let Ok(attrs) = transform.GetAttributes() {
+                let low_latency = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
+                let real_time = windows::core::GUID::from_u128(0xc03eb300_0985_4228_b384_5f532f83ee18);
+                let gop_size = windows::core::GUID::from_u128(0x95f34a07_8bd9_47e8_a581_9389ac525792);
+                let rate_control = windows::core::GUID::from_u128(0x1c0608e9_370c_4710_8a58_cb6181c42423);
+                let quality_level = windows::core::GUID::from_u128(0xfcbf5771_da0e_453b_823d_733362b342fb);
+                let quality_vs_speed = windows::core::GUID::from_u128(0x98332df8_03cd_476b_89fa_7629ecd4f399);
+
+                let _ = attrs.SetUINT32(&low_latency, 1);
+                let _ = attrs.SetUINT32(&real_time, 1);
+                let _ = attrs.SetUINT32(&gop_size, (self.fps * 2).clamp(30, 120));
+                let _ = attrs.SetUINT32(&rate_control, 4); // LowDelayVBR
+                let _ = attrs.SetUINT32(&quality_level, 92);
+                let _ = attrs.SetUINT32(&quality_vs_speed, 100);
+            }
+
             let out_media: IMFMediaType = self.mf.create_media_type()?;
             out_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?;
             out_media.SetUINT32(&MF_MT_AVG_BITRATE, self.bitrate)?;
+
+            // Main Profile (1 = eAVEncH265VProfile_Main_420_8)
+            let mpeg2_profile = windows::core::GUID::from_u128(0xad76a21e_4734_4ce1_88e3_6fdc49fb25ff);
+            let _ = out_media.SetUINT32(&mpeg2_profile, 1);
+
+            // Full Range Nominal Range (2 = MFNominalRange_0_255)
+            let nominal_range = windows::core::GUID::from_u128(0x3e04f4e2_7832_43ac_9615_d134b6042b85);
+            let _ = out_media.SetUINT32(&nominal_range, 2);
 
             let frame_rate = ((self.fps as u64) << 32) | 1u64;
             out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
@@ -256,6 +280,7 @@ impl H265MfEncoder {
             in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
             in_media.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
+            let _ = in_media.SetUINT32(&nominal_range, 2);
 
             transform.SetInputType(0, &in_media, 0)?;
 
@@ -267,8 +292,23 @@ impl H265MfEncoder {
             }
 
             self.transform = Some(transform);
-            info!("H.265 MFT Encoder initialized for {}x{} @ {} FPS ({} kbps)", self.width, self.height, self.fps, self.bitrate / 1000);
+            info!("H.265 MFT Encoder initialized for {}x{} @ {} FPS ({} kbps, Main Profile)", self.width, self.height, self.fps, self.bitrate / 1000);
             Ok(())
+        }
+    }
+
+    pub fn set_bitrate(&mut self, new_bitrate: u32) {
+        let clamped = new_bitrate.clamp(1_000_000, 50_000_000);
+        if (self.bitrate as i64 - clamped as i64).abs() > 500_000 {
+            self.bitrate = clamped;
+            if let Some(ref trans) = self.transform {
+                unsafe {
+                    if let Ok(attrs) = trans.GetAttributes() {
+                        let avg_bitrate_guid = windows::Win32::Media::MediaFoundation::MF_MT_AVG_BITRATE;
+                        let _ = attrs.SetUINT32(&avg_bitrate_guid, clamped);
+                    }
+                }
+            }
         }
     }
 }
@@ -466,11 +506,14 @@ impl H265MfDecoder {
             let frame_size = ((width as u64) << 32) | (height as u64);
             let frame_rate = (60u64 << 32) | 1u64;
 
+            let nominal_range = windows::core::GUID::from_u128(0x3e04f4e2_7832_43ac_9615_d134b6042b85);
+
             let in_media: IMFMediaType = mf.create_media_type()?;
             in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_HEVC)?;
             in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            let _ = in_media.SetUINT32(&nominal_range, 2);
             transform.SetInputType(0, &in_media, 0)?;
 
             let out_media: IMFMediaType = mf.create_media_type()?;
@@ -478,6 +521,7 @@ impl H265MfDecoder {
             out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
             out_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            let _ = out_media.SetUINT32(&nominal_range, 2);
             transform.SetOutputType(0, &out_media, 0)?;
 
             let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);

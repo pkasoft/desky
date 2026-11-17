@@ -212,57 +212,67 @@ pub fn is_h264_hardware_available() -> bool {
 }
 
 /// Converts a BGRA buffer to NV12 (Y plane followed by interleaved UV plane).
+/// High-Performance Full-Range BT.601 / BT.709 Color Space Conversion (BGRA -> NV12).
+///
+/// Features:
+/// - Full Dynamic Range [0..255] (prevents 15% studio contrast clipping and washed-out text)
+/// - 2x2 Box-Filter Chroma Subsampling (eliminates color fringing on colored text and UI edges)
+/// - High throughput vectorizable loops
 pub fn bgra_to_nv12(bgra: &[u8], width: usize, height: usize, nv12: &mut [u8]) {
     let y_plane_len = width * height;
     let uv_plane_len = width * (height / 2);
-    if nv12.len() < y_plane_len + uv_plane_len {
+    if nv12.len() < y_plane_len + uv_plane_len || bgra.len() < width * height * 4 {
         return;
     }
     let (y_plane, uv_plane) = nv12.split_at_mut(y_plane_len);
 
-    // Compute Y plane
-    for y in 0..height {
-        let row_start = y * width;
-        let bgra_row_start = row_start * 4;
-        for x in 0..width {
-            let px = bgra_row_start + x * 4;
-            if px + 2 >= bgra.len() || row_start + x >= y_plane.len() {
-                break;
-            }
-            let b = bgra[px] as i32;
-            let g = bgra[px + 1] as i32;
-            let r = bgra[px + 2] as i32;
-            let y_val = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-            y_plane[row_start + x] = y_val.clamp(16, 235) as u8;
-        }
+    // Compute Y plane: full dynamic range (0..255)
+    // Formula: Y = (77 * R + 150 * G + 29 * B + 128) >> 8
+    for (bgra_px, y_out) in bgra.chunks_exact(4).take(y_plane_len).zip(y_plane.iter_mut()) {
+        let b = bgra_px[0] as i32;
+        let g = bgra_px[1] as i32;
+        let r = bgra_px[2] as i32;
+        *y_out = ((77 * r + 150 * g + 29 * b + 128) >> 8) as u8;
     }
 
-    // Compute interleaved UV plane (subsampled 2x2)
+    // Compute interleaved UV plane with 2x2 box-filter averaging
+    // U = (((-43 * R - 85 * G + 128 * B + 128) >> 8) + 128).clamp(0, 255)
+    // V = (((128 * R - 107 * G - 21 * B + 128) >> 8) + 128).clamp(0, 255)
     let half_h = height / 2;
     let half_w = width / 2;
+    let stride_bgra = width * 4;
+
     for y2 in 0..half_h {
-        let y = y2 * 2;
+        let y0 = y2 * 2;
+        let y1 = (y0 + 1).min(height - 1);
+        let row0_start = y0 * stride_bgra;
+        let row1_start = y1 * stride_bgra;
         let uv_row_start = y2 * width;
-        let bgra_row_start = y * width * 4;
+
         for x2 in 0..half_w {
-            let x = x2 * 2;
-            let px = bgra_row_start + x * 4;
+            let x0 = x2 * 2;
+            let x1 = (x0 + 1).min(width - 1);
+
+            let px00 = row0_start + x0 * 4;
+            let px01 = row0_start + x1 * 4;
+            let px10 = row1_start + x0 * 4;
+            let px11 = row1_start + x1 * 4;
+
+            let b_avg = (bgra[px00] as i32 + bgra[px01] as i32 + bgra[px10] as i32 + bgra[px11] as i32 + 2) >> 2;
+            let g_avg = (bgra[px00 + 1] as i32 + bgra[px01 + 1] as i32 + bgra[px10 + 1] as i32 + bgra[px11 + 1] as i32 + 2) >> 2;
+            let r_avg = (bgra[px00 + 2] as i32 + bgra[px01 + 2] as i32 + bgra[px10 + 2] as i32 + bgra[px11 + 2] as i32 + 2) >> 2;
+
+            let u_val = (((-43 * r_avg - 85 * g_avg + 128 * b_avg + 128) >> 8) + 128).clamp(0, 255) as u8;
+            let v_val = (((128 * r_avg - 107 * g_avg - 21 * b_avg + 128) >> 8) + 128).clamp(0, 255) as u8;
+
             let uv_idx = uv_row_start + x2 * 2;
-            if px + 2 >= bgra.len() || uv_idx + 1 >= uv_plane.len() {
-                break;
-            }
-            let b = bgra[px] as i32;
-            let g = bgra[px + 1] as i32;
-            let r = bgra[px + 2] as i32;
-            let u_val = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-            let v_val = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-            uv_plane[uv_idx] = u_val.clamp(16, 240) as u8;
-            uv_plane[uv_idx + 1] = v_val.clamp(16, 240) as u8;
+            uv_plane[uv_idx] = u_val;
+            uv_plane[uv_idx + 1] = v_val;
         }
     }
 }
 
-/// Converts an NV12 buffer (Y plane followed by interleaved UV plane) with stride and macroblock alignment to BGRA.
+/// Converts an NV12 buffer (Full Range Y plane followed by interleaved UV plane) with stride and macroblock alignment to BGRA.
 pub fn nv12_to_bgra_strided(
     nv12: &[u8],
     width: usize,
@@ -274,15 +284,11 @@ pub fn nv12_to_bgra_strided(
     let row_stride = stride.max(width);
     let bytes_per_row_yuv = row_stride * 3 / 2;
 
-    // Accurately determine the actual height of the Y plane based on buffer size and metadata.
-    // In NV12, a Y plane of H rows followed by a UV plane of H/2 rows requires exactly row_stride * H * 1.5 bytes.
     let actual_h = if bytes_per_row_yuv > 0 {
         let max_possible_h = nv12.len() / bytes_per_row_yuv;
         if nv12.len() == row_stride * height * 3 / 2 {
-            // Buffer is tightly packed for the visible image height (e.g. from ContiguousCopyTo)
             height
         } else if coded_h >= height && nv12.len() >= row_stride * coded_h * 3 / 2 {
-            // Buffer has allocated macroblock rows matching coded_h
             coded_h
         } else if max_possible_h >= height {
             max_possible_h
@@ -319,16 +325,12 @@ pub fn nv12_to_bgra_strided(
         for x in 0..width {
             let y_val = y_row[x] as i32;
             let uv_idx = (x / 2) * 2;
-            let u_val = uv_row[uv_idx] as i32;
-            let v_val = uv_row[uv_idx + 1] as i32;
+            let u_val = uv_row[uv_idx] as i32 - 128;
+            let v_val = uv_row[uv_idx + 1] as i32 - 128;
 
-            let c = y_val - 16;
-            let d = u_val - 128;
-            let e = v_val - 128;
-
-            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            let r = (y_val + ((359 * v_val + 128) >> 8)).clamp(0, 255) as u8;
+            let g = (y_val + ((-88 * u_val - 183 * v_val + 128) >> 8)).clamp(0, 255) as u8;
+            let b = (y_val + ((454 * u_val + 128) >> 8)).clamp(0, 255) as u8;
 
             let px = x * 4;
             bgra_row[px] = b;
@@ -475,16 +477,33 @@ impl H264MfEncoder {
                 let low_latency = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
                 let real_time = windows::core::GUID::from_u128(0xc03eb300_0985_4228_b384_5f532f83ee18);
                 let gop_size = windows::core::GUID::from_u128(0x95f34a07_8bd9_47e8_a581_9389ac525792);
+                let rate_control = windows::core::GUID::from_u128(0x1c0608e9_370c_4710_8a58_cb6181c42423);
+                let quality_level = windows::core::GUID::from_u128(0xfcbf5771_da0e_453b_823d_733362b342fb);
+                let cabac_enable = windows::core::GUID::from_u128(0xee68b6e0_e609_4161_9d54_96180c35b505);
+                let quality_vs_speed = windows::core::GUID::from_u128(0x98332df8_03cd_476b_89fa_7629ecd4f399);
+
                 let _ = attrs.SetUINT32(&low_latency, 1);
                 let _ = attrs.SetUINT32(&real_time, 1);
-                let _ = attrs.SetUINT32(&gop_size, 30);
+                let _ = attrs.SetUINT32(&gop_size, (self.fps * 2).clamp(30, 120));
+                let _ = attrs.SetUINT32(&rate_control, 4); // LowDelayVBR
+                let _ = attrs.SetUINT32(&quality_level, 92);
+                let _ = attrs.SetUINT32(&cabac_enable, 1);
+                let _ = attrs.SetUINT32(&quality_vs_speed, 100);
             }
 
-            // Configure Output Media Type (H.264)
+            // Configure Output Media Type (H.264 High Profile)
             let out_media: IMFMediaType = self.mf.create_media_type()?;
             out_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
             out_media.SetUINT32(&MF_MT_AVG_BITRATE, self.bitrate)?;
+
+            // High Profile (100) for 8x8 DCT transforms & sharp text rendering
+            let mpeg2_profile = windows::core::GUID::from_u128(0xad76a21e_4734_4ce1_88e3_6fdc49fb25ff);
+            let _ = out_media.SetUINT32(&mpeg2_profile, 100);
+
+            // Full Range Nominal Range (2 = MFNominalRange_0_255)
+            let nominal_range = windows::core::GUID::from_u128(0x3e04f4e2_7832_43ac_9615_d134b6042b85);
+            let _ = out_media.SetUINT32(&nominal_range, 2);
 
             let frame_rate = ((self.fps as u64) << 32) | 1u64;
             out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
@@ -495,13 +514,14 @@ impl H264MfEncoder {
 
             transform.SetOutputType(0, &out_media, 0)?;
 
-            // Configure Input Media Type (NV12)
+            // Configure Input Media Type (NV12 Full Range)
             let in_media: IMFMediaType = self.mf.create_media_type()?;
             in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
             in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
             in_media.SetUINT32(&MF_MT_INTERLACE_MODE, 2)?;
+            let _ = in_media.SetUINT32(&nominal_range, 2);
             let _ = in_media.SetUINT32(&MF_MT_DEFAULT_STRIDE, self.width);
 
             transform.SetInputType(0, &in_media, 0)?;
@@ -514,8 +534,23 @@ impl H264MfEncoder {
             }
 
             self.transform = Some(transform);
-            info!("H.264 MFT Encoder initialized for {}x{} @ {} FPS ({} kbps)", self.width, self.height, self.fps, self.bitrate / 1000);
+            info!("H.264 MFT Encoder initialized for {}x{} @ {} FPS ({} kbps, High Profile)", self.width, self.height, self.fps, self.bitrate / 1000);
             Ok(())
+        }
+    }
+
+    pub fn set_bitrate(&mut self, new_bitrate: u32) {
+        let clamped = new_bitrate.clamp(1_000_000, 50_000_000);
+        if (self.bitrate as i64 - clamped as i64).abs() > 500_000 {
+            self.bitrate = clamped;
+            if let Some(ref trans) = self.transform {
+                unsafe {
+                    if let Ok(attrs) = trans.GetAttributes() {
+                        let avg_bitrate_guid = windows::Win32::Media::MediaFoundation::MF_MT_AVG_BITRATE;
+                        let _ = attrs.SetUINT32(&avg_bitrate_guid, clamped);
+                    }
+                }
+            }
         }
     }
 }
@@ -711,11 +746,14 @@ impl H264MfDecoder {
             let frame_size = ((width as u64) << 32) | (height as u64);
             let frame_rate = (60u64 << 32) | 1u64;
 
+            let nominal_range = windows::core::GUID::from_u128(0x3e04f4e2_7832_43ac_9615_d134b6042b85);
+
             let in_media: IMFMediaType = mf.create_media_type()?;
             in_media.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
             in_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
             in_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             in_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            let _ = in_media.SetUINT32(&nominal_range, 2);
             transform.SetInputType(0, &in_media, 0)?;
 
             let out_media: IMFMediaType = mf.create_media_type()?;
@@ -723,6 +761,7 @@ impl H264MfDecoder {
             out_media.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12)?;
             out_media.SetUINT64(&MF_MT_FRAME_SIZE, frame_size)?;
             out_media.SetUINT64(&MF_MT_FRAME_RATE, frame_rate)?;
+            let _ = out_media.SetUINT32(&nominal_range, 2);
             transform.SetOutputType(0, &out_media, 0)?;
 
             let _ = transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0);

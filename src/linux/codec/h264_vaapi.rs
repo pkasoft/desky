@@ -341,6 +341,10 @@ impl H264VaapiEncoder {
             frame_index: 0,
         })
     }
+
+    pub fn set_bitrate(&mut self, new_bitrate: u32) {
+        self.bitrate = new_bitrate.clamp(500_000, 50_000_000);
+    }
 }
 
 impl Drop for H264VaapiEncoder {

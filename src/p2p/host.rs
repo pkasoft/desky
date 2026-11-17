@@ -362,7 +362,40 @@ impl P2PManager {
                                 let mut encoded_pkt_type = PKT_FRAME_CHUNK;
 
                                 let force_keyframe = frame_id % (max_fps * 2).max(30) == 1;
-                                let target_bitrate = if any_relay { 2_500_000 } else { 5_000_000 };
+
+                                // Responsive dynamic target bitrate based on subscriber quality preferences & resolution:
+                                let pixel_count = (cap_w * cap_h) as u64;
+                                let base_bitrate: u32 = if any_relay {
+                                    if req_quality >= 85 {
+                                        8_000_000 // 8 Mbps over relay
+                                    } else if req_quality >= 75 {
+                                        6_000_000 // 6 Mbps over relay
+                                    } else if req_quality >= 68 {
+                                        4_500_000 // 4.5 Mbps over relay
+                                    } else {
+                                        2_500_000 // 2.5 Mbps over relay
+                                    }
+                                } else {
+                                    // Direct P2P: full high-bandwidth desktop transmission
+                                    if req_quality >= 85 {
+                                        // Lossless / Ultra Clarity preset (20 - 40 Mbps)
+                                        let scaled = (24_000_000u64 * pixel_count / (1920 * 1080)).clamp(16_000_000, 42_000_000);
+                                        scaled as u32
+                                    } else if req_quality >= 75 {
+                                        // High Quality preset (15 - 28 Mbps)
+                                        let scaled = (16_000_000u64 * pixel_count / (1920 * 1080)).clamp(10_000_000, 28_000_000);
+                                        scaled as u32
+                                    } else if req_quality >= 68 {
+                                        // Standard Balanced preset (10 - 18 Mbps)
+                                        let scaled = (12_000_000u64 * pixel_count / (1920 * 1080)).clamp(8_000_000, 18_000_000);
+                                        scaled as u32
+                                    } else {
+                                        // Low / Data Saver preset (4 - 8 Mbps)
+                                        let scaled = (5_000_000u64 * pixel_count / (1920 * 1080)).clamp(3_000_000, 8_000_000);
+                                        scaled as u32
+                                    }
+                                };
+                                let target_bitrate = base_bitrate;
 
                                 let preferred_codec = subscribers.first().map(|s| s.codec_pref).unwrap_or(0);
 
@@ -372,6 +405,8 @@ impl P2PManager {
                                         h265_encoder = crate::platform::codec::PlatformH265Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h265_w = cap_w;
                                         h265_h = cap_h;
+                                    } else if let Some(ref mut enc) = h265_encoder {
+                                        enc.set_bitrate(target_bitrate);
                                     }
                                     if let Some(ref mut enc) = h265_encoder {
                                         if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, force_keyframe) {
@@ -392,6 +427,8 @@ impl P2PManager {
                                         h264_encoder = crate::platform::codec::PlatformH264Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h264_w = cap_w;
                                         h264_h = cap_h;
+                                    } else if let Some(ref mut enc) = h264_encoder {
+                                        enc.set_bitrate(target_bitrate);
                                     }
                                     if let Some(ref mut enc) = h264_encoder {
                                         if let Ok(frame) = enc.encode(&bgra, cap_w, cap_h, force_keyframe) {

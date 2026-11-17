@@ -38,6 +38,10 @@ impl H265VaapiEncoder {
         }
         Ok(Self { width, height, bitrate, fps })
     }
+
+    pub fn set_bitrate(&mut self, new_bitrate: u32) {
+        self.bitrate = new_bitrate;
+    }
 }
 
 impl VideoEncoder for H265VaapiEncoder {
