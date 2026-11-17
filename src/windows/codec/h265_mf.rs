@@ -426,6 +426,7 @@ pub struct H265MfDecoder {
     out_buf_size: u32,
     frame_index: u64,
     nv12_scratch: Vec<u8>,
+    last_frame: Option<Vec<u8>>,
 }
 
 unsafe impl Send for H265MfDecoder {}
@@ -442,6 +443,7 @@ impl H265MfDecoder {
             out_buf_size: 1_728_000,
             frame_index: 0,
             nv12_scratch: Vec::with_capacity(1920 * 1088 * 3 / 2),
+            last_frame: None,
         })
     }
 
@@ -700,6 +702,7 @@ impl Default for H265MfDecoder {
             out_buf_size: 1_728_000,
             frame_index: 0,
             nv12_scratch: Vec::new(),
+            last_frame: None,
         })
     }
 }
@@ -746,7 +749,12 @@ impl VideoDecoder for H265MfDecoder {
             let _ = inp_res;
 
             if let Some(bgra) = self.try_pull_output(expected_width, expected_height) {
+                self.last_frame = Some(bgra.clone());
                 return Ok(bgra);
+            }
+
+            if let Some(ref last) = self.last_frame {
+                return Ok(last.clone());
             }
 
             Err(anyhow!("H.265 decoder needs more input"))

@@ -1,4 +1,5 @@
 pub mod admin_rpc;
+pub mod buffer;
 pub mod chat;
 pub mod clipboard;
 pub mod client;
@@ -8,6 +9,11 @@ pub mod radar;
 pub mod state;
 pub mod voice;
 
+#[allow(unused_imports)]
+pub use buffer::{
+    get_buffer_reassembly_limits, get_client_buffer_size_mb, get_client_buffer_tier,
+    set_client_buffer_size_mb, set_client_buffer_tier, CLIENT_BUFFER_SIZE_MB,
+};
 #[allow(unused_imports)]
 pub use chat::{
     clear_chat_history, get_chat_messages, get_unread_count, is_chat_open, mark_chat_read,

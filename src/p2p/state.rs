@@ -454,6 +454,7 @@ pub fn get_active_stream_codec_badge() -> &'static str {
 // 3 = Force Motion-JPEG (4:4:4 SIMD)
 pub static CLIENT_CODEC_PREF: AtomicU8 = AtomicU8::new(0);
 
+
 pub fn get_client_codec_pref() -> u8 {
     let pref = CLIENT_CODEC_PREF.load(Ordering::Relaxed);
     #[cfg(target_os = "linux")]

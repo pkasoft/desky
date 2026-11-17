@@ -173,7 +173,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut logged_direct_peer = false;
             let mut host_contacted = false;
             let mut buf = vec![0u8; 65536];
-            let mut partial_frames: Vec<PartialFrame> = Vec::with_capacity(4);
+            let mut partial_frames: Vec<PartialFrame> = Vec::with_capacity(32);
             let mut highest_decoded_frame: u32 = 0;
 
             let session_start = Instant::now();
@@ -353,11 +353,6 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     abr_frames_dropped = 0;
                 }
 
-                // Periodic memory compaction & working set trim every 15s to keep RAM tight (<50 MB)
-                if last_relay_hb.elapsed() >= Duration::from_secs(15) {
-                    #[cfg(target_os = "windows")]
-                    crate::windows::trim_process_working_set();
-                }
 
                 // Keep VDS relay return route alive if direct P2P hasn't been established yet
                 if !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(6) {
@@ -767,8 +762,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             {
                                                 idx
                                             } else {
-                                                partial_frames.retain(|f| f.created_at.elapsed() < Duration::from_millis(180));
-                                                if partial_frames.len() >= 4 {
+                                                let (max_partial_frames, max_frame_age) = crate::p2p::get_buffer_reassembly_limits();
+                                                partial_frames.retain(|f| f.created_at.elapsed() < max_frame_age);
+                                                if partial_frames.len() >= max_partial_frames {
                                                     let oldest = partial_frames.remove(0);
                                                     if oldest.received_count < oldest.total_chunks {
                                                         abr_frames_dropped += 1;
@@ -1048,8 +1044,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     _ = tokio::time::sleep(Duration::from_millis(20)) => {}
                 }
 
+                let (_, max_frame_age) = crate::p2p::get_buffer_reassembly_limits();
                 partial_frames.retain(|pf| {
-                    if pf.created_at.elapsed() > Duration::from_millis(550) {
+                    if pf.created_at.elapsed() > max_frame_age {
                         abr_frames_dropped += 1;
                         false
                     } else {

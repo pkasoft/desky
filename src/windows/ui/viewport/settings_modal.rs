@@ -557,8 +557,8 @@ unsafe fn draw_category_display(
     f_sub: windows::Win32::Graphics::Gdi::HFONT,
     f_btn: windows::Win32::Graphics::Gdi::HFONT,
 ) {
-    let card_h = 118;
-    let gap = 14;
+    let card_h = 108;
+    let gap = 10;
 
     // 1. Display Scaling Mode
     let c0_y = cy;
@@ -577,9 +577,9 @@ unsafe fn draw_category_display(
     draw_segment_pills(
         hdc,
         cx + 18,
-        c0_y + 68,
+        c0_y + 64,
         cw - 36,
-        36,
+        34,
         &opts0,
         mode as usize,
         300,
@@ -612,9 +612,9 @@ unsafe fn draw_category_display(
     draw_segment_pills(
         hdc,
         cx + 18,
-        c1_y + 68,
+        c1_y + 64,
         cw - 36,
-        36,
+        34,
         &opts1,
         q_idx,
         310,
@@ -622,12 +622,40 @@ unsafe fn draw_category_display(
         f_btn,
     );
 
-    // 3. Target Framerate Limit
+    // 3. Stream Buffer & Memory Cache
     let c2_y = c1_y + card_h + gap;
     draw_card_frame(
         hdc,
         cx,
         c2_y,
+        cw,
+        card_h,
+        "Stream Buffer & Memory Cache",
+        "Allocates dedicated RAM buffer for packet jitter smoothing & zero-black-screen decoding",
+        f_title,
+        f_sub,
+    );
+    let buf_tier = crate::p2p::get_client_buffer_tier();
+    let opts_buf = ["128 MB (Light)", "256 MB (Standard)", "512 MB (High Stability)", "1024 MB (Max Buffer)"];
+    draw_segment_pills(
+        hdc,
+        cx + 18,
+        c2_y + 64,
+        cw - 36,
+        34,
+        &opts_buf,
+        buf_tier,
+        320,
+        hover_id,
+        f_btn,
+    );
+
+    // 4. Target Framerate Limit
+    let c3_y = c2_y + card_h + gap;
+    draw_card_frame(
+        hdc,
+        cx,
+        c3_y,
         cw,
         card_h,
         "Target Framerate Limit",
@@ -645,22 +673,22 @@ unsafe fn draw_category_display(
     draw_segment_pills(
         hdc,
         cx + 18,
-        c2_y + 68,
+        c3_y + 64,
         cw - 36,
-        36,
+        34,
         &opts2,
         fps_idx,
-        320,
+        330,
         hover_id,
         f_btn,
     );
 
-    // 4. Remote Mouse Cursor
-    let c3_y = c2_y + card_h + gap;
+    // 5. Remote Mouse Cursor
+    let c4_y = c3_y + card_h + gap;
     draw_card_frame(
         hdc,
         cx,
-        c3_y,
+        c4_y,
         cw,
         card_h,
         "Remote Cursor Visibility",
@@ -674,12 +702,12 @@ unsafe fn draw_category_display(
     draw_segment_pills(
         hdc,
         cx + 18,
-        c3_y + 68,
+        c4_y + 64,
         cw - 36,
-        36,
+        34,
         &opts3,
         cur_idx,
-        330,
+        340,
         hover_id,
         f_btn,
     );
@@ -1507,11 +1535,11 @@ pub fn handle_settings_mousemove(
                 }
             }
             1 => {
-                let card_h = 118;
-                let gap = 14;
+                let card_h = 108;
+                let gap = 10;
                 let check_segs = |cy: i32, count: usize, base: i32| -> Option<i32> {
-                    let y = cy + 68;
-                    let h = 36;
+                    let y = cy + 64;
+                    let h = 34;
                     let w = content_w - 36;
                     let x = content_x + 18;
                     let seg_w = (w - (count as i32 - 1) * 6) / count as i32;
@@ -1529,9 +1557,11 @@ pub fn handle_settings_mousemove(
                     new_hover = h;
                 } else if let Some(h) = check_segs(body_y + card_h + gap, 4, 310) {
                     new_hover = h;
-                } else if let Some(h) = check_segs(body_y + (card_h + gap) * 2, 3, 320) {
+                } else if let Some(h) = check_segs(body_y + (card_h + gap) * 2, 4, 320) {
                     new_hover = h;
-                } else if let Some(h) = check_segs(body_y + (card_h + gap) * 3, 2, 330) {
+                } else if let Some(h) = check_segs(body_y + (card_h + gap) * 3, 3, 330) {
+                    new_hover = h;
+                } else if let Some(h) = check_segs(body_y + (card_h + gap) * 4, 2, 340) {
                     new_hover = h;
                 }
             }
@@ -1784,11 +1814,11 @@ pub fn handle_settings_click(
             }
         }
         1 => {
-            let card_h = 118;
-            let gap = 14;
+            let card_h = 108;
+            let gap = 10;
             let hit_segs = |cy: i32, count: usize| -> Option<usize> {
-                let y = cy + 68;
-                let h = 36;
+                let y = cy + 64;
+                let h = 34;
                 let w = content_w - 36;
                 let x = content_x + 18;
                 let seg_w = (w - (count as i32 - 1) * 6) / count as i32;
@@ -1825,8 +1855,16 @@ pub fn handle_settings_click(
                 }
                 return true;
             }
+            // Stream Buffer & Memory Cache
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 2, 4) {
+                crate::p2p::set_client_buffer_tier(idx);
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
             // FPS
-            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 2, 3) {
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 3, 3) {
                 let fps_val = match idx {
                     0 => 30,
                     2 => 120,
@@ -1841,7 +1879,7 @@ pub fn handle_settings_click(
                 return true;
             }
             // Cursor
-            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 3, 2) {
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 4, 2) {
                 let cur_val = idx == 0;
                 CAPTURE_CURSOR.store(cur_val, Ordering::Relaxed);
                 let fps = TARGET_FPS.load(Ordering::Relaxed);
