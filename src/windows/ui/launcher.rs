@@ -1406,45 +1406,53 @@ pub unsafe fn handle_homepage_connect(hwnd: HWND) {
         String::new()
     };
 
-    let digits: String = raw_input.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        append_status_log("[!] Please enter a 9-digit remote Desky ID (e.g. 800 258 756)");
-        let _ = InvalidateRect(Some(hwnd), None, false);
-        return;
-    }
+    let raw_trimmed = raw_input.trim();
+    let direct_addr_opt = crate::p2p::parse_direct_target(raw_trimmed);
 
-    let local_id_digits: String = {
-        let guard = LOCAL_DESKY_ID.lock().unwrap();
-        let s = if !guard.is_empty() {
-            guard.clone()
-        } else {
-            crate::identity::load_or_create_identity()
-                .desky_id
-                .unwrap_or_default()
-        };
-        s.chars().filter(|c| c.is_ascii_digit()).collect()
-    };
-
-    if !local_id_digits.is_empty() && digits == local_id_digits {
-        append_status_log("[!] That is THIS computer's own ID! Please enter the remote computer's ID.");
-        let _ = InvalidateRect(Some(hwnd), None, false);
-        return;
-    }
-
-    let target_display = if digits.len() == 9 {
-        format!("{} {} {}", &digits[0..3], &digits[3..6], &digits[6..9])
+    let (target_connect_id, target_display) = if let Some(addr) = direct_addr_opt {
+        (format!("{}", addr), format!("Direct IP: {}", addr))
     } else {
-        digits.clone()
+        let digits: String = raw_input.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            append_status_log("[!] Please enter a 9-digit remote Desky ID or IP (e.g. 800 258 756 or 192.168.1.50:21117)");
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            return;
+        }
+
+        let local_id_digits: String = {
+            let guard = LOCAL_DESKY_ID.lock().unwrap();
+            let s = if !guard.is_empty() {
+                guard.clone()
+            } else {
+                crate::identity::load_or_create_identity()
+                    .desky_id
+                    .unwrap_or_default()
+            };
+            s.chars().filter(|c| c.is_ascii_digit()).collect()
+        };
+
+        if !local_id_digits.is_empty() && digits == local_id_digits {
+            append_status_log("[!] That is THIS computer's own ID! Please enter the remote computer's ID.");
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            return;
+        }
+
+        let disp = if digits.len() == 9 {
+            format!("{} {} {}", &digits[0..3], &digits[3..6], &digits[6..9])
+        } else {
+            digits.clone()
+        };
+        (disp.clone(), disp)
     };
 
-    info!("Initiating P2P session to remote Desky ID: {}", target_display);
+    info!("Initiating P2P session to remote target: {}", target_display);
     crate::identity::save_recent_session(&target_display);
     append_status_log(&format!(
-        "Requesting session with Remote Desky ID: {}...",
+        "Requesting session with Remote Target: {}...",
         target_display
     ));
 
-    super::viewport::spawn_or_add_tab_viewport(&target_display);
+    super::viewport::spawn_or_add_tab_viewport(&target_connect_id);
 }
 
 /// Tracks hover state for Homepage buttons and changes cursor

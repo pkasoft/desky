@@ -38,8 +38,18 @@ struct PartialFrame {
 
 /// Starts a remote desktop client session connecting to `target_id`
 pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: bool) {
-    let norm_target = normalize_id(target_id);
-    let display_target = if norm_target.len() == 9 {
+    let direct_target_addr = crate::p2p::parse_direct_target(target_id);
+    let is_serverless = direct_target_addr.is_some() || crate::p2p::is_serverless_mode();
+    let force_relay = crate::p2p::is_force_server_relay();
+
+    let norm_target = if direct_target_addr.is_some() {
+        "DIRECT_IP".to_string()
+    } else {
+        normalize_id(target_id)
+    };
+    let display_target = if let Some(addr) = direct_target_addr {
+        format!("Direct IP: {}", addr)
+    } else if norm_target.len() == 9 {
         format!(
             "{} {} {}",
             &norm_target[0..3],
@@ -139,39 +149,48 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let local_port = socket.local_addr().ok().map(|a| a.port()).unwrap_or(0);
             let my_lan_bytes = encode_lan_endpoint_port(local_port, server_addr);
 
-            // 0. Register this client socket's session relay ID on VDS for instant Host -> Client return routing
             let relay_hb = SignalMsg::Heartbeat {
                 desky_id: my_relay_id.clone(),
             };
-            if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
-                let _ = socket.send_to(&hb_bytes, server_addr).await;
-            }
-
-            // 1. Fire LAN discovery broadcast on port 21117 (subnet broadcast + global broadcast + localhost)
             let mut lan_pkt = Vec::with_capacity(14);
             if norm_target.len() == 9 {
                 lan_pkt.extend_from_slice(MAGIC_DSKY);
                 lan_pkt.push(PKT_LAN_DISCOVERY);
                 lan_pkt.extend_from_slice(norm_target.as_bytes());
+            }
+            let req = SignalMsg::ConnectRequest {
+                target_id: display_target.clone(),
+            };
+
+            // 0. Register this client socket's session relay ID on VDS for instant Host -> Client return routing
+            if !is_serverless {
+                if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
+                    let _ = socket.send_to(&hb_bytes, server_addr).await;
+                }
+            }
+
+            // 1. Fire LAN discovery broadcast on port 21117 (subnet broadcast + global broadcast + localhost)
+            if !is_serverless && !lan_pkt.is_empty() {
                 for bcast in &lan_bcast_targets {
                     let _ = socket.send_to(&lan_pkt, *bcast).await;
                 }
             }
 
-            // 2. Send ConnectRequest to VDS Matchmaker
-            let req = SignalMsg::ConnectRequest {
-                target_id: display_target.clone(),
-            };
-            if let Ok(req_bytes) = serde_json::to_vec(&req) {
-                let _ = socket.send_to(&req_bytes, server_addr).await;
+            // 2. Send ConnectRequest to VDS Matchmaker (skip in serverless direct IP mode)
+            if !is_serverless {
+                if let Ok(req_bytes) = serde_json::to_vec(&req) {
+                    let _ = socket.send_to(&req_bytes, server_addr).await;
+                }
+            } else if let Some(direct_addr) = direct_target_addr {
+                info!("🚀 [SERVERLESS] Direct P2P session initiated to {}", direct_addr);
             }
 
-            let mut peer_addr: Option<SocketAddr> = None;
+            let mut peer_addr: Option<SocketAddr> = direct_target_addr;
             let mut peer_lan_addr: Option<SocketAddr> = None;
             let mut last_punched_peer: Option<SocketAddr> = None;
-            let mut is_direct_peer = false;
+            let mut is_direct_peer = direct_target_addr.is_some() && !force_relay;
             let mut logged_direct_peer = false;
-            let mut host_contacted = false;
+            let mut host_contacted = direct_target_addr.is_some();
             let mut buf = vec![0u8; 65536];
             let mut partial_frames: Vec<PartialFrame> = Vec::with_capacity(32);
             let mut highest_decoded_frame: u32 = 0;
@@ -354,16 +373,17 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 }
 
 
-                // Keep VDS relay return route alive if direct P2P hasn't been established yet
-                if !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(6) {
+                // Keep VDS relay return route alive if direct P2P hasn't been established yet (skip in serverless)
+                if !is_serverless && !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(6) {
                     if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
                         let _ = socket.send_to(&hb_bytes, server_addr).await;
                     }
                     last_relay_hb = Instant::now();
                 }
 
-                // Retry ConnectRequest + LAN discovery every 1.2s until host responds
+                // Retry ConnectRequest + LAN discovery every 1.2s until host responds (skip in serverless)
                 if !host_contacted
+                    && !is_serverless
                     && last_matchmaker_retry.elapsed() >= Duration::from_millis(1200)
                 {
                     if session_start.elapsed() > Duration::from_secs(90) {
@@ -467,33 +487,35 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         hello.push(get_client_codec_pref());
                     }
 
-                    // 1. Direct WAN / Active Peer path
-                    if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
-                            let _ = socket.send_to(&hello, p_addr).await;
-                            if !is_direct_peer {
-                                let base_ip = p_addr.ip();
-                                let base_port = p_addr.port();
-                                for offset in 1..=6u16 {
-                                    if let Some(p) = base_port.checked_add(offset) {
-                                        let _ = socket
-                                            .send_to(&hello, SocketAddr::new(base_ip, p))
-                                            .await;
+                    // 1. Direct WAN / Active Peer path (only if not forced relay)
+                    if !force_relay {
+                        if let Some(p_addr) = peer_addr {
+                            if p_addr != server_addr {
+                                let _ = socket.send_to(&hello, p_addr).await;
+                                if !is_direct_peer {
+                                    let base_ip = p_addr.ip();
+                                    let base_port = p_addr.port();
+                                    for offset in 1..=6u16 {
+                                        if let Some(p) = base_port.checked_add(offset) {
+                                            let _ = socket
+                                                .send_to(&hello, SocketAddr::new(base_ip, p))
+                                                .await;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
 
-                    // 2. Direct LAN path (always punch/hello directly if LAN endpoint is known!)
-                    if let Some(l_addr) = peer_lan_addr {
-                        if peer_addr != Some(l_addr) {
-                            let _ = socket.send_to(&hello, l_addr).await;
+                        // 2. Direct LAN path (always punch/hello directly if LAN endpoint is known!)
+                        if let Some(l_addr) = peer_lan_addr {
+                            if peer_addr != Some(l_addr) {
+                                let _ = socket.send_to(&hello, l_addr).await;
+                            }
                         }
                     }
 
-                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified or during reconnect)
-                    if !is_direct_peer || is_reconnecting {
+                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified or during reconnect or in force_relay)
+                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                         let relay_hello = wrap_relay_packet(&norm_target, &hello);
                         let _ = socket.send_to(&relay_hello, server_addr).await;
                     }
@@ -510,11 +532,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     pkt.extend_from_slice(text_bytes);
 
                     if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
+                        if p_addr != server_addr && !force_relay {
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer || is_reconnecting {
+                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -525,11 +547,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 while file_sent < 16 {
                     if let Some(pkt) = pop_outgoing_file_packet() {
                         if let Some(p_addr) = peer_addr {
-                            if p_addr != server_addr {
+                            if p_addr != server_addr && !force_relay {
                                 let _ = socket.send_to(&pkt, p_addr).await;
                             }
                         }
-                        if !is_direct_peer || is_reconnecting {
+                        if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                             let relay = wrap_relay_packet(&norm_target, &pkt);
                             let _ = socket.send_to(&relay, server_addr).await;
                         }
@@ -545,11 +567,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 // Flush outgoing admin packets (Silent Admin mode)
                 while let Some(pkt) = pop_outgoing_admin_packet() {
                     if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
+                        if p_addr != server_addr && !force_relay {
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer || is_reconnecting {
+                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -558,11 +580,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 // Flush outgoing intercom voice packets (Technician -> Host)
                 while let Some(pkt) = pop_outgoing_voice_packet() {
                     if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
+                        if p_addr != server_addr && !force_relay {
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer || is_reconnecting {
+                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -577,11 +599,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     auth_pkt.push(PKT_UNATTENDED_AUTH);
                     auth_pkt.extend_from_slice(hash.as_bytes());
                     if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
+                        if p_addr != server_addr && !force_relay {
                             let _ = socket.send_to(&auth_pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer || is_reconnecting {
+                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                         let relay = wrap_relay_packet(&norm_target, &auth_pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -596,11 +618,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     pkt.push(PKT_CHAT_MESSAGE);
                     pkt.extend_from_slice(msg_bytes);
                     if let Some(p_addr) = peer_addr {
-                        if p_addr != server_addr {
+                        if p_addr != server_addr && !force_relay {
                             let _ = socket.send_to(&pkt, p_addr).await;
                         }
                     }
-                    if !is_direct_peer || is_reconnecting {
+                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                         let relay = wrap_relay_packet(&norm_target, &pkt);
                         let _ = socket.send_to(&relay, server_addr).await;
                     }
@@ -623,16 +645,16 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             pkt.extend_from_slice(&ev_bytes);
 
                             if let Some(p_addr) = peer_addr {
-                                if p_addr != server_addr {
+                                if p_addr != server_addr && !force_relay {
                                     let _ = socket.send_to(&pkt, p_addr).await;
                                 }
                             }
                             if let Some(l_addr) = peer_lan_addr {
-                                if peer_addr != Some(l_addr) {
+                                if peer_addr != Some(l_addr) && !force_relay {
                                     let _ = socket.send_to(&pkt, l_addr).await;
                                 }
                             }
-                            if !is_direct_peer || is_reconnecting {
+                            if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
                                 let relay_input = wrap_relay_packet(&norm_target, &pkt);
                                 let _ = socket.send_to(&relay_input, server_addr).await;
                             }
@@ -657,7 +679,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                     info!("🔄 Session re-established successfully with {}!", display_target);
                                     set_session_status(SessionStatus::Connected(display_target.clone()));
                                 }
-                                if from_addr != server_addr {
+                                if from_addr != server_addr && !force_relay {
                                     is_direct_peer = true;
                                     peer_addr = Some(from_addr);
                                     if !logged_direct_peer {
@@ -969,30 +991,32 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                     display_target, resolved
                                                 );
 
-                                                // Continuous hole-puncher probe task
-                                                let sock_punch = Arc::clone(&socket);
-                                                let my_punch_id = my_id_padded.clone();
-                                                tokio::spawn(async move {
-                                                    let punch = SignalMsg::Punch {
-                                                        from_id: my_punch_id,
-                                                    };
-                                                    if let Ok(pbytes) = serde_json::to_vec(&punch) {
-                                                        let base_ip = resolved.ip();
-                                                        let base_port = resolved.port();
-                                                        for _ in 0..35 {
-                                                            let _ = sock_punch.send_to(&pbytes, resolved).await;
-                                                            for offset in -6i32..=6i32 {
-                                                                let target_p = (base_port as i32 + offset) as u16;
-                                                                if target_p > 1024 {
-                                                                    let _ = sock_punch
-                                                                        .send_to(&pbytes, SocketAddr::new(base_ip, target_p))
-                                                                        .await;
+                                                // Continuous hole-puncher probe task (skip if forced server relay)
+                                                if !force_relay {
+                                                    let sock_punch = Arc::clone(&socket);
+                                                    let my_punch_id = my_id_padded.clone();
+                                                    tokio::spawn(async move {
+                                                        let punch = SignalMsg::Punch {
+                                                            from_id: my_punch_id,
+                                                        };
+                                                        if let Ok(pbytes) = serde_json::to_vec(&punch) {
+                                                            let base_ip = resolved.ip();
+                                                            let base_port = resolved.port();
+                                                            for _ in 0..35 {
+                                                                let _ = sock_punch.send_to(&pbytes, resolved).await;
+                                                                for offset in -6i32..=6i32 {
+                                                                    let target_p = (base_port as i32 + offset) as u16;
+                                                                    if target_p > 1024 {
+                                                                        let _ = sock_punch
+                                                                            .send_to(&pbytes, SocketAddr::new(base_ip, target_p))
+                                                                            .await;
+                                                                    }
                                                                 }
+                                                                tokio::time::sleep(Duration::from_millis(50)).await;
                                                             }
-                                                            tokio::time::sleep(Duration::from_millis(50)).await;
                                                         }
-                                                    }
-                                                });
+                                                    });
+                                                }
 
                                                 // Immediately fire a ClientHello so the host sees the request right away
                                                 last_hello = Instant::now() - Duration::from_secs(10);
@@ -1010,7 +1034,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                         break;
                                     }
                                     SignalMsg::Punch { .. } | SignalMsg::PunchAck => {
-                                        if from_addr != server_addr {
+                                        if from_addr != server_addr && !force_relay {
                                             peer_addr = Some(from_addr);
                                             is_direct_peer = true;
                                             host_contacted = true;

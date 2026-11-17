@@ -1296,19 +1296,52 @@ unsafe fn draw_category_about(
         );
     }
 
-    // 2. About pkasoft Desky Card
-    let c1_y = c0_y + c0_h + 16;
-    let c1_h = 138;
-    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 10);
+    // 2. Network Tunneling & Routing Mode Card
+    let c1_y = c0_y + c0_h + 14;
+    let c1_h = 108;
+    draw_card_frame(
+        hdc,
+        cx,
+        c1_y,
+        cw,
+        c1_h,
+        "Network Tunneling & Routing Mode",
+        "Choose whether traffic routes direct P2P, via encrypted server tunnel, or offline serverless",
+        f_title,
+        f_sub,
+    );
+    let r_mode = crate::p2p::get_routing_mode();
+    let opts_routing = [
+        "Smart P2P (Auto)",
+        "Direct Server Tunnel",
+        "Serverless (LAN / IP)",
+    ];
+    draw_segment_pills(
+        hdc,
+        cx + 18,
+        c1_y + 64,
+        cw - 36,
+        34,
+        &opts_routing,
+        r_mode as usize,
+        820,
+        hover_id,
+        f_btn,
+    );
+
+    // 3. About pkasoft Desky Card
+    let c2_y = c1_y + c1_h + 14;
+    let c2_h = 138;
+    draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 10);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
     let mut a_txt: Vec<u16> = "Desky Remote Desktop".encode_utf16().collect();
     let mut a_rc = RECT {
         left: cx + 18,
-        top: c1_y + 16,
+        top: c2_y + 16,
         right: cx + cw - 18,
-        bottom: c1_y + 38,
+        bottom: c2_y + 38,
     };
     let _ = DrawTextW(
         hdc,
@@ -1325,9 +1358,9 @@ unsafe fn draw_category_about(
     ).encode_utf16().collect();
     let mut desc_rc = RECT {
         left: cx + 18,
-        top: c1_y + 40,
+        top: c2_y + 40,
         right: cx + cw - 18,
-        bottom: c1_y + 84,
+        bottom: c2_y + 84,
     };
     let _ = DrawTextW(hdc, &mut desc_txt, &mut desc_rc, DT_LEFT | DT_WORDBREAK | DT_NOPREFIX);
 
@@ -1335,7 +1368,7 @@ unsafe fn draw_category_about(
     let btn_w = 160;
     let btn_h = 34;
     let btn_x = cx + 18;
-    let btn_y = c1_y + 92;
+    let btn_y = c2_y + 92;
     let is_web_hover = hover_id == 801;
     let (bg, border, fg) = if is_web_hover {
         (PK_GREEN_DARK, PK_GREEN_DARK, COLORREF(0x00FFFFFF))
@@ -1637,11 +1670,29 @@ pub fn handle_settings_mousemove(
             }
             6 => {
                 let c0_h = 176;
-                let c1_y = body_y + c0_h + 16;
+                let c1_y = body_y + c0_h + 14;
+                let c1_h = 108;
+                let c2_y = c1_y + c1_h + 14;
+
+                let y = c1_y + 64;
+                let h = 34;
+                let w = content_w - 36;
+                let x = content_x + 18;
+                let seg_w = (w - 2 * 6) / 3;
+                if client_y >= y && client_y <= y + h {
+                    for s in 0..3 {
+                        let sx = x + (s as i32) * (seg_w + 6);
+                        if client_x >= sx && client_x <= sx + seg_w {
+                            new_hover = 820 + s as i32;
+                            break;
+                        }
+                    }
+                }
+
                 let btn_w = 160;
                 let btn_h = 34;
                 let btn_x = content_x + 18;
-                let btn_y = c1_y + 92;
+                let btn_y = c2_y + 92;
                 if client_x >= btn_x
                     && client_x <= btn_x + btn_w
                     && client_y >= btn_y
@@ -2031,11 +2082,33 @@ pub fn handle_settings_click(
         }
         6 => {
             let c0_h = 176;
-            let c1_y = body_y + c0_h + 16;
+            let c1_y = body_y + c0_h + 14;
+            let c1_h = 108;
+            let c2_y = c1_y + c1_h + 14;
+
+            // Hit test routing mode segments
+            let y = c1_y + 64;
+            let h = 34;
+            let w = content_w - 36;
+            let x = content_x + 18;
+            let seg_w = (w - 2 * 6) / 3;
+            if client_y >= y && client_y <= y + h {
+                for s in 0..3 {
+                    let sx = x + (s as i32) * (seg_w + 6);
+                    if client_x >= sx && client_x <= sx + seg_w {
+                        crate::p2p::set_routing_mode(s as u8);
+                        unsafe {
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                        return true;
+                    }
+                }
+            }
+
             let btn_w = 160;
             let btn_h = 34;
             let btn_x = content_x + 18;
-            let btn_y = c1_y + 92;
+            let btn_y = c2_y + 92;
             if client_x >= btn_x
                 && client_x <= btn_x + btn_w
                 && client_y >= btn_y

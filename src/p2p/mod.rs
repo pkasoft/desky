@@ -6,6 +6,7 @@ pub mod client;
 pub mod file_transfer;
 pub mod host;
 pub mod radar;
+pub mod routing;
 pub mod state;
 pub mod voice;
 
@@ -13,6 +14,11 @@ pub mod voice;
 pub use buffer::{
     get_buffer_reassembly_limits, get_client_buffer_size_mb, get_client_buffer_tier,
     set_client_buffer_size_mb, set_client_buffer_tier, CLIENT_BUFFER_SIZE_MB,
+};
+#[allow(unused_imports)]
+pub use routing::{
+    get_routing_mode, is_force_server_relay, is_serverless_mode, parse_direct_target,
+    set_routing_mode, ROUTING_MODE,
 };
 #[allow(unused_imports)]
 pub use chat::{

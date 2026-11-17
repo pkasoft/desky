@@ -73,10 +73,14 @@ impl P2PManager {
                     let _ = builder.set_broadcast(true);
                     let _ = builder.set_send_buffer_size(4 * 1024 * 1024);
                     let _ = builder.set_recv_buffer_size(4 * 1024 * 1024);
+                    let _ = builder.set_reuse_address(true);
+                    let primary_addr: std::net::SocketAddr = "0.0.0.0:21117".parse().unwrap();
                     let any_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
-                    if let Err(e) = builder.bind(&any_addr.into()) {
-                        error!("Failed to bind local UDP socket for P2P: {:?}", e);
-                        return;
+                    if builder.bind(&primary_addr.into()).is_err() {
+                        if let Err(e) = builder.bind(&any_addr.into()) {
+                            error!("Failed to bind local UDP socket for P2P: {:?}", e);
+                            return;
+                        }
                     }
                     let s: std::net::UdpSocket = builder.into();
                     s
