@@ -462,7 +462,15 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     hello.extend_from_slice(my_relay_id.as_bytes());
                     hello.extend_from_slice(&my_lan_bytes);
                     hello.push(if is_direct_peer { 1u8 } else { 0u8 });
-                    hello.push(get_client_codec_pref());
+                    #[cfg(target_os = "linux")]
+                    {
+                        let _ = get_client_codec_pref();
+                        hello.push(3u8);
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        hello.push(get_client_codec_pref());
+                    }
 
                     // 1. Direct WAN / Active Peer path
                     if let Some(p_addr) = peer_addr {

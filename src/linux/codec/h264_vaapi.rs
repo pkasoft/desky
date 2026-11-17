@@ -178,11 +178,12 @@ fn open_drm_render_node() -> Option<File> {
 /// Probes whether Linux GPU hardware acceleration for H.264 is available
 pub fn is_h264_hardware_available() -> bool {
     if VA_HW_CHECKED.load(Ordering::Relaxed) {
-        return VA_H264_HW_ENCODER.load(Ordering::Relaxed);
+        return VA_H264_HW_ENCODER.load(Ordering::Relaxed)
+            || VA_H264_HW_DECODER.load(Ordering::Relaxed);
     }
 
     probe_vaapi();
-    VA_H264_HW_ENCODER.load(Ordering::Relaxed)
+    VA_H264_HW_ENCODER.load(Ordering::Relaxed) || VA_H264_HW_DECODER.load(Ordering::Relaxed)
 }
 
 /// Probes whether Linux GPU hardware decoding for H.264 is available
@@ -195,7 +196,23 @@ pub fn is_h264_decode_hardware_available() -> bool {
     VA_H264_HW_DECODER.load(Ordering::Relaxed)
 }
 
+fn ensure_local_vaapi_driver_path() {
+    if std::env::var_os("LIBVA_DRIVERS_PATH").is_none() {
+        let local_dri = crate::linux::get_identity_dir().join("dri");
+        if local_dri.exists() {
+            let mut paths = local_dri.to_string_lossy().to_string();
+            if std::path::Path::new("/usr/lib/x86_64-linux-gnu/dri").exists() {
+                paths.push_str(":/usr/lib/x86_64-linux-gnu/dri");
+            }
+            unsafe {
+                std::env::set_var("LIBVA_DRIVERS_PATH", paths);
+            }
+        }
+    }
+}
+
 fn probe_vaapi() {
+    ensure_local_vaapi_driver_path();
     let sym = match get_vaapi() {
         Some(s) => s,
         None => {

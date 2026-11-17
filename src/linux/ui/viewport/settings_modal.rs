@@ -360,7 +360,7 @@ pub fn draw_fullscreen_settings_view(
         }
         2 => {
             // Hardware Codecs Category
-            canvas.draw_rounded_box(content_x, body_y, content_w, 150, PK_CARD, PK_CARD_BORDER, 8);
+            canvas.draw_rounded_box(content_x, body_y, content_w, 162, PK_CARD, PK_CARD_BORDER, 8);
             canvas.draw_text(
                 content_x + 18,
                 body_y + 16,
@@ -370,21 +370,35 @@ pub fn draw_fullscreen_settings_view(
                 PK_TEXT,
                 Some(content_w - 36),
             );
+            let h264_avail = crate::linux::codec::is_h264_hardware_available();
+            let h265_avail = crate::linux::codec::is_h265_hardware_available();
+            let vaapi_status = if h264_avail {
+                "VA-API H.264 Hardware Acceleration: READY (/dev/dri/renderD128)"
+            } else {
+                "VA-API H.264 Hardware Acceleration: Unavailable (Fallback: SIMD 4:4:4)"
+            };
             canvas.draw_text(
                 content_x + 18,
-                body_y + 42,
+                body_y + 40,
+                vaapi_status,
+                13.0,
+                true,
+                if h264_avail { PK_GREEN_DARK } else { PK_MUTED },
+                Some(content_w - 36),
+            );
+            canvas.draw_text(
+                content_x + 18,
+                body_y + 60,
                 &format!(
                     "Active Stream Codec: {}",
                     crate::p2p::get_active_stream_codec_name()
                 ),
-                13.5,
-                true,
-                PK_GREEN_DARK,
+                13.0,
+                false,
+                PK_TEXT,
                 Some(content_w - 36),
             );
 
-            let h264_avail = crate::linux::codec::is_h264_decode_hardware_available();
-            let h265_avail = crate::linux::codec::is_h265_hardware_available();
             let pref = crate::p2p::get_client_codec_pref();
 
             let c_opts = [
@@ -396,7 +410,7 @@ pub fn draw_fullscreen_settings_view(
             let cw = (content_w - 36 - 24) / 4;
             for (idx, (cv, label, supported)) in c_opts.iter().enumerate() {
                 let bx = content_x + 18 + (idx as i32) * (cw + 8);
-                let by = body_y + 82;
+                let by = body_y + 94;
                 let active = pref == *cv;
                 let (bg, bd, fg) = if !*supported {
                     (PK_BG, PK_CARD_BORDER, PK_MUTED)
@@ -665,8 +679,8 @@ pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, top_y:
     } else if active_cat == 2 {
         // Codec selection
         let cw = (content_w - 36 - 24) / 4;
-        let by = body_y + 82;
-        if client_y >= by && client_y <= by + 42 {
+        let by = body_y + 94;
+        if client_y >= by - 12 && client_y <= by + 48 {
             for idx in 0..4 {
                 let bx = content_x + 18 + (idx as i32) * (cw + 8);
                 if client_x >= bx && client_x <= bx + cw {

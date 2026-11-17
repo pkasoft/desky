@@ -212,6 +212,7 @@ pub fn run_viewport_x11_window() -> Result<()> {
     )?;
 
     conn.map_window(win_id)?;
+    let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
     conn.flush()?;
 
     info!(
@@ -234,6 +235,7 @@ pub fn run_viewport_x11_window() -> Result<()> {
                 win_id,
                 &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
             );
+            let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
             let _ = conn.flush();
         }
 
@@ -255,6 +257,7 @@ pub fn run_viewport_x11_window() -> Result<()> {
                     }
                 }
                 x11rb::protocol::Event::ButtonPress(bp) => {
+                    let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
                     dispatch_mouse_button(win_w, win_h, bp.detail, bp.event_x, bp.event_y, true);
                     NEEDS_REDRAW.store(true, Ordering::Relaxed);
                 }

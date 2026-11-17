@@ -14,7 +14,8 @@ use x11rb::protocol::xproto::*;
 use x11rb::wrapper::ConnectionExt as _;
 
 use super::remote_desk_edit::{
-    format_desky_id_display, get_remote_id_raw, set_remote_id_raw,
+    clear_remote_id_raw, format_desky_id_display, get_remote_id_raw, set_remote_id_raw,
+    INPUT_SELECT_ALL,
 };
 use super::theme::{
     copy_to_clipboard, PixelCanvas, PK_BG, PK_CARD, PK_CARD_BORDER, PK_CONSOLE_BG, PK_GREEN,
@@ -545,13 +546,19 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
         canvas.draw_text_vcenter(
             l.input_box_x + 14,
             l.input_box_y + 20,
-            l.input_box_w - 28,
+            l.input_box_w - 64,
             l.input_box_h - 22,
             &formatted,
             26.0 * l.font_scale,
             true,
             PK_TEXT,
         );
+        // Clear [×] button on right side of input box
+        let clr_sz = 28;
+        let clr_x = l.input_box_x + l.input_box_w - clr_sz - 10;
+        let clr_y = l.input_box_y + (l.input_box_h - clr_sz) / 2;
+        canvas.draw_rounded_box(clr_x, clr_y, clr_sz, clr_sz, PK_CARD, PK_CARD_BORDER, 6);
+        canvas.draw_icon_x(clr_x + 8, clr_y + 8, 12, PK_MUTED);
     }
 
     canvas.draw_rounded_box(
@@ -1014,6 +1021,21 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     {
         let target = get_remote_id_raw();
         handle_homepage_connect(&target);
+        return true;
+    }
+
+    // 3b. Remote Desk Input Box & Clear [×] button clicked
+    if x >= l.input_box_x
+        && x <= l.input_box_x + l.input_box_w
+        && y >= l.input_box_y
+        && y <= l.input_box_y + l.input_box_h
+    {
+        let clr_x = l.input_box_x + l.input_box_w - 42;
+        if x >= clr_x && !get_remote_id_raw().is_empty() {
+            clear_remote_id_raw();
+        } else {
+            INPUT_SELECT_ALL.store(false, Ordering::Relaxed);
+        }
         return true;
     }
 
