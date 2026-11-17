@@ -25,22 +25,27 @@
     input:focus { border-color: var(--accent); }
     button { width: 100%; padding: 12px; background: var(--accent); color: #000; font-weight: 700; border: none; border-radius: 8px; cursor: pointer; transition: opacity 0.2s; font-size: 14px; }
     button:hover { opacity: 0.9; }
+    .security-note { font-size: 11px; color: var(--muted); margin-top: 18px; display: flex; align-items: center; justify-content: center; gap: 6px; }
   </style>
 </head>
 <body>
   <div class="card">
     <div class="logo">
-      <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+      <svg width="28" height="28" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>
     </div>
     <h1>Desky Commercial Server</h1>
-    <p>This matchmaking & relay node is protected by an admin access password.</p>
+    <p>Protected Relay &amp; Matchmaker Node<br><span style="color: var(--accent); font-family: monospace;">desky-admin.pkasoft.com</span></p>
     {% if let Some(err) = error_message %}
       <div class="error-msg">{{ err }}</div>
     {% endif %}
-    <form onsubmit="event.preventDefault(); window.location.href = '/?token=' + encodeURIComponent(document.getElementById('token').value);">
-      <input type="password" id="token" placeholder="Enter Admin Password / Token" required autofocus>
+    <form method="POST" action="/login">
+      <input type="password" name="token" id="token" placeholder="Enter Admin Password / Token" required autofocus autocomplete="current-password">
       <button type="submit">Unlock Dashboard</button>
     </form>
+    <div class="security-note">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+      Secure HTTP-only Session Cookie (No URL Leakage)
+    </div>
   </div>
 </body>
 </html>
