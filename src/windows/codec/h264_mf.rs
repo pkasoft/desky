@@ -272,15 +272,25 @@ pub fn nv12_to_bgra_strided(
     bgra: &mut [u8],
 ) {
     let row_stride = stride.max(width);
-    // H.264 macroblock alignment is 16 pixels.
-    // If coded_h is not explicitly larger than height, detect if nv12 buffer length accommodates macroblock height
-    let mb_h = ((height + 15) / 16) * 16;
-    let actual_h = if coded_h >= mb_h {
-        coded_h
-    } else if nv12.len() >= row_stride * mb_h * 3 / 2 {
-        mb_h
+    let bytes_per_row_yuv = row_stride * 3 / 2;
+
+    // Accurately determine the actual height of the Y plane based on buffer size and metadata.
+    // In NV12, a Y plane of H rows followed by a UV plane of H/2 rows requires exactly row_stride * H * 1.5 bytes.
+    let actual_h = if bytes_per_row_yuv > 0 {
+        let max_possible_h = nv12.len() / bytes_per_row_yuv;
+        if nv12.len() == row_stride * height * 3 / 2 {
+            // Buffer is tightly packed for the visible image height (e.g. from ContiguousCopyTo)
+            height
+        } else if coded_h >= height && nv12.len() >= row_stride * coded_h * 3 / 2 {
+            // Buffer has allocated macroblock rows matching coded_h
+            coded_h
+        } else if max_possible_h >= height {
+            max_possible_h
+        } else {
+            height
+        }
     } else {
-        height.max(coded_h)
+        height
     };
 
     let y_plane_len = row_stride * actual_h;
@@ -295,18 +305,22 @@ pub fn nv12_to_bgra_strided(
         let uv_row_start = (y / 2) * row_stride;
         let bgra_row_start = y * width * 4;
 
+        if y_row_start + width > y_plane.len()
+            || uv_row_start + width > uv_plane.len()
+            || bgra_row_start + width * 4 > bgra.len()
+        {
+            break;
+        }
+
+        let y_row = &y_plane[y_row_start..y_row_start + width];
+        let uv_row = &uv_plane[uv_row_start..uv_row_start + width];
+        let bgra_row = &mut bgra[bgra_row_start..bgra_row_start + width * 4];
+
         for x in 0..width {
-            let y_idx = y_row_start + x;
-            let uv_idx = uv_row_start + (x / 2) * 2;
-            let px = bgra_row_start + x * 4;
-
-            if y_idx >= y_plane.len() || uv_idx + 1 >= uv_plane.len() || px + 3 >= bgra.len() {
-                break;
-            }
-
-            let y_val = y_plane[y_idx] as i32;
-            let u_val = uv_plane[uv_idx] as i32;
-            let v_val = uv_plane[uv_idx + 1] as i32;
+            let y_val = y_row[x] as i32;
+            let uv_idx = (x / 2) * 2;
+            let u_val = uv_row[uv_idx] as i32;
+            let v_val = uv_row[uv_idx + 1] as i32;
 
             let c = y_val - 16;
             let d = u_val - 128;
@@ -316,10 +330,11 @@ pub fn nv12_to_bgra_strided(
             let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
             let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
 
-            bgra[px] = b;
-            bgra[px + 1] = g;
-            bgra[px + 2] = r;
-            bgra[px + 3] = 255;
+            let px = x * 4;
+            bgra_row[px] = b;
+            bgra_row[px + 1] = g;
+            bgra_row[px + 2] = r;
+            bgra_row[px + 3] = 255;
         }
     }
 }
@@ -810,12 +825,24 @@ impl H264MfDecoder {
                     let mut bgra = vec![0u8; bgra_len];
 
                     if let Some(ref nv12) = packed_nv12 {
+                        // ContiguousCopyTo outputs unpadded rows (stride = expected_width).
+                        // Determine the exact dimensions of the contiguous buffer.
+                        let (contig_stride, contig_h) = if nv12.len() == (expected_width * expected_height * 3 / 2) as usize {
+                            (expected_width as usize, expected_height as usize)
+                        } else if dec_w as usize > expected_width as usize && nv12.len() == (dec_w * dec_h * 3 / 2) as usize {
+                            (dec_w as usize, dec_h as usize)
+                        } else if dec_h as usize > expected_height as usize && nv12.len() == (expected_width * dec_h * 3 / 2) as usize {
+                            (expected_width as usize, dec_h as usize)
+                        } else {
+                            (expected_width as usize, expected_height as usize)
+                        };
+
                         nv12_to_bgra_strided(
                             nv12,
                             expected_width as usize,
                             expected_height as usize,
-                            dec_w as usize,
-                            dec_h as usize,
+                            contig_stride,
+                            contig_h,
                             &mut bgra,
                         );
                         self.last_frame = Some(bgra.clone());
@@ -914,6 +941,81 @@ impl VideoDecoder for H264MfDecoder {
 
             Err(anyhow!("H.264 decoder needs more input"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_nv12_conversion_1080p_chroma_alignment() {
+        let width = 1920usize;
+        let height = 1080usize; // 1080 % 16 != 0 -> mb_h is 1088
+        let mut bgra = vec![255u8; width * height * 4]; // Pure white background
+
+        // Draw a green box at y in [200..250], x in [200..300]
+        for y in 200..250 {
+            for x in 200..300 {
+                let px = (y * width + x) * 4;
+                bgra[px] = 0;       // B
+                bgra[px + 1] = 255; // G
+                bgra[px + 2] = 0;   // R
+                bgra[px + 3] = 255; // A
+            }
+        }
+
+        // Draw a dark/black text-like line at y = 100, x in [100..500]
+        for y in 100..105 {
+            for x in 100..500 {
+                let px = (y * width + x) * 4;
+                bgra[px] = 0;
+                bgra[px + 1] = 0;
+                bgra[px + 2] = 0;
+                bgra[px + 3] = 255;
+            }
+        }
+
+        let nv12_len = width * height * 3 / 2;
+        let mut nv12 = vec![0u8; nv12_len];
+        bgra_to_nv12(&bgra, width, height, &mut nv12);
+
+        let mut decoded_bgra = vec![0u8; width * height * 4];
+        // Test decoding with contiguous stride and coded_h = 1088 (MFT decoder output type)
+        nv12_to_bgra_strided(&nv12, width, height, width, 1088, &mut decoded_bgra);
+
+        // Verify that 16 pixels below the black line (y = 116..121), there is NO green ghosting (it should be white)
+        for y in 116..121 {
+            for x in 100..500 {
+                let px = (y * width + x) * 4;
+                let b = decoded_bgra[px];
+                let g = decoded_bgra[px + 1];
+                let r = decoded_bgra[px + 2];
+                // In white background, r, g, b are all close to 255 (BT.601 quantization gives ~235-255)
+                assert!(r > 200, "Expected white background, got R={}", r);
+                assert!(g > 200, "Expected white background, got G={}", g);
+                assert!(b > 200, "Expected white background, got B={}", b);
+                assert!((r as i32 - g as i32).abs() < 25, "Ghosting detected at y={}: R={} G={} B={}", y, r, g, b);
+            }
+        }
+
+        // Verify that inside the green box (y = 220, x = 250), it is green
+        let px_green = (220 * width + 250) * 4;
+        let b = decoded_bgra[px_green];
+        let g = decoded_bgra[px_green + 1];
+        let r = decoded_bgra[px_green + 2];
+        assert!(g > 180, "Green box should be green, got G={}", g);
+        assert!(r < 60, "Green box should have low red, got R={}", r);
+        assert!(b < 60, "Green box should have low blue, got B={}", b);
+
+        // Verify that 16 pixels below the green box (y = 266), it is WHITE, NOT GREEN!
+        let px_below_green = (266 * width + 250) * 4;
+        let b_bg = decoded_bgra[px_below_green];
+        let g_bg = decoded_bgra[px_below_green + 1];
+        let r_bg = decoded_bgra[px_below_green + 2];
+        assert!(r_bg > 200, "Chroma ghosting below green box! Got R={}", r_bg);
+        assert!(g_bg > 200, "Chroma ghosting below green box! Got G={}", g_bg);
+        assert!(b_bg > 200, "Chroma ghosting below green box! Got B={}", b_bg);
     }
 }
 

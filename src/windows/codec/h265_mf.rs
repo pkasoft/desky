@@ -580,12 +580,24 @@ impl H265MfDecoder {
                     let mut bgra = vec![0u8; bgra_len];
 
                     if let Some(ref nv12) = packed_nv12 {
+                        // ContiguousCopyTo outputs unpadded rows (stride = expected_width).
+                        // Determine the exact dimensions of the contiguous buffer.
+                        let (contig_stride, contig_h) = if nv12.len() == (expected_width * expected_height * 3 / 2) as usize {
+                            (expected_width as usize, expected_height as usize)
+                        } else if dec_w as usize > expected_width as usize && nv12.len() == (dec_w * dec_h * 3 / 2) as usize {
+                            (dec_w as usize, dec_h as usize)
+                        } else if dec_h as usize > expected_height as usize && nv12.len() == (expected_width * dec_h * 3 / 2) as usize {
+                            (expected_width as usize, dec_h as usize)
+                        } else {
+                            (expected_width as usize, expected_height as usize)
+                        };
+
                         nv12_to_bgra_strided(
                             nv12,
                             expected_width as usize,
                             expected_height as usize,
-                            dec_w as usize,
-                            dec_h as usize,
+                            contig_stride,
+                            contig_h,
                             &mut bgra,
                         );
                         self.last_frame = Some(bgra.clone());
