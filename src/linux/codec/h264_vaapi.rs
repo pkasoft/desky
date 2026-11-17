@@ -297,6 +297,7 @@ fn probe_vaapi() {
 }
 
 /// Linux Hardware-Accelerated VA-API H.264 Video Encoder
+#[allow(dead_code)]
 pub struct H264VaapiEncoder {
     pub width: u32,
     pub height: u32,

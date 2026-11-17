@@ -1,5 +1,7 @@
 //! Linux Platform Clipboard Operations
 
+#![allow(dead_code)]
+
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

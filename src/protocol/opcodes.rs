@@ -4,6 +4,8 @@
 //! packet types, header identifiers, and opcode constants exchanged between
 //! Desky peers and relay nodes.
 
+#![allow(dead_code)]
+
 /// Standard 4-byte header identifying all authentic Desky UDP packets
 pub const MAGIC_DSKY: &[u8; 4] = b"DSKY";
 

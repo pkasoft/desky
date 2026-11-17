@@ -24,6 +24,7 @@ pub fn is_h265_hardware_available() -> bool {
 }
 
 /// Linux VA-API Hardware H.265 / HEVC Video Encoder
+#[allow(dead_code)]
 pub struct H265VaapiEncoder {
     pub width: u32,
     pub height: u32,

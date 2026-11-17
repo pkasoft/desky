@@ -3,6 +3,8 @@
 //! Synchronizes clipboard text changes between Host and Client peers with
 //! FNV-1a hash deduplication and UDP payload protection.
 
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;

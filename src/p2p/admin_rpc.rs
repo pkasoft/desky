@@ -3,6 +3,8 @@
 //! Encapsulates administrative RPC queries (Process list, Services, System Stats,
 //! Session termination) with chunking and packet reassembly.
 
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

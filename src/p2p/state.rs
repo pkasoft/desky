@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use crate::protocol::InputEvent;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

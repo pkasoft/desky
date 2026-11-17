@@ -3,6 +3,8 @@
 //! Manages reliable bidirectional file transfer with progress tracking,
 //! chunk micro-pacing, and selective ARQ NACK retransmission.
 
+#![allow(dead_code)]
+
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;

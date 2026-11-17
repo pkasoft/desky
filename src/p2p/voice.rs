@@ -2,6 +2,8 @@
 //!
 //! Manages low-latency audio capture streaming and packet queuing between peers.
 
+#![allow(dead_code)]
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;

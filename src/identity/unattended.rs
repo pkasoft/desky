@@ -2,6 +2,8 @@
 //! Provides salted SHA-256 credential hashing, master password management,
 //! and cryptographic challenge-response verification for headless/unattended connections.
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

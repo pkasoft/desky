@@ -2,6 +2,8 @@
 //! Stores remembered remote workstations with friendly aliases, group tags,
 //! and optional encrypted/saved credentials for instant 1-click connection.
 
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;

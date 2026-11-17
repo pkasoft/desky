@@ -1,6 +1,8 @@
 //! In-Session Peer-to-Peer Encrypted Chat Engine
 //! Manages bidirectional text messages, unread notification badges, and chat history.
 
+#![allow(dead_code)]
+
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
