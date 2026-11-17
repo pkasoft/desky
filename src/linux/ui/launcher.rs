@@ -1,7 +1,8 @@
 //! Main X11 Launcher Window, Responsive Homepage & Application Lifecycle
 //!
-//! Mirrors `src/windows/ui/launcher.rs` by exposing responsive Home page rendering,
-//! 4-card layout calculations, LAN radar scanning, incoming approval modals, and lifecycle.
+//! Mirrors `src/windows/ui/launcher.rs` 1:1 by exposing responsive Home page rendering,
+//! 4-card layout calculations, LAN radar scanning, incoming approval modals, and lifecycle
+//! using anti-aliased TrueType fonts (`PixelCanvas`).
 
 use anyhow::Result;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -16,8 +17,8 @@ use super::remote_desk_edit::{
     format_desky_id_display, get_remote_id_raw, set_remote_id_raw,
 };
 use super::theme::{
-    copy_to_clipboard, create_color_gc, draw_str, fill_bordered_box, open_best_font, X11Palette,
-    PK_BG, PK_CARD, PK_GREEN, PK_RED, PK_TEXT,
+    copy_to_clipboard, PixelCanvas, PK_BG, PK_CARD, PK_CARD_BORDER, PK_CONSOLE_BG, PK_GREEN,
+    PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
 };
 use super::viewport::{run_viewport_x11_window, spawn_or_add_tab_viewport};
 
@@ -40,7 +41,7 @@ pub fn set_assigned_desky_id(id: &str) {
         *guard = id.to_string();
     }
     info!("✅ [LINUX HOST] Permanent Desky ID Approved: {}", id);
-    append_status_log(&format!("Online | Permanent ID: {}", id));
+    append_status_log(&format!("Online | ID: {}", id));
     println!("\n\x1b[1;32m==================================================\x1b[0m");
     println!("\x1b[1;32m  DESKY LINUX ONLINE | pkasoft.com\x1b[0m");
     println!("\x1b[1;37m  YOUR PERMANENT DESKY ID: \x1b[1;32m{}\x1b[0m", id);
@@ -95,9 +96,11 @@ pub fn trigger_lan_radar_scan() {
         if peers.is_empty() {
             append_status_log("LAN Radar: Scan complete - No devices found on local subnet.");
         } else {
+            let names: Vec<String> = peers.iter().take(3).map(|p| p.hostname.clone()).collect();
             append_status_log(&format!(
-                "LAN Radar: Scan complete - Found {} device(s) on local network.",
-                peers.len()
+                "LAN Radar: Found {} device(s) ({})",
+                peers.len(),
+                names.join(", ")
             ));
         }
         request_main_redraw();
@@ -106,104 +109,167 @@ pub fn trigger_lan_radar_scan() {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ResponsiveLayout {
-    pub c1_x: i16,
-    pub c2_x: i16,
-    pub card_y: i16,
-    pub card_w: u16,
-    pub card_h: u16,
+    pub c1_x: i32,
+    pub c2_x: i32,
+    pub card_w: i32,
+    pub card_h: i32,
+    pub card_y: i32,
 
-    pub id_box_x: i16,
-    pub id_box_y: i16,
-    pub id_box_w: u16,
-    pub id_box_h: u16,
+    pub id_box_x: i32,
+    pub id_box_y: i32,
+    pub id_box_w: i32,
+    pub id_box_h: i32,
 
-    pub copy_btn_x: i16,
-    pub copy_btn_y: i16,
-    pub copy_btn_w: u16,
-    pub copy_btn_h: u16,
+    pub copy_btn_x: i32,
+    pub copy_btn_y: i32,
+    pub copy_btn_w: i32,
+    pub copy_btn_h: i32,
 
-    pub input_box_x: i16,
-    pub input_box_y: i16,
-    pub input_box_w: u16,
-    pub input_box_h: u16,
+    pub input_box_x: i32,
+    pub input_box_y: i32,
+    pub input_box_w: i32,
+    pub input_box_h: i32,
 
-    pub conn_btn_x: i16,
-    pub conn_btn_y: i16,
-    pub conn_btn_w: u16,
-    pub conn_btn_h: u16,
+    pub conn_btn_x: i32,
+    pub conn_btn_y: i32,
+    pub conn_btn_w: i32,
+    pub conn_btn_h: i32,
 
-    pub col1_x: i16,
-    pub col2_x: i16,
-    pub col_y: i16,
-    pub col_w: u16,
-    pub col_h: u16,
+    pub col1_x: i32,
+    pub col2_x: i32,
+    pub col_w: i32,
+    pub col_h: i32,
+    pub col_y: i32,
+
+    pub font_scale: f32,
 }
 
-pub fn get_responsive_layout(win_w: u16, win_h: u16) -> ResponsiveLayout {
-    let w = win_w.max(640) as i32;
-    let h = win_h.max(480) as i32;
-    let top_offset = 42;
-    let margin = 20;
-    let gap = 16;
-    let card_w = ((w - 2 * margin - gap) / 2).max(260);
-    let card_h = 205;
+/// Computes responsive layout geometry identical to Windows `get_responsive_layout`
+pub fn get_responsive_layout(w: i32, h: i32) -> ResponsiveLayout {
+    let top_offset = 40;
+    let margin = 24;
+    let gap = 18;
+    let card_w = (w - (2 * margin) - gap).max(220) / 2;
+
+    let scale_w = w as f32 / 1024.0;
+    let scale_h = h as f32 / 680.0;
+    let font_scale = (scale_w.min(scale_h)).clamp(1.0, 1.35);
+
+    let card_h = ((188.0 * font_scale) as i32)
+        .min((h - top_offset - 200) / 2)
+        .max(178);
     let card_y = top_offset + 14;
 
     let c1_x = margin;
     let c2_x = margin + card_w + gap;
 
-    let id_box_x = c1_x + 16;
-    let id_box_y = card_y + 46;
-    let id_box_w = card_w - 32;
-    let id_box_h = 68;
+    // Card 1: This Desk elements
+    let id_box_x = c1_x + 18;
+    let id_box_y = card_y + (46.0 * font_scale) as i32;
+    let id_box_w = card_w - 36;
+    let id_box_h = (64.0 * font_scale) as i32;
 
-    let copy_btn_x = c1_x + 16;
-    let copy_btn_y = id_box_y + id_box_h + 14;
-    let copy_btn_w = card_w - 32;
-    let copy_btn_h = 42;
+    let copy_btn_x = c1_x + 18;
+    let copy_btn_y = id_box_y + id_box_h + (14.0 * font_scale) as i32;
+    let copy_btn_w = card_w - 36;
+    let copy_btn_h = (42.0 * font_scale) as i32;
 
-    let input_box_x = c2_x + 16;
-    let input_box_y = card_y + 46;
-    let input_box_w = card_w - 32;
-    let input_box_h = 68;
+    // Card 2: Remote Desk elements
+    let input_box_x = c2_x + 18;
+    let input_box_y = card_y + (46.0 * font_scale) as i32;
+    let input_box_w = card_w - 36;
+    let input_box_h = (64.0 * font_scale) as i32;
 
-    let conn_btn_x = c2_x + 16;
+    let conn_btn_x = c2_x + 18;
     let conn_btn_y = copy_btn_y;
-    let conn_btn_w = card_w - 32;
-    let conn_btn_h = 42;
+    let conn_btn_w = card_w - 36;
+    let conn_btn_h = copy_btn_h;
 
+    // Bottom Section: Split into 2 columns (Recent Sessions & Security/Server Logs)
     let col_y = card_y + card_h + 16;
     let col_w = card_w;
-    let col_h = (h - col_y - margin).max(160);
+    let col_h = (h - col_y - margin).max(140);
+    let col1_x = c1_x;
+    let col2_x = c2_x;
 
     ResponsiveLayout {
-        c1_x: c1_x as i16,
-        c2_x: c2_x as i16,
-        card_y: card_y as i16,
-        card_w: card_w as u16,
-        card_h: card_h as u16,
-        id_box_x: id_box_x as i16,
-        id_box_y: id_box_y as i16,
-        id_box_w: id_box_w as u16,
-        id_box_h: id_box_h as u16,
-        copy_btn_x: copy_btn_x as i16,
-        copy_btn_y: copy_btn_y as i16,
-        copy_btn_w: copy_btn_w as u16,
-        copy_btn_h: copy_btn_h as u16,
-        input_box_x: input_box_x as i16,
-        input_box_y: input_box_y as i16,
-        input_box_w: input_box_w as u16,
-        input_box_h: input_box_h as u16,
-        conn_btn_x: conn_btn_x as i16,
-        conn_btn_y: conn_btn_y as i16,
-        conn_btn_w: conn_btn_w as u16,
-        conn_btn_h: conn_btn_h as u16,
-        col1_x: c1_x as i16,
-        col2_x: c2_x as i16,
-        col_y: col_y as i16,
-        col_w: col_w as u16,
-        col_h: col_h as u16,
+        c1_x,
+        c2_x,
+        card_w,
+        card_h,
+        card_y,
+        id_box_x,
+        id_box_y,
+        id_box_w,
+        id_box_h,
+        copy_btn_x,
+        copy_btn_y,
+        copy_btn_w,
+        copy_btn_h,
+        input_box_x,
+        input_box_y,
+        input_box_w,
+        input_box_h,
+        conn_btn_x,
+        conn_btn_y,
+        conn_btn_w,
+        conn_btn_h,
+        col1_x,
+        col2_x,
+        col_w,
+        col_h,
+        col_y,
+        font_scale,
     }
+}
+
+pub fn get_card3_tab_rects(
+    col1_x: i32,
+    col_y: i32,
+    font_scale: f32,
+    contacts_count: usize,
+    peers_count: usize,
+) -> (
+    (i32, i32, i32, i32, String),
+    (i32, i32, i32, i32, String),
+    (i32, i32, i32, i32, String),
+) {
+    let tab_h = (25.0 * font_scale) as i32;
+    let tab_y = col_y + 14;
+
+    let t0_text = "RECENTS".to_string();
+    let t0_w = (84.0 * font_scale) as i32;
+    let t0_x = col1_x + 18;
+
+    let t1_text = if contacts_count > 0 {
+        format!("CONTACTS ({})", contacts_count)
+    } else {
+        "CONTACTS".to_string()
+    };
+    let t1_w = if contacts_count > 0 {
+        (114.0 * font_scale) as i32
+    } else {
+        (90.0 * font_scale) as i32
+    };
+    let t1_x = t0_x + t0_w + 6;
+
+    let t2_text = if peers_count > 0 {
+        format!("LAN RADAR ({})", peers_count)
+    } else {
+        "LAN RADAR".to_string()
+    };
+    let t2_w = if peers_count > 0 {
+        (118.0 * font_scale) as i32
+    } else {
+        (96.0 * font_scale) as i32
+    };
+    let t2_x = t1_x + t1_w + 6;
+
+    (
+        (t0_x, tab_y, t0_w, tab_h, t0_text),
+        (t1_x, tab_y, t1_w, tab_h, t1_text),
+        (t2_x, tab_y, t2_w, tab_h, t2_text),
+    )
 }
 
 /// Validates entered remote Desky ID and initiates connection in the unified window
@@ -247,148 +313,126 @@ pub fn handle_homepage_connect(raw_target: &str) {
     spawn_or_add_tab_viewport(&target_display);
 }
 
-/// Renders the complete pkasoft.com White Theme Homepage onto the X11 drawable
-pub fn draw_homepage_view<C: Connection>(
-    conn: &C,
-    canvas: Drawable,
-    win_w: u16,
-    win_h: u16,
-    pal: &X11Palette,
-) {
-    let l = get_responsive_layout(win_w, win_h);
+/// Renders the complete pkasoft.com White Theme Homepage onto the `PixelCanvas`
+pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
+    let w = win_w as i32;
+    let h = win_h as i32;
+    let l = get_responsive_layout(w, h);
+
+    let f_badge = 12.0 * l.font_scale;
+    let f_id = 30.0 * l.font_scale;
+    let f_btn = 15.0 * l.font_scale;
+    let f_console = 12.5 * l.font_scale;
 
     // 1. Pending Incoming Connection Approval Modal
     if let Some(req) = crate::p2p::get_pending_approval() {
-        let mw = 480u16;
-        let mh = 230u16;
-        let mx = ((win_w.saturating_sub(mw)) / 2) as i16;
-        let my = ((win_h.saturating_sub(mh)) / 2).max(60) as i16;
+        let mw = (w - 64).clamp(440, 620);
+        let mh = 280;
+        let mx = (w - mw) / 2;
+        let my = ((h - mh) / 2).max(64);
 
-        fill_bordered_box(conn, canvas, mx, my, mw, mh, pal.gc_card, pal.gc_green);
-        fill_bordered_box(
-            conn,
-            canvas,
-            mx + 110,
-            my + 18,
-            260,
-            26,
-            pal.gc_green_tint,
-            pal.gc_green,
-        );
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_green_on_tint,
-            mx + 128,
-            my + 36,
+        canvas.draw_rounded_box(mx, my, mw, mh, PK_CARD, PK_GREEN, 12);
+
+        let badge_w = 260;
+        let badge_x = mx + (mw - badge_w) / 2;
+        canvas.draw_rounded_box(badge_x, my + 22, badge_w, 28, PK_GREEN_TINT, PK_GREEN, 14);
+        canvas.draw_text_centered(
+            badge_x,
+            my + 22,
+            badge_w,
+            28,
             "INCOMING CONNECTION REQUEST",
+            f_badge,
+            true,
+            PK_GREEN_DARK,
         );
 
-        let id_line = format!("Remote Client ID: {}", req.client_id);
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_large_dark_on_card,
-            mx + 95,
-            my + 84,
-            &id_line,
+        canvas.draw_text_centered(
+            mx + 20,
+            my + 66,
+            mw - 40,
+            48,
+            &format!("ID: {}", req.client_id),
+            f_id,
+            true,
+            PK_TEXT,
         );
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_muted_on_card,
-            mx + 52,
-            my + 118,
-            "This remote peer is requesting permission to view and control your desktop.",
-        );
-
-        fill_bordered_box(
-            conn,
-            canvas,
-            mx + 30,
-            my + 154,
-            195,
-            46,
-            pal.gc_green,
-            pal.gc_green,
-        );
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_white_on_green,
-            mx + 64,
-            my + 182,
-            "Accept Connection",
+        canvas.draw_text_centered(
+            mx + 24,
+            my + 124,
+            mw - 48,
+            28,
+            "This remote client is requesting permission to view and control your desktop.",
+            13.5,
+            false,
+            PK_MUTED,
         );
 
-        fill_bordered_box(
-            conn,
-            canvas,
-            mx + 255,
-            my + 154,
-            195,
-            46,
-            pal.gc_red,
-            pal.gc_red,
+        let btn_w = (mw - 72) / 2;
+        let btn_h = 48;
+        let btn_y = my + 188;
+        let acc_x = mx + 24;
+        let dec_x = mx + 48 + btn_w;
+
+        canvas.draw_rounded_box(acc_x, btn_y, btn_w, btn_h, PK_GREEN, PK_GREEN, 8);
+        canvas.draw_text_centered(
+            acc_x,
+            btn_y,
+            btn_w,
+            btn_h,
+            "✓  Accept Connection",
+            f_btn,
+            true,
+            PK_CARD,
         );
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_white_on_red,
-            mx + 318,
-            my + 182,
-            "Decline",
-        );
+
+        canvas.draw_rounded_box(dec_x, btn_y, btn_w, btn_h, PK_RED, PK_RED, 8);
+        canvas.draw_text_centered(dec_x, btn_y, btn_w, btn_h, "✕  Decline", f_btn, true, PK_CARD);
         return;
     }
 
     // 2. Card 1: THIS DESK (Top Left)
-    fill_bordered_box(
-        conn,
-        canvas,
-        l.c1_x,
-        l.card_y,
-        l.card_w,
-        l.card_h,
-        pal.gc_card,
-        pal.gc_green,
-    );
-    fill_bordered_box(
-        conn,
-        canvas,
-        l.c1_x + 16,
+    canvas.draw_rounded_box(l.c1_x, l.card_y, l.card_w, l.card_h, PK_CARD, PK_GREEN, 12);
+
+    let tag1_w = (94.0 * l.font_scale) as i32;
+    let tag1_h = (22.0 * l.font_scale) as i32;
+    canvas.draw_rounded_box(
+        l.c1_x + 18,
         l.card_y + 14,
-        96,
-        22,
-        pal.gc_green_tint,
-        pal.gc_green,
+        tag1_w,
+        tag1_h,
+        PK_GREEN_TINT,
+        PK_GREEN,
+        6,
     );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_green_on_tint,
-        l.c1_x + 26,
-        l.card_y + 30,
+    canvas.draw_text_centered(
+        l.c1_x + 18,
+        l.card_y + 14,
+        tag1_w,
+        tag1_h,
         "THIS DESK",
+        f_badge,
+        true,
+        PK_GREEN_DARK,
     );
 
-    fill_bordered_box(
-        conn,
-        canvas,
+    canvas.draw_rounded_box(
         l.id_box_x,
         l.id_box_y,
         l.id_box_w,
         l.id_box_h,
-        pal.gc_input_bg,
-        pal.gc_border,
+        PK_INPUT_BG,
+        PK_CARD_BORDER,
+        8,
     );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_muted_on_input,
+    canvas.draw_text(
         l.id_box_x + 14,
-        l.id_box_y + 20,
-        "YOUR PERMANENT DESKY ID",
+        l.id_box_y + 7,
+        "YOUR ID",
+        11.0 * l.font_scale,
+        true,
+        PK_MUTED,
+        Some(l.id_box_w - 28),
     );
 
     let current_id = {
@@ -401,551 +445,532 @@ pub fn draw_homepage_view<C: Connection>(
                 .unwrap_or_else(|| "Connecting...".into())
         }
     };
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_large_green_on_input,
+    canvas.draw_text_vcenter(
         l.id_box_x + 14,
-        l.id_box_y + 52,
+        l.id_box_y + 20,
+        l.id_box_w - 28,
+        l.id_box_h - 22,
         &current_id,
+        f_id,
+        true,
+        PK_GREEN,
     );
 
-    fill_bordered_box(
-        conn,
-        canvas,
+    canvas.draw_rounded_box(
         l.copy_btn_x,
         l.copy_btn_y,
         l.copy_btn_w,
         l.copy_btn_h,
-        pal.gc_card,
-        pal.gc_border,
+        PK_CARD,
+        PK_CARD_BORDER,
+        8,
     );
-    let copy_text_x = l.copy_btn_x + (l.copy_btn_w as i16 / 2) - 48;
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_dark_on_card,
-        copy_text_x,
-        l.copy_btn_y + 26,
-        "[ Copy Desky ID ]",
+    canvas.draw_text_centered(
+        l.copy_btn_x,
+        l.copy_btn_y,
+        l.copy_btn_w,
+        l.copy_btn_h,
+        "Copy ID",
+        f_btn,
+        true,
+        PK_TEXT,
     );
 
     // 3. Card 2: REMOTE DESK (Top Right)
-    fill_bordered_box(
-        conn,
-        canvas,
+    canvas.draw_rounded_box(
         l.c2_x,
         l.card_y,
         l.card_w,
         l.card_h,
-        pal.gc_card,
-        pal.gc_border,
-    );
-    fill_bordered_box(
-        conn,
-        canvas,
-        l.c2_x + 16,
-        l.card_y + 14,
-        114,
-        22,
-        pal.gc_input_bg,
-        pal.gc_border,
-    );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_muted_on_input,
-        l.c2_x + 26,
-        l.card_y + 30,
-        "REMOTE DESK",
+        PK_CARD,
+        PK_CARD_BORDER,
+        12,
     );
 
-    fill_bordered_box(
-        conn,
-        canvas,
+    let tag2_w = (112.0 * l.font_scale) as i32;
+    let tag2_h = (22.0 * l.font_scale) as i32;
+    canvas.draw_rounded_box(
+        l.c2_x + 18,
+        l.card_y + 14,
+        tag2_w,
+        tag2_h,
+        PK_INPUT_BG,
+        PK_CARD_BORDER,
+        6,
+    );
+    canvas.draw_text_centered(
+        l.c2_x + 18,
+        l.card_y + 14,
+        tag2_w,
+        tag2_h,
+        "REMOTE DESK",
+        f_badge,
+        true,
+        PK_MUTED,
+    );
+
+    canvas.draw_rounded_box(
         l.input_box_x,
         l.input_box_y,
         l.input_box_w,
         l.input_box_h,
-        pal.gc_input_bg,
-        pal.gc_green,
+        PK_INPUT_BG,
+        PK_CARD_BORDER,
+        8,
     );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_muted_on_input,
+    canvas.draw_text(
         l.input_box_x + 14,
-        l.input_box_y + 20,
-        "ENTER 9-DIGIT PARTNER ID (TYPE DIGITS & ENTER)",
+        l.input_box_y + 7,
+        "ENTER 9-DIGIT REMOTE DESKY ID",
+        11.0 * l.font_scale,
+        true,
+        PK_MUTED,
+        Some(l.input_box_w - 28),
     );
 
     let typed_raw = get_remote_id_raw();
     if typed_raw.is_empty() {
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_muted_on_input,
+        canvas.draw_text_vcenter(
             l.input_box_x + 14,
-            l.input_box_y + 50,
-            "e.g. 800 258 756 _",
+            l.input_box_y + 20,
+            l.input_box_w - 28,
+            l.input_box_h - 22,
+            "e.g. 800 258 756",
+            22.0 * l.font_scale,
+            false,
+            PK_MUTED,
         );
     } else {
-        let formatted = format!("{} _", format_desky_id_display(&typed_raw));
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_large_dark_on_input,
+        let formatted = format!("{} |", format_desky_id_display(&typed_raw));
+        canvas.draw_text_vcenter(
             l.input_box_x + 14,
-            l.input_box_y + 52,
+            l.input_box_y + 20,
+            l.input_box_w - 28,
+            l.input_box_h - 22,
             &formatted,
+            26.0 * l.font_scale,
+            true,
+            PK_TEXT,
         );
     }
 
-    fill_bordered_box(
-        conn,
-        canvas,
+    canvas.draw_rounded_box(
         l.conn_btn_x,
         l.conn_btn_y,
         l.conn_btn_w,
         l.conn_btn_h,
-        pal.gc_green,
-        pal.gc_green,
+        PK_GREEN,
+        PK_GREEN,
+        8,
     );
-    let conn_text_x = l.conn_btn_x + (l.conn_btn_w as i16 / 2) - 56;
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_white_on_green,
-        conn_text_x,
-        l.conn_btn_y + 26,
-        "Connect to Desk ->",
+    canvas.draw_text_centered(
+        l.conn_btn_x,
+        l.conn_btn_y,
+        l.conn_btn_w,
+        l.conn_btn_h,
+        "Connect  →",
+        f_btn,
+        true,
+        PK_CARD,
     );
 
     // 4. Card 3: RECENTS / CONTACTS / LAN RADAR (Bottom Left)
-    fill_bordered_box(
-        conn,
-        canvas,
+    canvas.draw_rounded_box(
         l.col1_x,
         l.col_y,
         l.col_w,
         l.col_h,
-        pal.gc_card,
-        pal.gc_border,
+        PK_CARD,
+        PK_CARD_BORDER,
+        12,
     );
 
     let c3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
     let contacts = crate::identity::load_address_book();
     let lan_peers = crate::p2p::get_lan_peers();
 
-    let tab_y = l.col_y + 14;
-    let t0_x = l.col1_x + 16;
-    let t0_w = 88u16;
-    let t1_x = t0_x + t0_w as i16 + 6;
-    let t1_w = 112u16;
-    let t2_x = t1_x + t1_w as i16 + 6;
-    let t2_w = 122u16;
+    let (t0, t1, t2) = get_card3_tab_rects(
+        l.col1_x,
+        l.col_y,
+        l.font_scale,
+        contacts.len(),
+        lan_peers.len(),
+    );
 
     // Tab 0: RECENTS
-    fill_bordered_box(
-        conn,
-        canvas,
-        t0_x,
-        tab_y,
-        t0_w,
-        24,
-        if c3_tab == 0 {
-            pal.gc_green_tint
-        } else {
-            pal.gc_input_bg
-        },
-        if c3_tab == 0 {
-            pal.gc_green
-        } else {
-            pal.gc_border
-        },
-    );
-    draw_str(
-        conn,
-        canvas,
-        if c3_tab == 0 {
-            pal.txt_green_on_tint
-        } else {
-            pal.txt_muted_on_input
-        },
-        t0_x + 12,
-        tab_y + 17,
-        "RECENTS",
-    );
+    let (t0_x, t0_y, t0_w, t0_h, t0_text) = t0;
+    let (bg0, bd0, fg0) = if c3_tab == 0 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else {
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+    };
+    canvas.draw_rounded_box(t0_x, t0_y, t0_w, t0_h, bg0, bd0, 6);
+    canvas.draw_text_centered(t0_x, t0_y, t0_w, t0_h, &t0_text, f_badge, true, fg0);
 
     // Tab 1: CONTACTS
-    fill_bordered_box(
-        conn,
-        canvas,
-        t1_x,
-        tab_y,
-        t1_w,
-        24,
-        if c3_tab == 1 {
-            pal.gc_green_tint
-        } else {
-            pal.gc_input_bg
-        },
-        if c3_tab == 1 {
-            pal.gc_green
-        } else {
-            pal.gc_border
-        },
-    );
-    let c_label = if contacts.is_empty() {
-        "CONTACTS".to_string()
+    let (t1_x, t1_y, t1_w, t1_h, t1_text) = t1;
+    let (bg1, bd1, fg1) = if c3_tab == 1 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
-        format!("CONTACTS ({})", contacts.len())
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
-    draw_str(
-        conn,
-        canvas,
-        if c3_tab == 1 {
-            pal.txt_green_on_tint
-        } else {
-            pal.txt_muted_on_input
-        },
-        t1_x + 10,
-        tab_y + 17,
-        &c_label,
-    );
+    canvas.draw_rounded_box(t1_x, t1_y, t1_w, t1_h, bg1, bd1, 6);
+    canvas.draw_text_centered(t1_x, t1_y, t1_w, t1_h, &t1_text, f_badge, true, fg1);
 
     // Tab 2: LAN RADAR
-    fill_bordered_box(
-        conn,
-        canvas,
-        t2_x,
-        tab_y,
-        t2_w,
-        24,
-        if c3_tab == 2 {
-            pal.gc_green_tint
-        } else {
-            pal.gc_input_bg
-        },
-        if c3_tab == 2 {
-            pal.gc_green
-        } else {
-            pal.gc_border
-        },
-    );
-    let r_label = if lan_peers.is_empty() {
-        "LAN RADAR".to_string()
+    let (t2_x, t2_y, t2_w, t2_h, t2_text) = t2;
+    let (bg2, bd2, fg2) = if c3_tab == 2 {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
-        format!("LAN RADAR ({})", lan_peers.len())
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
-    draw_str(
-        conn,
-        canvas,
-        if c3_tab == 2 {
-            pal.txt_green_on_tint
-        } else {
-            pal.txt_muted_on_input
-        },
-        t2_x + 10,
-        tab_y + 17,
-        &r_label,
-    );
+    canvas.draw_rounded_box(t2_x, t2_y, t2_w, t2_h, bg2, bd2, 6);
+    canvas.draw_text_centered(t2_x, t2_y, t2_w, t2_h, &t2_text, f_badge, true, fg2);
 
-    if c3_tab == 1 {
-        let act_w = 64u16;
-        let act_x = l.col1_x + l.col_w as i16 - act_w as i16 - 16;
-        fill_bordered_box(
-            conn,
-            canvas,
-            act_x,
-            tab_y,
-            act_w,
-            24,
-            pal.gc_green_tint,
-            pal.gc_green,
+    // Right action button in Card 3 header (+ Add or Scan)
+    if c3_tab == 2 {
+        let scanning = is_lan_scan_active();
+        let scan_w = if scanning { 76 } else { 56 };
+        let scan_x = l.col1_x + l.col_w - scan_w - 18;
+        let (s_bg, s_bd, s_fg) = if scanning {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        canvas.draw_rounded_box(scan_x, t0_y, scan_w, t0_h, s_bg, s_bd, 6);
+        canvas.draw_text_centered(
+            scan_x,
+            t0_y,
+            scan_w,
+            t0_h,
+            if scanning { "Scanning..." } else { "Scan" },
+            f_badge,
+            true,
+            s_fg,
         );
-        draw_str(conn, canvas, pal.txt_green_on_tint, act_x + 12, tab_y + 17, "+ Add");
-    } else if c3_tab == 2 {
-        let act_w = 68u16;
-        let act_x = l.col1_x + l.col_w as i16 - act_w as i16 - 16;
-        fill_bordered_box(
-            conn,
-            canvas,
-            act_x,
-            tab_y,
-            act_w,
-            24,
-            pal.gc_green_tint,
-            pal.gc_green,
-        );
-        let s_lbl = if is_lan_scan_active() { "Scan.." } else { "Scan" };
-        draw_str(conn, canvas, pal.txt_green_on_tint, act_x + 14, tab_y + 17, s_lbl);
+    } else if c3_tab == 1 {
+        let add_w = 56;
+        let add_x = l.col1_x + l.col_w - add_w - 18;
+        canvas.draw_rounded_box(add_x, t0_y, add_w, t0_h, PK_GREEN_TINT, PK_GREEN, 6);
+        canvas.draw_text_centered(add_x, t0_y, add_w, t0_h, "+ Add", f_badge, true, PK_GREEN_DARK);
     }
 
-    let item_w = l.col_w.saturating_sub(32);
-    let item_x = l.col1_x + 16;
+    let item_x = l.col1_x + 18;
+    let item_w = l.col_w - 36;
 
-    if c3_tab == 0 {
-        let recents = crate::identity::get_recent_sessions();
-        if recents.is_empty() {
-            draw_str(
-                conn,
-                canvas,
-                pal.txt_muted_on_card,
+    if c3_tab == 2 {
+        if lan_peers.is_empty() {
+            let empty_title = if is_lan_scan_active() {
+                "Scanning local subnet for Desky devices..."
+            } else {
+                "No Desky devices found on local network"
+            };
+            canvas.draw_text(
                 item_x,
-                l.col_y + 68,
-                "No recent sessions yet.",
+                l.col_y + 52,
+                empty_title,
+                14.5 * l.font_scale,
+                true,
+                PK_TEXT,
+                Some(item_w),
             );
-            draw_str(
-                conn,
-                canvas,
-                pal.txt_muted_on_card,
+            canvas.draw_text_wrapped(
                 item_x,
-                l.col_y + 92,
-                "Remote desks you connect to appear here for 1-click reconnect.",
+                l.col_y + 78,
+                item_w,
+                50,
+                "Desky instances on your local Wi-Fi or subnet appear here with 1-click zero-cloud connect.",
+                f_console,
+                false,
+                PK_MUTED,
             );
         } else {
-            for (idx, sess) in recents.iter().take(3).enumerate() {
-                let iy = l.col_y + 48 + (idx as i16 * 44);
-                fill_bordered_box(
-                    conn,
-                    canvas,
-                    item_x,
-                    iy,
-                    item_w,
-                    36,
-                    pal.gc_input_bg,
-                    pal.gc_border,
-                );
-                draw_str(conn, canvas, pal.txt_dark_on_input, item_x + 14, iy + 23, sess);
+            let item_h = (48.0 * l.font_scale) as i32;
+            for (idx, peer) in lan_peers.iter().take(3).enumerate() {
+                let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+                if iy + item_h > l.col_y + l.col_h - 10 {
+                    break;
+                }
+                canvas.draw_rounded_box(item_x, iy, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
-                let btn_w = 78u16;
-                let btn_x = item_x + item_w as i16 - btn_w as i16 - 6;
-                fill_bordered_box(
-                    conn,
-                    canvas,
-                    btn_x,
-                    iy + 5,
-                    btn_w,
-                    26,
-                    pal.gc_green_tint,
-                    pal.gc_green,
+                let pill_w = 74;
+                let pill_h = 28;
+                let pill_x = item_x + item_w - pill_w - 8;
+                let pill_y = iy + (item_h - pill_h) / 2;
+
+                // Two-line peer details clipped strictly to the left of the Connect button
+                let text_avail_w = (pill_x - item_x - 18).max(40);
+                let title_text = if !peer.user.is_empty() {
+                    format!("{} ({})", peer.hostname, peer.user)
+                } else {
+                    peer.hostname.clone()
+                };
+                canvas.draw_text(
+                    item_x + 12,
+                    iy + 6,
+                    &title_text,
+                    14.0 * l.font_scale,
+                    true,
+                    PK_TEXT,
+                    Some(text_avail_w),
                 );
-                draw_str(
-                    conn,
-                    canvas,
-                    pal.txt_green_on_tint,
-                    btn_x + 12,
-                    iy + 23,
+
+                let sub_text = format!(
+                    "ID: {}  •  {}",
+                    peer.id,
+                    peer.ip.map(|i| i.to_string()).unwrap_or_default()
+                );
+                canvas.draw_text(
+                    item_x + 12,
+                    iy + 25,
+                    &sub_text,
+                    12.0 * l.font_scale,
+                    false,
+                    PK_MUTED,
+                    Some(text_avail_w),
+                );
+
+                canvas.draw_rounded_box(pill_x, pill_y, pill_w, pill_h, PK_GREEN_TINT, PK_GREEN, 6);
+                canvas.draw_text_centered(
+                    pill_x,
+                    pill_y,
+                    pill_w,
+                    pill_h,
                     "Connect",
+                    f_badge,
+                    true,
+                    PK_GREEN_DARK,
                 );
             }
         }
     } else if c3_tab == 1 {
         if contacts.is_empty() {
-            draw_str(
-                conn,
-                canvas,
-                pal.txt_muted_on_card,
+            canvas.draw_text(
                 item_x,
-                l.col_y + 68,
+                l.col_y + 52,
                 "No contacts in Address Book yet.",
+                14.0 * l.font_scale,
+                true,
+                PK_TEXT,
+                Some(item_w),
             );
-            draw_str(
-                conn,
-                canvas,
-                pal.txt_muted_on_card,
+            canvas.draw_text_wrapped(
                 item_x,
-                l.col_y + 92,
-                "Type a 9-digit ID in Remote Desk and click [+ Add] to save.",
+                l.col_y + 78,
+                item_w,
+                50,
+                "Enter a 9-digit Desky ID above and click [+ Add] to save it here with a nickname.",
+                f_console,
+                false,
+                PK_MUTED,
             );
         } else {
+            let item_h = (48.0 * l.font_scale) as i32;
             for (idx, entry) in contacts.iter().take(3).enumerate() {
-                let iy = l.col_y + 48 + (idx as i16 * 44);
-                fill_bordered_box(
-                    conn,
-                    canvas,
-                    item_x,
-                    iy,
-                    item_w,
-                    36,
-                    pal.gc_input_bg,
-                    pal.gc_border,
-                );
-                let line = format!("{}  ({})", entry.alias, entry.id);
-                draw_str(conn, canvas, pal.txt_dark_on_input, item_x + 14, iy + 23, &line);
+                let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+                if iy + item_h > l.col_y + l.col_h - 10 {
+                    break;
+                }
+                canvas.draw_rounded_box(item_x, iy, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
-                let btn_w = 74u16;
-                let btn_x = item_x + item_w as i16 - btn_w as i16 - 32;
-                fill_bordered_box(
-                    conn,
-                    canvas,
-                    btn_x,
-                    iy + 5,
-                    btn_w,
-                    26,
-                    pal.gc_green_tint,
-                    pal.gc_green,
+                let pill_w = 68;
+                let pill_h = 28;
+                let pill_x = item_x + item_w - pill_w - 32;
+                let pill_y = iy + (item_h - pill_h) / 2;
+                let text_avail_w = (pill_x - item_x - 18).max(40);
+
+                canvas.draw_text(
+                    item_x + 12,
+                    iy + 6,
+                    &entry.alias,
+                    14.0 * l.font_scale,
+                    true,
+                    PK_TEXT,
+                    Some(text_avail_w),
                 );
-                draw_str(
-                    conn,
-                    canvas,
-                    pal.txt_green_on_tint,
-                    btn_x + 10,
-                    iy + 23,
+                let sub_info = format!("{}  •  {}", entry.id, entry.group);
+                canvas.draw_text(
+                    item_x + 12,
+                    iy + 25,
+                    &sub_info,
+                    12.0 * l.font_scale,
+                    false,
+                    PK_MUTED,
+                    Some(text_avail_w),
+                );
+
+                canvas.draw_rounded_box(pill_x, pill_y, pill_w, pill_h, PK_GREEN_TINT, PK_GREEN, 6);
+                canvas.draw_text_centered(
+                    pill_x,
+                    pill_y,
+                    pill_w,
+                    pill_h,
                     "Connect",
+                    f_badge,
+                    true,
+                    PK_GREEN_DARK,
                 );
 
-                let del_x = item_x + item_w as i16 - 24;
-                fill_bordered_box(
-                    conn,
-                    canvas,
-                    del_x,
-                    iy + 5,
-                    20,
-                    26,
-                    pal.gc_card,
-                    pal.gc_border,
-                );
-                draw_str(conn, canvas, pal.txt_red_on_card, del_x + 6, iy + 23, "x");
+                let del_w = 20;
+                let del_x = item_x + item_w - del_w - 6;
+                canvas.draw_rounded_box(del_x, pill_y, del_w, pill_h, PK_CARD, PK_CARD_BORDER, 4);
+                canvas.draw_text_centered(del_x, pill_y, del_w, pill_h, "×", 14.0, true, PK_MUTED);
             }
         }
-    } else if lan_peers.is_empty() {
-        let msg = if is_lan_scan_active() {
-            "Scanning local subnet for Desky devices..."
-        } else {
-            "No Desky devices found on local network."
-        };
-        draw_str(conn, canvas, pal.txt_muted_on_card, item_x, l.col_y + 68, msg);
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_muted_on_card,
-            item_x,
-            l.col_y + 92,
-            "Devices on the same Wi-Fi/LAN appear here for direct P2P connect.",
-        );
     } else {
-        for (idx, peer) in lan_peers.iter().take(3).enumerate() {
-            let iy = l.col_y + 48 + (idx as i16 * 44);
-            fill_bordered_box(
-                conn,
-                canvas,
+        let recent_sessions = crate::identity::get_recent_sessions();
+        if recent_sessions.is_empty() {
+            canvas.draw_text(
                 item_x,
-                iy,
+                l.col_y + 52,
+                "No recent sessions yet.",
+                14.0 * l.font_scale,
+                true,
+                PK_TEXT,
+                Some(item_w),
+            );
+            canvas.draw_text_wrapped(
+                item_x,
+                l.col_y + 78,
                 item_w,
-                36,
-                pal.gc_input_bg,
-                pal.gc_border,
+                50,
+                "Remote desks you connect to will appear here for fast 1-click reconnect.",
+                f_console,
+                false,
+                PK_MUTED,
             );
-            let line = format!(
-                "{} | ID: {} ({})",
-                peer.hostname,
-                peer.id,
-                peer.ip.map(|i| i.to_string()).unwrap_or_default()
-            );
-            draw_str(conn, canvas, pal.txt_dark_on_input, item_x + 12, iy + 23, &line);
+        } else {
+            let item_h = (38.0 * l.font_scale) as i32;
+            for (idx, session) in recent_sessions.iter().take(3).enumerate() {
+                let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+                if iy + item_h > l.col_y + l.col_h - 10 {
+                    break;
+                }
+                canvas.draw_rounded_box(item_x, iy, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
-            let btn_w = 78u16;
-            let btn_x = item_x + item_w as i16 - btn_w as i16 - 6;
-            fill_bordered_box(
-                conn,
-                canvas,
-                btn_x,
-                iy + 5,
-                btn_w,
-                26,
-                pal.gc_green_tint,
-                pal.gc_green,
-            );
-            draw_str(
-                conn,
-                canvas,
-                pal.txt_green_on_tint,
-                btn_x + 12,
-                iy + 23,
-                "Connect",
-            );
+                let pill_w = 74;
+                let pill_h = item_h - 10;
+                let pill_x = item_x + item_w - pill_w - 6;
+                let pill_y = iy + 5;
+                let text_avail_w = (pill_x - item_x - 18).max(40);
+
+                canvas.draw_text_vcenter(
+                    item_x + 14,
+                    iy,
+                    text_avail_w,
+                    item_h,
+                    session,
+                    15.0 * l.font_scale,
+                    true,
+                    PK_TEXT,
+                );
+
+                canvas.draw_rounded_box(pill_x, pill_y, pill_w, pill_h, PK_GREEN_TINT, PK_GREEN, 6);
+                canvas.draw_text_centered(
+                    pill_x,
+                    pill_y,
+                    pill_w,
+                    pill_h,
+                    "Connect",
+                    f_badge,
+                    true,
+                    PK_GREEN_DARK,
+                );
+            }
         }
     }
 
     // 5. Card 4: SECURITY & SERVER LOGS (Bottom Right)
-    fill_bordered_box(
-        conn,
-        canvas,
+    canvas.draw_rounded_box(
         l.col2_x,
         l.col_y,
         l.col_w,
         l.col_h,
-        pal.gc_card,
-        pal.gc_border,
-    );
-    fill_bordered_box(
-        conn,
-        canvas,
-        l.col2_x + 16,
-        l.col_y + 14,
-        154,
-        22,
-        pal.gc_input_bg,
-        pal.gc_border,
-    );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_muted_on_input,
-        l.col2_x + 26,
-        l.col_y + 30,
-        "SECURITY & SERVER",
+        PK_CARD,
+        PK_CARD_BORDER,
+        12,
     );
 
-    let con_x = l.col2_x + 16;
-    let con_y = l.col_y + 46;
-    let con_w = l.col_w.saturating_sub(32);
-    let con_h = l.col_h.saturating_sub(58);
-    fill_bordered_box(
-        conn,
-        canvas,
-        con_x,
-        con_y,
-        con_w,
-        con_h,
-        pal.gc_input_bg,
-        pal.gc_border,
+    let tag4_w = (146.0 * l.font_scale) as i32;
+    let tag4_h = (25.0 * l.font_scale) as i32;
+    canvas.draw_rounded_box(
+        l.col2_x + 18,
+        l.col_y + 14,
+        tag4_w,
+        tag4_h,
+        PK_INPUT_BG,
+        PK_CARD_BORDER,
+        6,
+    );
+    canvas.draw_text_centered(
+        l.col2_x + 18,
+        l.col_y + 14,
+        tag4_w,
+        tag4_h,
+        "SECURITY & SERVER",
+        f_badge,
+        true,
+        PK_MUTED,
+    );
+
+    let console_box_x = l.col2_x + 18;
+    let console_box_y = l.col_y + 48;
+    let console_box_w = l.col_w - 36;
+    let console_box_h = l.col_h - 60;
+
+    canvas.draw_rounded_box(
+        console_box_x,
+        console_box_y,
+        console_box_w,
+        console_box_h,
+        PK_CONSOLE_BG,
+        PK_CARD_BORDER,
+        8,
     );
 
     let logs = status_logs().lock().map(|g| g.clone()).unwrap_or_default();
-    let line_h = 18i16;
-    let max_lines = ((con_h as i16 - 12) / line_h).max(1) as usize;
-    let start = logs.len().saturating_sub(max_lines);
-    let max_chars = ((con_w as usize).saturating_sub(20) / 8).max(20);
+    let line_height = (18.5 * l.font_scale) as i32;
+    let max_visible_lines = ((console_box_h - 16) / line_height).max(1) as usize;
+    let start = logs.len().saturating_sub(max_visible_lines);
 
     for (i, log_line) in logs[start..].iter().enumerate() {
-        let truncated: String = log_line.chars().take(max_chars).collect();
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_dark_on_input,
-            con_x + 10,
-            con_y + 20 + (i as i16 * line_h),
-            &truncated,
+        let ly = console_box_y + 8 + (i as i32 * line_height);
+        canvas.draw_text(
+            console_box_x + 12,
+            ly,
+            log_line,
+            f_console,
+            false,
+            PK_TEXT,
+            Some(console_box_w - 24),
         );
     }
 }
 
 /// Handles mouse clicks on the Homepage view
 pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
+    let x = mx as i32;
+    let y = my as i32;
+    let w = win_w as i32;
+    let h = win_h as i32;
+
     // 1. Check Incoming Connection Approval Modal
     if crate::p2p::get_pending_approval().is_some() {
-        let mw = 480u16;
-        let mh = 230u16;
-        let modal_x = ((win_w.saturating_sub(mw)) / 2) as i16;
-        let modal_y = ((win_h.saturating_sub(mh)) / 2).max(60) as i16;
-        if my >= modal_y + 154 && my <= modal_y + 200 {
-            if mx >= modal_x + 30 && mx <= modal_x + 225 {
+        let mw = (w - 64).clamp(440, 620);
+        let mh = 280;
+        let modal_x = (w - mw) / 2;
+        let modal_y = ((h - mh) / 2).max(64);
+        let btn_w = (mw - 72) / 2;
+        let btn_h = 48;
+        let btn_y = modal_y + 188;
+        let acc_x = modal_x + 24;
+        let dec_x = modal_x + 48 + btn_w;
+
+        if y >= btn_y && y <= btn_y + btn_h {
+            if x >= acc_x && x <= acc_x + btn_w {
                 crate::p2p::respond_to_pending_approval(true);
                 return true;
-            } else if mx >= modal_x + 255 && mx <= modal_x + 450 {
+            } else if x >= dec_x && x <= dec_x + btn_w {
                 crate::p2p::respond_to_pending_approval(false);
                 return true;
             }
@@ -953,13 +978,13 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
         return false;
     }
 
-    let l = get_responsive_layout(win_w, win_h);
+    let l = get_responsive_layout(w, h);
 
     // 2. Copy ID button
-    if mx >= l.copy_btn_x
-        && mx <= l.copy_btn_x + l.copy_btn_w as i16
-        && my >= l.copy_btn_y
-        && my <= l.copy_btn_y + l.copy_btn_h as i16
+    if x >= l.copy_btn_x
+        && x <= l.copy_btn_x + l.copy_btn_w
+        && y >= l.copy_btn_y
+        && y <= l.copy_btn_y + l.copy_btn_h
     {
         let id_to_copy = {
             let guard = LOCAL_DESKY_ID.lock().unwrap();
@@ -982,10 +1007,10 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     }
 
     // 3. Connect button
-    if mx >= l.conn_btn_x
-        && mx <= l.conn_btn_x + l.conn_btn_w as i16
-        && my >= l.conn_btn_y
-        && my <= l.conn_btn_y + l.conn_btn_h as i16
+    if x >= l.conn_btn_x
+        && x <= l.conn_btn_x + l.conn_btn_w
+        && y >= l.conn_btn_y
+        && y <= l.conn_btn_y + l.conn_btn_h
     {
         let target = get_remote_id_raw();
         handle_homepage_connect(&target);
@@ -993,27 +1018,37 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     }
 
     // 4. Card 3 Tabs
-    let tab_y = l.col_y + 14;
-    let t0_x = l.col1_x + 16;
-    let t1_x = t0_x + 88 + 6;
-    let t2_x = t1_x + 112 + 6;
+    let contacts = crate::identity::load_address_book();
+    let lan_peers = crate::p2p::get_lan_peers();
+    let (t0, t1, t2) = get_card3_tab_rects(
+        l.col1_x,
+        l.col_y,
+        l.font_scale,
+        contacts.len(),
+        lan_peers.len(),
+    );
+    let (t0_x, t0_y, t0_w, t0_h, _) = t0;
+    let (t1_x, _, t1_w, _, _) = t1;
+    let (t2_x, _, t2_w, _, _) = t2;
+    let c3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
 
-    if my >= tab_y && my <= tab_y + 24 {
-        if mx >= t0_x && mx <= t0_x + 88 {
+    if y >= t0_y && y <= t0_y + t0_h {
+        if x >= t0_x && x <= t0_x + t0_w {
             BOTTOM_CARD3_TAB.store(0, Ordering::Relaxed);
             return true;
-        } else if mx >= t1_x && mx <= t1_x + 112 {
+        }
+        if x >= t1_x && x <= t1_x + t1_w {
             BOTTOM_CARD3_TAB.store(1, Ordering::Relaxed);
             return true;
-        } else if mx >= t2_x && mx <= t2_x + 122 {
+        }
+        if x >= t2_x && x <= t2_x + t2_w {
             BOTTOM_CARD3_TAB.store(2, Ordering::Relaxed);
             trigger_lan_radar_scan();
             return true;
         }
 
-        let c3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
-        let act_x = l.col1_x + l.col_w as i16 - 68 - 16;
-        if mx >= act_x && mx <= act_x + 68 {
+        let act_x = l.col1_x + l.col_w - 76 - 18;
+        if x >= act_x && x <= l.col1_x + l.col_w - 18 {
             if c3_tab == 1 {
                 let raw = get_remote_id_raw();
                 let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
@@ -1032,43 +1067,49 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     }
 
     // 5. Card 3 List Item clicks
-    let c3_tab = BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
-    let item_x = l.col1_x + 16;
-    let item_w = l.col_w.saturating_sub(32) as i16;
-    for idx in 0..3 {
-        let iy = l.col_y + 48 + (idx as i16 * 44);
-        if mx >= item_x && mx <= item_x + item_w && my >= iy && my <= iy + 36 {
-            if c3_tab == 0 {
-                let recents = crate::identity::get_recent_sessions();
-                if let Some(sess) = recents.get(idx) {
-                    set_remote_id_raw(sess);
-                    if mx >= item_x + item_w - 84 {
-                        handle_homepage_connect(sess);
-                    }
+    let item_x = l.col1_x + 18;
+    let item_w = l.col_w - 36;
+    if c3_tab == 2 {
+        let item_h = (48.0 * l.font_scale) as i32;
+        for (idx, peer) in lan_peers.iter().take(3).enumerate() {
+            let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+            if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
+                set_remote_id_raw(&peer.id);
+                if x >= item_x + item_w - 84 {
+                    handle_homepage_connect(&peer.id);
                 }
-            } else if c3_tab == 1 {
-                let contacts = crate::identity::load_address_book();
-                if let Some(entry) = contacts.get(idx) {
-                    if mx >= item_x + item_w - 26 {
-                        crate::identity::delete_contact(&entry.id);
-                        append_status_log(&format!("Removed {} from Address Book", entry.alias));
-                    } else {
-                        set_remote_id_raw(&entry.id);
-                        if mx >= item_x + item_w - 110 {
-                            handle_homepage_connect(&entry.id);
-                        }
-                    }
-                }
-            } else {
-                let peers = crate::p2p::get_lan_peers();
-                if let Some(peer) = peers.get(idx) {
-                    set_remote_id_raw(&peer.id);
-                    if mx >= item_x + item_w - 84 {
-                        handle_homepage_connect(&peer.id);
-                    }
-                }
+                return true;
             }
-            return true;
+        }
+    } else if c3_tab == 1 {
+        let item_h = (48.0 * l.font_scale) as i32;
+        for (idx, entry) in contacts.iter().take(3).enumerate() {
+            let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+            if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
+                if x >= item_x + item_w - 28 {
+                    crate::identity::delete_contact(&entry.id);
+                    append_status_log(&format!("Removed {} from Address Book", entry.alias));
+                } else {
+                    set_remote_id_raw(&entry.id);
+                    if x >= item_x + item_w - 104 {
+                        handle_homepage_connect(&entry.id);
+                    }
+                }
+                return true;
+            }
+        }
+    } else {
+        let recents = crate::identity::get_recent_sessions();
+        let item_h = (38.0 * l.font_scale) as i32;
+        for (idx, sess) in recents.iter().take(3).enumerate() {
+            let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+            if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
+                set_remote_id_raw(sess);
+                if x >= item_x + item_w - 84 {
+                    handle_homepage_connect(sess);
+                }
+                return true;
+            }
         }
     }
 
@@ -1093,8 +1134,8 @@ pub fn spawn_linux_approval_popup(client_id: String) {
                 POPUP_ACTIVE.store(false, Ordering::SeqCst);
                 return;
             };
-            let win_w = 440u16;
-            let win_h = 210u16;
+            let win_w = 460u16;
+            let win_h = 220u16;
             let pos_x = ((screen.width_in_pixels.saturating_sub(win_w)) / 2) as i16;
             let pos_y = ((screen.height_in_pixels.saturating_sub(win_h)) / 2) as i16;
 
@@ -1138,78 +1179,90 @@ pub fn spawn_linux_approval_popup(client_id: String) {
             );
             let _ = conn.flush();
 
-            let font_id = open_best_font(&conn, &["9x15bold", "9x15", "fixed"]);
-
-            let gc_card = create_color_gc(&conn, win_id, PK_CARD, PK_CARD, font_id);
-            let gc_green = create_color_gc(&conn, win_id, PK_GREEN, PK_GREEN, font_id);
-            let gc_red = create_color_gc(&conn, win_id, PK_RED, PK_RED, font_id);
-            let gc_text_dark = create_color_gc(&conn, win_id, PK_TEXT, PK_CARD, font_id);
-            let gc_text_accept = create_color_gc(&conn, win_id, PK_CARD, PK_GREEN, font_id);
-            let gc_text_decline = create_color_gc(&conn, win_id, PK_CARD, PK_RED, font_id);
+            let gc_blit = conn.generate_id().unwrap_or(0);
+            let _ = conn.create_gc(gc_blit, win_id, &CreateGCAux::new().graphics_exposures(0));
+            let mut pop_canvas = PixelCanvas::new(win_w, win_h);
 
             while crate::p2p::get_pending_approval().is_some() {
                 if let Ok(Some(ev)) = conn.poll_for_event() {
                     match ev {
                         x11rb::protocol::Event::Expose(_) => {
-                            let card = Rectangle {
-                                x: 12,
-                                y: 12,
-                                width: 416,
-                                height: 186,
-                            };
-                            let _ = conn.poly_fill_rectangle(win_id, gc_card, &[card]);
-                            let _ = conn.poly_rectangle(win_id, gc_green, &[card]);
+                            pop_canvas.clear(PK_BG);
+                            pop_canvas.draw_rounded_box(
+                                10,
+                                10,
+                                (win_w - 20) as i32,
+                                (win_h - 20) as i32,
+                                PK_CARD,
+                                PK_GREEN,
+                                10,
+                            );
+                            pop_canvas.draw_text_centered(
+                                20,
+                                24,
+                                (win_w - 40) as i32,
+                                24,
+                                "INCOMING DESKY SESSION REQUEST",
+                                14.0,
+                                true,
+                                PK_GREEN_DARK,
+                            );
+                            pop_canvas.draw_text_centered(
+                                20,
+                                58,
+                                (win_w - 40) as i32,
+                                32,
+                                &format!("Remote Client ID: {}", client_id),
+                                20.0,
+                                true,
+                                PK_TEXT,
+                            );
+                            pop_canvas.draw_text_centered(
+                                20,
+                                96,
+                                (win_w - 40) as i32,
+                                22,
+                                "Allow this peer to view and control your desktop?",
+                                13.0,
+                                false,
+                                PK_MUTED,
+                            );
 
-                            let line1 = "INCOMING DESKY SESSION REQUEST";
-                            let line2 = format!("Remote Client ID: {} wants to connect.", client_id);
-                            let line3 = "Allow this peer to view and control your desktop?";
-                            let _ =
-                                conn.image_text8(win_id, gc_text_dark, 26, 46, line1.as_bytes());
-                            let _ =
-                                conn.image_text8(win_id, gc_text_dark, 26, 78, line2.as_bytes());
-                            let _ =
-                                conn.image_text8(win_id, gc_text_dark, 26, 104, line3.as_bytes());
-
-                            let btn_acc = Rectangle {
-                                x: 30,
-                                y: 132,
-                                width: 180,
-                                height: 46,
-                            };
-                            let _ = conn.poly_fill_rectangle(win_id, gc_green, &[btn_acc]);
-                            let _ = conn.image_text8(
-                                win_id,
-                                gc_text_accept,
+                            pop_canvas.draw_rounded_box(30, 140, 190, 46, PK_GREEN, PK_GREEN, 8);
+                            pop_canvas.draw_text_centered(
+                                30,
+                                140,
+                                190,
                                 46,
-                                160,
-                                b"ACCEPT (Click / Y)",
+                                "Accept (Click / Y)",
+                                14.0,
+                                true,
+                                PK_CARD,
                             );
 
-                            let btn_dec = Rectangle {
-                                x: 230,
-                                y: 132,
-                                width: 180,
-                                height: 46,
-                            };
-                            let _ = conn.poly_fill_rectangle(win_id, gc_red, &[btn_dec]);
-                            let _ = conn.image_text8(
-                                win_id,
-                                gc_text_decline,
-                                244,
-                                160,
-                                b"DECLINE (Click / N)",
+                            pop_canvas.draw_rounded_box(240, 140, 190, 46, PK_RED, PK_RED, 8);
+                            pop_canvas.draw_text_centered(
+                                240,
+                                140,
+                                190,
+                                46,
+                                "Decline (Click / N)",
+                                14.0,
+                                true,
+                                PK_CARD,
                             );
 
+                            pop_canvas.present_to_x11(&conn, win_id, gc_blit, screen.root_depth);
                             let _ = conn.flush();
                         }
                         x11rb::protocol::Event::ButtonPress(bp) => {
                             let bx = bp.event_x;
                             let by = bp.event_y;
-                            if (132..=178).contains(&by) {
-                                if (30..=210).contains(&bx) {
+                            if (140..=186).contains(&by) {
+                                if (30..=220).contains(&bx) {
                                     crate::p2p::respond_to_pending_approval(true);
                                     break;
-                                } else if (230..=410).contains(&bx) {
+                                } else if (240..=430).contains(&bx) {
                                     crate::p2p::respond_to_pending_approval(false);
                                     break;
                                 }

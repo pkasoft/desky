@@ -4,38 +4,31 @@
 
 #![allow(dead_code)]
 
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::Drawable;
+use super::theme::{PixelCanvas, PK_CARD, PK_CARD_BORDER, PK_MUTED, PK_TEXT};
 
-use super::theme::{draw_str, fill_bordered_box, X11Palette};
+pub fn draw_admin_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
+    let x = 24;
+    let y = 56;
+    let w = (win_w as i32 - 48).max(100);
+    let h = (win_h as i32 - 80).max(100);
 
-pub fn draw_admin_view<C: Connection>(
-    conn: &C,
-    canvas: Drawable,
-    win_w: u16,
-    win_h: u16,
-    pal: &X11Palette,
-) {
-    let x = 24i16;
-    let y = 56i16;
-    let w = win_w.saturating_sub(48);
-    let h = win_h.saturating_sub(80);
-
-    fill_bordered_box(conn, canvas, x, y, w, h, pal.gc_card, pal.gc_border);
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_large_dark_on_card,
-        x + 20,
-        y + 36,
+    canvas.draw_rounded_box(x, y, w, h, PK_CARD, PK_CARD_BORDER, 10);
+    canvas.draw_text(
+        x + 22,
+        y + 20,
         "Remote System Administration",
+        18.0,
+        true,
+        PK_TEXT,
+        Some(w - 44),
     );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_muted_on_card,
-        x + 20,
-        y + 64,
+    canvas.draw_text(
+        x + 22,
+        y + 50,
         "Manage remote processes, system telemetry, and power controls.",
+        13.5,
+        false,
+        PK_MUTED,
+        Some(w - 44),
     );
 }

@@ -5,49 +5,38 @@
 
 #![allow(dead_code)]
 
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::Drawable;
-
 use super::launcher::{append_status_log, request_main_redraw};
-use super::theme::{draw_str, fill_bordered_box, X11Palette};
+use super::theme::{PixelCanvas, PK_RED, PK_RED_TINT};
 
 pub fn sync_host_session_ui() {
     request_main_redraw();
 }
 
-pub fn draw_host_session_banner<C: Connection>(
-    conn: &C,
-    canvas: Drawable,
-    pal: &X11Palette,
-    right_edge_x: i16,
-    min_left_x: i16,
-) -> Option<(i16, u16)> {
+pub fn draw_host_session_banner(
+    canvas: &mut PixelCanvas,
+    right_edge_x: i32,
+    min_left_x: i32,
+) -> Option<(i32, i32)> {
     if let Some((client_id, secs)) = crate::p2p::get_active_host_session_info() {
-        let banner_w = 340u16;
-        let banner_x = (right_edge_x - banner_w as i16 - 10).max(min_left_x);
-        fill_bordered_box(
-            conn,
-            canvas,
-            banner_x,
-            8,
-            banner_w,
-            26,
-            pal.gc_red_tint,
-            pal.gc_red,
-        );
-        let msg = format!("Hosting: {} ({}s) [Disconnect]", client_id, secs);
-        draw_str(conn, canvas, pal.txt_red_on_tint, banner_x + 10, 25, &msg);
-        Some((banner_x, banner_w))
-    } else {
-        None
+        let banner_w = 270;
+        let banner_x = (right_edge_x - banner_w - 8).max(min_left_x);
+        if banner_x + banner_w <= right_edge_x {
+            canvas.draw_rounded_box(banner_x, 6, banner_w, 28, PK_RED_TINT, PK_RED, 6);
+            let msg = format!("Hosting: {} ({}s)  [Disconnect]", client_id, secs);
+            canvas.draw_text_centered(banner_x, 6, banner_w, 28, &msg, 12.5, true, PK_RED);
+            return Some((banner_x, banner_w));
+        }
     }
+    None
 }
 
-pub fn handle_host_banner_click(mx: i16, my: i16, right_edge_x: i16, min_left_x: i16) -> bool {
+pub fn handle_host_banner_click(mx: i16, my: i16, right_edge_x: i32, min_left_x: i32) -> bool {
     if crate::p2p::get_active_host_session_info().is_some() {
-        let banner_w = 340i16;
-        let banner_x = (right_edge_x - banner_w - 10).max(min_left_x);
-        if mx >= banner_x && mx <= banner_x + banner_w && (8..=34).contains(&my) {
+        let banner_w = 270;
+        let banner_x = (right_edge_x - banner_w - 8).max(min_left_x);
+        let x = mx as i32;
+        let y = my as i32;
+        if x >= banner_x && x <= banner_x + banner_w && (6..=34).contains(&y) {
             crate::p2p::disconnect_host_session();
             append_status_log("Disconnected active remote client.");
             return true;

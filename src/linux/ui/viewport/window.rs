@@ -1,8 +1,8 @@
 //! Dedicated Native X11 Window Procedure & Lifecycle Engine
 //!
 //! Mirrors `src/windows/ui/viewport/window.rs` by hosting the unified X11 window,
-//! managing offscreen double-buffering, and routing mouse/keyboard events to tabs,
-//! homepage cards, or remote peer input injection.
+//! rendering into a `PixelCanvas` with anti-aliased TrueType fonts, and routing
+//! mouse/keyboard events to tabs, homepage cards, or remote peer input injection.
 
 use anyhow::Result;
 use std::sync::atomic::Ordering;
@@ -23,7 +23,7 @@ use crate::linux::ui::launcher::{
     handle_homepage_click, handle_homepage_connect, BRING_TO_FRONT, NEEDS_REDRAW, RUNNING,
 };
 use crate::linux::ui::remote_desk_edit::{get_remote_id_raw, handle_remote_desk_edit_key};
-use crate::linux::ui::theme::{X11Palette, PK_BG};
+use crate::linux::ui::theme::{PixelCanvas, PK_BG};
 
 pub fn run_viewport_x11_window() -> Result<()> {
     init_session_tabs();
@@ -35,8 +35,8 @@ pub fn run_viewport_x11_window() -> Result<()> {
     let root_win = screen.root;
 
     let win_id = conn.generate_id()?;
-    let mut win_w = 960u16;
-    let mut win_h = 640u16;
+    let mut win_w = 1024u16;
+    let mut win_h = 680u16;
 
     let win_aux = CreateWindowAux::new()
         .background_pixel(PK_BG)
@@ -92,17 +92,12 @@ pub fn run_viewport_x11_window() -> Result<()> {
         win_id
     );
 
-    let pal = X11Palette::new(&conn, win_id);
+    let gc_blit = conn.generate_id()?;
+    conn.create_gc(gc_blit, win_id, &CreateGCAux::new().graphics_exposures(0))?;
 
-    // Offscreen double-buffer pixmap to prevent flicker
-    let mut back_pixmap = conn.generate_id()?;
-    conn.create_pixmap(root_depth, back_pixmap, win_id, win_w, win_h)?;
-    let mut pix_w = win_w;
-    let mut pix_h = win_h;
-
+    let mut canvas = PixelCanvas::new(win_w, win_h);
     let mut last_frame_id: u32 = 0;
     let mut last_status_tick = Instant::now();
-    let mut scaled_frame_buf: Vec<u8> = Vec::new();
 
     NEEDS_REDRAW.store(true, Ordering::Relaxed);
 
@@ -188,43 +183,15 @@ pub fn run_viewport_x11_window() -> Result<()> {
         }
 
         if NEEDS_REDRAW.swap(false, Ordering::Relaxed) {
-            if pix_w != win_w || pix_h != win_h {
-                let _ = conn.free_pixmap(back_pixmap);
-                back_pixmap = conn.generate_id()?;
-                conn.create_pixmap(root_depth, back_pixmap, win_id, win_w, win_h)?;
-                pix_w = win_w;
-                pix_h = win_h;
-            }
-
-            render_viewport_frame(
-                &conn,
-                back_pixmap,
-                root_depth,
-                win_w,
-                win_h,
-                &pal,
-                latest_frame.as_deref(),
-                &mut scaled_frame_buf,
-            );
-
-            let _ = conn.copy_area(
-                back_pixmap,
-                win_id,
-                pal.gc_card,
-                0,
-                0,
-                0,
-                0,
-                win_w,
-                win_h,
-            );
+            canvas.resize(win_w, win_h);
+            render_viewport_frame(&mut canvas, win_w, win_h, latest_frame.as_deref());
+            canvas.present_to_x11(&conn, win_id, gc_blit, root_depth);
             let _ = conn.flush();
         }
 
         std::thread::sleep(Duration::from_millis(12));
     }
 
-    let _ = conn.free_pixmap(back_pixmap);
     Ok(())
 }
 

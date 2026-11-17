@@ -1,98 +1,95 @@
 //! Viewport Top Tab Bar & Responsive Interactive Toolbar (Linux X11)
 //!
 //! Mirrors `src/windows/ui/viewport/toolbar.rs` by rendering session tabs,
-//! active codec/relay status pill, and host session banner.
-
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::Drawable;
+//! active codec/relay status pill, and host session banner with crisp TrueType fonts.
 
 use super::tabs::{close_session_tab, get_session_tabs, switch_session_tab, SessionTab};
 use crate::linux::ui::host_widget::{draw_host_session_banner, handle_host_banner_click};
-use crate::linux::ui::theme::{draw_str, fill_bordered_box, X11Palette};
+use crate::linux::ui::theme::{
+    PixelCanvas, PK_CARD, PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG,
+    PK_MUTED, PK_TEXT,
+};
 
-pub const TOOLBAR_HEIGHT: u16 = 42;
+pub const TOOLBAR_HEIGHT: u16 = 40;
 
-pub fn draw_tab_bar<C: Connection>(
-    conn: &C,
-    canvas: Drawable,
+pub fn draw_tab_bar(
+    canvas: &mut PixelCanvas,
     win_w: u16,
     tabs: &[SessionTab],
     active_tab: usize,
-    pal: &X11Palette,
 ) {
-    fill_bordered_box(
-        conn,
-        canvas,
-        0,
-        0,
-        win_w,
-        TOOLBAR_HEIGHT,
-        pal.gc_card,
-        pal.gc_border,
-    );
-    draw_str(conn, canvas, pal.txt_green_on_card, 18, 26, "DESKY");
+    let w = win_w as i32;
+    let h = TOOLBAR_HEIGHT as i32;
 
-    let mut tab_x = 96i16;
+    // Top bar white background + 1px bottom border
+    canvas.fill_rect(0, 0, w, h, PK_CARD);
+    canvas.fill_rect(0, h - 1, w, 1, PK_CARD_BORDER);
+
+    // Brand logo text
+    canvas.draw_text_vcenter(18, 0, 74, h, "DESKY", 15.0, true, PK_GREEN);
+
+    let mut tab_x = 92;
     for (idx, tab) in tabs.iter().enumerate() {
         let is_active = idx == active_tab;
-        let tw = if idx == 0 { 82u16 } else { 154u16 };
-        let fill = if is_active {
-            pal.gc_green_tint
+        let tw = if idx == 0 { 76 } else { 150 };
+        let (fill, border, fg) = if is_active {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else {
-            pal.gc_input_bg
-        };
-        let border = if is_active {
-            pal.gc_green
-        } else {
-            pal.gc_border
-        };
-        let txt_gc = if is_active {
-            pal.txt_green_on_tint
-        } else {
-            pal.txt_muted_on_input
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
 
-        fill_bordered_box(conn, canvas, tab_x, 7, tw, 28, fill, border);
-        let label = if idx == 0 {
-            "Home".to_string()
+        canvas.draw_rounded_box(tab_x, 6, tw, 28, fill, border, 6);
+        if idx == 0 {
+            canvas.draw_text_centered(tab_x, 6, tw, 28, "Home", 13.0, true, fg);
         } else {
-            format!("{}  [x]", tab.title)
-        };
-        draw_str(conn, canvas, txt_gc, tab_x + 12, 26, &label);
-        tab_x += tw as i16 + 6;
+            canvas.draw_text_vcenter(
+                tab_x + 12,
+                6,
+                tw - 34,
+                28,
+                &tab.title,
+                13.0,
+                is_active,
+                if is_active { PK_GREEN_DARK } else { PK_TEXT },
+            );
+            // Close [x] button inside tab
+            let close_x = tab_x + tw - 24;
+            canvas.draw_text_centered(close_x, 6, 18, 28, "×", 15.0, true, PK_MUTED);
+        }
+        tab_x += tw + 6;
     }
 
     // Server online / ping badge on top-right
     let online = crate::p2p::is_server_online();
     let ping = crate::p2p::get_server_ping_ms();
-    let srv_w = 166u16;
-    let srv_x = (win_w as i16) - (srv_w as i16) - 16;
+    let srv_w = 148;
+    let srv_x = w - srv_w - 16;
     if srv_x > tab_x {
-        let (s_fill, s_border, s_txt, label) = if online {
+        let (s_fill, s_border, s_fg, label) = if online {
             (
-                pal.gc_green_tint,
-                pal.gc_green,
-                pal.txt_green_on_tint,
+                PK_GREEN_TINT,
+                PK_GREEN,
+                PK_GREEN_DARK,
                 if ping > 0 {
-                    format!("* Relay Online ({}ms)", ping)
+                    format!("● Online ({}ms)", ping)
                 } else {
-                    "* Relay Online".to_string()
+                    "● Server Online".to_string()
                 },
             )
         } else {
             (
-                pal.gc_input_bg,
-                pal.gc_border,
-                pal.txt_muted_on_input,
-                "o Connecting Relay...".to_string(),
+                PK_INPUT_BG,
+                PK_CARD_BORDER,
+                PK_MUTED,
+                "○ Connecting...".to_string(),
             )
         };
-        fill_bordered_box(conn, canvas, srv_x, 8, srv_w, 26, s_fill, s_border);
-        draw_str(conn, canvas, s_txt, srv_x + 10, 25, &label);
+        canvas.draw_rounded_box(srv_x, 6, srv_w, 28, s_fill, s_border, 14);
+        canvas.draw_text_centered(srv_x, 6, srv_w, 28, &label, 12.0, true, s_fg);
     }
 
     // Active Host Session Banner (if someone is viewing THIS machine)
-    let _ = draw_host_session_banner(conn, canvas, pal, srv_x, tab_x);
+    let _ = draw_host_session_banner(canvas, srv_x, tab_x);
 }
 
 pub fn handle_toolbar_click(mx: i16, my: i16, win_w: u16) -> bool {
@@ -100,12 +97,14 @@ pub fn handle_toolbar_click(mx: i16, my: i16, win_w: u16) -> bool {
         return false;
     }
 
+    let x = mx as i32;
+    let y = my as i32;
     let tabs = get_session_tabs();
-    let mut tab_x = 96i16;
+    let mut tab_x = 92;
     for (idx, _) in tabs.iter().enumerate() {
-        let tw = if idx == 0 { 82i16 } else { 154i16 };
-        if mx >= tab_x && mx <= tab_x + tw && (7..=35).contains(&my) {
-            if idx > 0 && mx >= tab_x + tw - 34 {
+        let tw = if idx == 0 { 76 } else { 150 };
+        if x >= tab_x && x <= tab_x + tw && (6..=34).contains(&y) {
+            if idx > 0 && x >= tab_x + tw - 26 {
                 close_session_tab(idx);
             } else {
                 switch_session_tab(idx);
@@ -115,7 +114,7 @@ pub fn handle_toolbar_click(mx: i16, my: i16, win_w: u16) -> bool {
         tab_x += tw + 6;
     }
 
-    let srv_x = (win_w as i16) - 166 - 16;
+    let srv_x = (win_w as i32) - 148 - 16;
     if handle_host_banner_click(mx, my, srv_x, tab_x) {
         return true;
     }

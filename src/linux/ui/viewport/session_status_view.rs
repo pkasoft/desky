@@ -1,17 +1,20 @@
 //! Viewport Session Status & Alert View (Linux X11)
 //!
 //! Mirrors `src/windows/ui/viewport/session_status_view.rs` by displaying
-//! connection state, authorization prompts, unattended password input, and error cards.
+//! connection state, authorization prompts, unattended password input, and error cards
+//! with anti-aliased TrueType typography.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, OnceLock};
-use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{Drawable, KeyButMask};
+use x11rb::protocol::xproto::KeyButMask;
 
 use super::tabs::{get_session_tabs, ACTIVE_TAB_INDEX};
 use super::toolbar::TOOLBAR_HEIGHT;
 use crate::linux::ui::remote_desk_edit::x11_keycode_to_ascii;
-use crate::linux::ui::theme::{draw_str, fill_bordered_box, X11Palette};
+use crate::linux::ui::theme::{
+    PixelCanvas, PK_AMBER, PK_CARD, PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT,
+    PK_INPUT_BG, PK_MUTED, PK_RED, PK_RED_TINT, PK_TEXT,
+};
 use crate::p2p::SessionStatus;
 
 static PWD_INPUT_BUFFER: OnceLock<Mutex<String>> = OnceLock::new();
@@ -30,165 +33,198 @@ pub fn clear_password_input() {
     }
 }
 
-pub fn draw_session_status_view<C: Connection>(
-    conn: &C,
-    canvas: Drawable,
+pub fn draw_session_status_view(
+    canvas: &mut PixelCanvas,
     win_w: u16,
     win_h: u16,
     target_id: &str,
     status: &SessionStatus,
-    pal: &X11Palette,
 ) {
+    let w = win_w as i32;
+    let h = win_h as i32;
+    let tb_h = TOOLBAR_HEIGHT as i32;
+
     let is_err = matches!(status, SessionStatus::Error(_));
-    let cw = 480u16;
-    let ch = 260u16;
-    let cx = ((win_w.saturating_sub(cw)) / 2) as i16;
-    let cy = (TOOLBAR_HEIGHT + (win_h.saturating_sub(TOOLBAR_HEIGHT + ch)) / 2) as i16;
+    let is_pwd = matches!(status, SessionStatus::PasswordRequired(_));
+    let is_wait = matches!(status, SessionStatus::WaitingApproval(_));
 
-    let border_gc = if is_err { pal.gc_red } else { pal.gc_green };
-    fill_bordered_box(conn, canvas, cx, cy, cw, ch, pal.gc_card, border_gc);
+    let card_w = (w - 48).clamp(400, 520);
+    let card_h = 300;
+    let card_x = (w - card_w) / 2;
+    let card_y = (tb_h + (h - tb_h - card_h) / 2).max(tb_h + 16);
 
+    canvas.draw_rounded_box(card_x, card_y, card_w, card_h, PK_CARD, PK_CARD_BORDER, 10);
+
+    // Top accent strip
+    let accent = if is_err {
+        PK_RED
+    } else if is_wait || is_pwd {
+        PK_AMBER
+    } else {
+        PK_GREEN
+    };
+    canvas.fill_rect(card_x + 8, card_y + 1, card_w - 16, 4, accent);
+
+    // Title
     let title = match status {
         SessionStatus::Error(_) => "Connection Failed",
         SessionStatus::WaitingApproval(_) => "Waiting for Host Authorization",
         SessionStatus::PasswordRequired(_) => "Unattended Access Password Required",
-        SessionStatus::Connecting(_) => "Connecting to Remote Desk...",
-        _ => "Session Status",
+        SessionStatus::Connecting(_) => "Connecting to Remote Desk",
+        _ => "Session Offline",
     };
-    draw_str(
-        conn,
-        canvas,
-        if is_err {
-            pal.txt_red_on_card
-        } else {
-            pal.txt_large_dark_on_card
-        },
-        cx + 32,
-        cy + 42,
+    canvas.draw_text_centered(
+        card_x + 16,
+        card_y + 24,
+        card_w - 32,
+        28,
         title,
+        19.0,
+        true,
+        if is_err { PK_RED } else { PK_TEXT },
     );
 
-    fill_bordered_box(
-        conn,
-        canvas,
-        cx + 32,
-        cy + 58,
-        180,
-        26,
-        pal.gc_green_tint,
-        pal.gc_green,
-    );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_green_on_tint,
-        cx + 46,
-        cy + 76,
+    // Target ID Badge Pill
+    let pill_w = 180;
+    let pill_h = 28;
+    let pill_x = card_x + (card_w - pill_w) / 2;
+    let pill_y = card_y + 62;
+    let (pill_bg, pill_border, pill_fg) = if is_err {
+        (PK_RED_TINT, PK_RED, PK_RED)
+    } else {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    };
+    canvas.draw_rounded_box(pill_x, pill_y, pill_w, pill_h, pill_bg, pill_border, 6);
+    canvas.draw_text_centered(
+        pill_x,
+        pill_y,
+        pill_w,
+        pill_h,
         &format!("ID: {}", target_id),
+        13.5,
+        true,
+        pill_fg,
     );
 
-    if matches!(status, SessionStatus::PasswordRequired(_)) {
-        fill_bordered_box(
-            conn,
-            canvas,
-            cx + 32,
-            cy + 100,
-            cw - 64,
-            68,
-            pal.gc_input_bg,
-            pal.gc_green,
-        );
-        draw_str(
-            conn,
-            canvas,
-            pal.txt_muted_on_input,
-            cx + 44,
-            cy + 122,
-            "Type unattended password and press Enter:",
+    // Message / Password Box
+    let msg_x = card_x + 24;
+    let msg_y = card_y + 104;
+    let msg_w = card_w - 48;
+    let msg_h = 84;
+
+    if is_pwd {
+        canvas.draw_rounded_box(msg_x, msg_y, msg_w, msg_h, PK_INPUT_BG, PK_GREEN, 8);
+        canvas.draw_text_centered(
+            msg_x + 12,
+            msg_y + 8,
+            msg_w - 24,
+            22,
+            "Enter remote master password (type on keyboard):",
+            12.5,
+            false,
+            PK_MUTED,
         );
         let pwd = get_password_input();
         let masked = if pwd.is_empty() {
-            "Type password...".to_string()
+            "Type password here...".to_string()
         } else {
-            "*".repeat(pwd.len())
+            "• ".repeat(pwd.len())
         };
-        draw_str(conn, canvas, pal.txt_dark_on_input, cx + 44, cy + 150, &masked);
-    } else {
-        fill_bordered_box(
-            conn,
-            canvas,
-            cx + 32,
-            cy + 100,
-            cw - 64,
-            68,
-            pal.gc_input_bg,
-            pal.gc_border,
+        canvas.draw_text_centered(
+            msg_x + 12,
+            msg_y + 36,
+            msg_w - 24,
+            34,
+            &masked,
+            16.0,
+            true,
+            if pwd.is_empty() { PK_MUTED } else { PK_TEXT },
         );
+    } else {
+        let (box_bg, box_border, txt_col) = if is_err {
+            (PK_RED_TINT, PK_CARD_BORDER, PK_RED)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        canvas.draw_rounded_box(msg_x, msg_y, msg_w, msg_h, box_bg, box_border, 8);
         let detail = match status {
             SessionStatus::Error(e) => e.clone(),
             SessionStatus::WaitingApproval(_) => {
-                "Prompt shown on remote desktop. Waiting for operator approval...".to_string()
+                "An authorization prompt was displayed on the remote computer's screen. Waiting for the operator to accept your request...".to_string()
             }
             SessionStatus::Connecting(_) => {
-                "Contacting rendezvous server & establishing encrypted P2P tunnel...".to_string()
+                "Contacting rendezvous server (131.222.194.92)... Establishing secure P2P hole-punching and relay link...".to_string()
             }
-            _ => "Session is idle or disconnected.".to_string(),
+            _ => "This session is currently inactive or closed. Click Retry to reconnect to this Desky ID.".to_string(),
         };
-        let line1: String = detail.chars().take(50).collect();
-        let line2: String = detail.chars().skip(50).take(50).collect();
-        draw_str(conn, canvas, pal.txt_muted_on_input, cx + 44, cy + 126, &line1);
-        if !line2.is_empty() {
-            draw_str(conn, canvas, pal.txt_muted_on_input, cx + 44, cy + 148, &line2);
-        }
+        canvas.draw_text_wrapped(
+            msg_x + 14,
+            msg_y + 14,
+            msg_w - 28,
+            msg_h - 24,
+            &detail,
+            13.0,
+            false,
+            txt_col,
+        );
     }
 
-    // Action Buttons: [ Retry / Submit ] and [ Return to Home ]
-    fill_bordered_box(
-        conn,
-        canvas,
-        cx + 32,
-        cy + 190,
-        195,
-        42,
-        pal.gc_green,
-        pal.gc_green,
-    );
-    let b1_label = if matches!(status, SessionStatus::PasswordRequired(_)) {
+    // Action Buttons: [ Retry / Unlock ] and [ Return to Home ]
+    let btn1_w = 185;
+    let btn2_w = 165;
+    let gap = 14;
+    let total_w = btn1_w + gap + btn2_w;
+    let btn1_x = card_x + (card_w - total_w) / 2;
+    let btn2_x = btn1_x + btn1_w + gap;
+    let btn_y = card_y + 212;
+    let btn_h = 42;
+
+    canvas.draw_rounded_box(btn1_x, btn_y, btn1_w, btn_h, PK_GREEN, PK_GREEN, 8);
+    let b1_label = if is_pwd {
         "Unlock & Connect"
     } else {
         "Retry Connection"
     };
-    draw_str(conn, canvas, pal.txt_white_on_green, cx + 62, cy + 216, b1_label);
+    canvas.draw_text_centered(btn1_x, btn_y, btn1_w, btn_h, b1_label, 13.5, true, PK_CARD);
 
-    fill_bordered_box(
-        conn,
-        canvas,
-        cx + 250,
-        cy + 190,
-        195,
-        42,
-        pal.gc_card,
-        pal.gc_border,
-    );
-    draw_str(
-        conn,
-        canvas,
-        pal.txt_dark_on_card,
-        cx + 288,
-        cy + 216,
+    canvas.draw_rounded_box(btn2_x, btn_y, btn2_w, btn_h, PK_CARD, PK_CARD_BORDER, 8);
+    canvas.draw_text_centered(
+        btn2_x,
+        btn_y,
+        btn2_w,
+        btn_h,
         "Return to Home",
+        13.5,
+        true,
+        PK_TEXT,
     );
 }
 
 pub fn handle_status_view_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     let status = crate::p2p::get_session_status();
-    let cw = 480u16;
-    let ch = 260u16;
-    let cx = ((win_w.saturating_sub(cw)) / 2) as i16;
-    let cy = (TOOLBAR_HEIGHT + (win_h.saturating_sub(TOOLBAR_HEIGHT + ch)) / 2) as i16;
+    let w = win_w as i32;
+    let h = win_h as i32;
+    let tb_h = TOOLBAR_HEIGHT as i32;
 
-    if my >= cy + 190 && my <= cy + 232 {
-        if mx >= cx + 32 && mx <= cx + 227 {
+    let card_w = (w - 48).clamp(400, 520);
+    let card_h = 300;
+    let card_x = (w - card_w) / 2;
+    let card_y = (tb_h + (h - tb_h - card_h) / 2).max(tb_h + 16);
+
+    let btn1_w = 185;
+    let btn2_w = 165;
+    let gap = 14;
+    let total_w = btn1_w + gap + btn2_w;
+    let btn1_x = card_x + (card_w - total_w) / 2;
+    let btn2_x = btn1_x + btn1_w + gap;
+    let btn_y = card_y + 212;
+    let btn_h = 42;
+
+    let x = mx as i32;
+    let y = my as i32;
+
+    if y >= btn_y && y <= btn_y + btn_h {
+        if x >= btn1_x && x <= btn1_x + btn1_w {
             if matches!(status, SessionStatus::PasswordRequired(_)) {
                 let pwd = get_password_input();
                 if !pwd.is_empty() {
@@ -202,7 +238,7 @@ pub fn handle_status_view_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> boo
                 }
             }
             return true;
-        } else if mx >= cx + 250 && mx <= cx + 445 {
+        } else if x >= btn2_x && x <= btn2_x + btn2_w {
             crate::p2p::stop_client_session();
             ACTIVE_TAB_INDEX.store(0, Ordering::Relaxed);
             return true;
