@@ -1,8 +1,8 @@
 //! pkasoft.com White Theme Styling, Anti-Aliased TrueType Font Engine & Software Canvas (Linux X11)
 //!
-//! Renders crisp anti-aliased TrueType typography (`DejaVu Sans` / `Liberation Sans` / `Ubuntu`)
-//! and smooth rounded rectangles with 1px borders directly into an in-memory BGRA pixel buffer,
-//! matching the Windows GDI ClearType pkasoft.com White Theme UI 1:1.
+//! Renders crisp anti-aliased TrueType typography (`DejaVu Sans` / `Liberation Sans` / `Ubuntu`),
+//! subtle GDI-style rounded boxes, and Lucide vector icons directly into an in-memory BGRA
+//! pixel buffer matching the Windows GDI ClearType pkasoft.com White Theme UI 1:1.
 
 #![allow(dead_code)]
 
@@ -27,6 +27,31 @@ pub const PK_RED: u32 = 0x00C53030;           // #c53030 (crimson decline button
 pub const PK_RED_TINT: u32 = 0x00FDF2F2;      // #fdf2f2 (subtle red alert fill)
 pub const PK_AMBER: u32 = 0x00D9851B;         // #d9851b (waiting approval accent)
 pub const PK_DARK_VIEWPORT: u32 = 0x000C0A09; // #0c0a09 (dark canvas background for remote stream)
+
+// Toolbar button state colors (matching Windows toolbar.rs 1:1, converted from BGR to RGB):
+pub const TB_ACTIVE_BG: u32 = 0x00E0F5D0;     // Vibrant emerald mint fill
+pub const TB_ACTIVE_BORDER: u32 = 0x0008782B; // Bold forest emerald border
+pub const TB_ACTIVE_FG: u32 = 0x00044F1B;     // Deep contrast emerald icon
+
+pub const TB_REC_BG: u32 = 0x00FFDCD4;        // Soft red fill
+pub const TB_REC_BORDER: u32 = 0x00DF372B;    // Red border
+pub const TB_REC_FG: u32 = 0x00DF372B;
+
+pub const TB_PRIV_BG: u32 = 0x00FFEBCE;       // Amber fill
+pub const TB_PRIV_BORDER: u32 = 0x00E6820E;   // Amber border
+pub const TB_PRIV_FG: u32 = 0x009C560A;       // Bronze lock
+
+pub const TB_MUTED_BG: u32 = 0x00FFEEEC;      // Soft rose fill for muted audio
+pub const TB_MUTED_BORDER: u32 = 0x00E88B7A;  // Rose border
+pub const TB_MUTED_FG: u32 = 0x00DF372B;      // Red volume_x icon
+
+pub const TB_PASSIVE_BG: u32 = 0x00FBFCFA;    // Clean off-white card fill
+pub const TB_PASSIVE_BORDER: u32 = 0x00DEDCE0;// Subtle 1px border
+pub const TB_PASSIVE_FG: u32 = 0x00777D6E;    // Slate gray passive icon
+
+pub const TB_HOVER_BG: u32 = 0x00ECF0EB;      // Hover fill
+pub const TB_HOVER_BORDER: u32 = 0x00BCB5C2;  // Hover border
+pub const TB_HOVER_FG: u32 = 0x0020241B;      // Hover icon
 
 pub struct FontSystem {
     pub regular: Option<FontArc>,
@@ -81,7 +106,7 @@ pub fn fonts() -> &'static FontSystem {
     })
 }
 
-/// High-speed in-memory BGRA software canvas with anti-aliased TrueType font & rounded shape rendering
+/// High-speed in-memory BGRA software canvas with anti-aliased TrueType font & vector icon rendering
 pub struct PixelCanvas {
     pub width: i32,
     pub height: i32,
@@ -171,7 +196,26 @@ impl PixelCanvas {
         }
     }
 
-    /// Renders a smooth anti-aliased rounded rectangle with a 1px border
+    /// Draws a crisp rectangular toolbar button box (matching Windows `draw_tb_button_box` 1:1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_tb_button_box(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        fill_rgb: u32,
+        border_rgb: u32,
+        border_width: i32,
+    ) {
+        let bw = border_width.max(1);
+        self.fill_rect(x, y, w, h, border_rgb);
+        if w > bw * 2 && h > bw * 2 {
+            self.fill_rect(x + bw, y + bw, w - bw * 2, h - bw * 2, fill_rgb);
+        }
+    }
+
+    /// Renders a subtle GDI-style rounded rectangle (`RoundRect` diameter = radius, so actual corner radius is half!)
     #[allow(clippy::too_many_arguments)]
     pub fn draw_rounded_box(
         &mut self,
@@ -181,17 +225,15 @@ impl PixelCanvas {
         h: i32,
         fill_rgb: u32,
         border_rgb: u32,
-        radius: i32,
+        radius_diameter: i32,
     ) {
         if w <= 0 || h <= 0 {
             return;
         }
-        let r = radius.clamp(0, (w.min(h) / 2).max(0)) as f32;
+        // In Windows GDI RoundRect(hdc, ..., d, d), `d` is the ellipse diameter, so actual corner radius is d / 2!
+        let r = ((radius_diameter as f32) * 0.5).clamp(0.0, 5.0);
         if r <= 1.0 {
-            self.fill_rect(x, y, w, h, border_rgb);
-            if w > 2 && h > 2 {
-                self.fill_rect(x + 1, y + 1, w - 2, h - 2, fill_rgb);
-            }
+            self.draw_tb_button_box(x, y, w, h, fill_rgb, border_rgb, 1);
             return;
         }
 
@@ -208,31 +250,358 @@ impl PixelCanvas {
             for px in x0..x1 {
                 let lx = (px - x) as f32 + 0.5;
 
-                // Fast path for interior non-corner pixels
-                if lx >= r && lx <= wf - r && ly >= 1.5 && ly <= hf - 1.5 {
+                if lx >= r && lx <= wf - r && ly >= 1.2 && ly <= hf - 1.2 {
                     self.set_pixel(px, py, fill_rgb);
                     continue;
                 }
-                if ly >= r && ly <= hf - r && lx >= 1.5 && lx <= wf - 1.5 {
+                if ly >= r && ly <= hf - r && lx >= 1.2 && lx <= wf - 1.2 {
                     self.set_pixel(px, py, fill_rgb);
                     continue;
                 }
 
-                // Signed distance to rounded box
                 let qx = (lx - wf * 0.5).abs() - (wf * 0.5 - r);
                 let qy = (ly - hf * 0.5).abs() - (hf * 0.5 - r);
                 let dist = (qx.max(0.0).hypot(qy.max(0.0))) + qx.max(qy).min(0.0) - r;
 
-                if dist <= -1.2 {
+                if dist <= -1.0 {
                     self.set_pixel(px, py, fill_rgb);
                 } else if dist <= 0.5 {
                     let outer_alpha = (0.5 - dist).clamp(0.0, 1.0);
-                    let border_mix = (dist + 1.2).clamp(0.0, 1.0);
+                    let border_mix = (dist + 1.0).clamp(0.0, 1.0);
                     let color = lerp_rgb(fill_rgb, border_rgb, border_mix);
                     self.blend_pixel(px, py, color, outer_alpha);
                 }
             }
         }
+    }
+
+    /// Anti-aliased line segment with configurable thickness
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, rgb: u32, thickness: f32) {
+        let half_t = (thickness * 0.5).max(0.5);
+        let pad = (half_t + 1.5).ceil() as i32;
+        let min_x = (x0.min(x1).floor() as i32 - pad).max(0);
+        let max_x = (x0.max(x1).ceil() as i32 + pad).min(self.width - 1);
+        let min_y = (y0.min(y1).floor() as i32 - pad).max(0);
+        let max_y = (y0.max(y1).ceil() as i32 + pad).min(self.height - 1);
+
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let len_sq = dx * dx + dy * dy;
+
+        for py in min_y..=max_y {
+            let fy = py as f32 + 0.5;
+            for px in min_x..=max_x {
+                let fx = px as f32 + 0.5;
+                let t = if len_sq > 0.0001 {
+                    ((fx - x0) * dx + (fy - y0) * dy) / len_sq
+                } else {
+                    0.0
+                }
+                .clamp(0.0, 1.0);
+                let proj_x = x0 + t * dx;
+                let proj_y = y0 + t * dy;
+                let dist = (fx - proj_x).hypot(fy - proj_y);
+                let alpha = (half_t + 0.5 - dist).clamp(0.0, 1.0);
+                if alpha > 0.0 {
+                    self.blend_pixel(px, py, rgb, alpha);
+                }
+            }
+        }
+    }
+
+    /// Anti-aliased circle outline or filled disc
+    pub fn draw_circle(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        rgb: u32,
+        thickness: f32,
+        filled: bool,
+    ) {
+        let half_t = (thickness * 0.5).max(0.5);
+        let pad = (radius + half_t + 2.0).ceil() as i32;
+        let min_x = (cx.floor() as i32 - pad).max(0);
+        let max_x = (cx.ceil() as i32 + pad).min(self.width - 1);
+        let min_y = (cy.floor() as i32 - pad).max(0);
+        let max_y = (cy.ceil() as i32 + pad).min(self.height - 1);
+
+        for py in min_y..=max_y {
+            let fy = py as f32 + 0.5;
+            for px in min_x..=max_x {
+                let fx = px as f32 + 0.5;
+                let dist = (fx - cx).hypot(fy - cy);
+                let alpha = if filled {
+                    (radius + 0.5 - dist).clamp(0.0, 1.0)
+                } else {
+                    (half_t + 0.5 - (dist - radius).abs()).clamp(0.0, 1.0)
+                };
+                if alpha > 0.0 {
+                    self.blend_pixel(px, py, rgb, alpha);
+                }
+            }
+        }
+    }
+
+    // =========================================================================
+    // Lucide Vector Icon Suite (Matching Windows `src/ui/icons/` 1:1)
+    // =========================================================================
+
+    pub fn draw_icon_home(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.12, oy + s * 0.45, ox + s * 0.50, oy + s * 0.12, rgb, 1.8);
+        self.draw_line(ox + s * 0.50, oy + s * 0.12, ox + s * 0.88, oy + s * 0.45, rgb, 1.8);
+        self.draw_line(ox + s * 0.22, oy + s * 0.40, ox + s * 0.22, oy + s * 0.88, rgb, 1.8);
+        self.draw_line(ox + s * 0.78, oy + s * 0.40, ox + s * 0.78, oy + s * 0.88, rgb, 1.8);
+        self.draw_line(ox + s * 0.22, oy + s * 0.88, ox + s * 0.78, oy + s * 0.88, rgb, 1.8);
+    }
+
+    pub fn draw_icon_plus(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.5, oy + s * 0.2, ox + s * 0.5, oy + s * 0.8, rgb, 1.8);
+        self.draw_line(ox + s * 0.2, oy + s * 0.5, ox + s * 0.8, oy + s * 0.5, rgb, 1.8);
+    }
+
+    pub fn draw_icon_x(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.22, oy + s * 0.22, ox + s * 0.78, oy + s * 0.78, rgb, 1.8);
+        self.draw_line(ox + s * 0.78, oy + s * 0.22, ox + s * 0.22, oy + s * 0.78, rgb, 1.8);
+    }
+
+    pub fn draw_icon_check(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.18, oy + s * 0.52, ox + s * 0.42, oy + s * 0.76, rgb, 2.0);
+        self.draw_line(ox + s * 0.42, oy + s * 0.76, ox + s * 0.84, oy + s * 0.26, rgb, 2.0);
+    }
+
+    pub fn draw_icon_copy(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        // Back rect
+        self.draw_line(ox + s * 0.15, oy + s * 0.15, ox + s * 0.65, oy + s * 0.15, rgb, 1.6);
+        self.draw_line(ox + s * 0.15, oy + s * 0.15, ox + s * 0.15, oy + s * 0.65, rgb, 1.6);
+        // Front rect
+        let rx = (ox + s * 0.32) as i32;
+        let ry = (oy + s * 0.32) as i32;
+        let rw = (s * 0.55) as i32;
+        self.draw_line(rx as f32, ry as f32, (rx + rw) as f32, ry as f32, rgb, 1.6);
+        self.draw_line((rx + rw) as f32, ry as f32, (rx + rw) as f32, (ry + rw) as f32, rgb, 1.6);
+        self.draw_line((rx + rw) as f32, (ry + rw) as f32, rx as f32, (ry + rw) as f32, rgb, 1.6);
+        self.draw_line(rx as f32, (ry + rw) as f32, rx as f32, ry as f32, rgb, 1.6);
+    }
+
+    pub fn draw_icon_arrow_right(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.18, oy + s * 0.50, ox + s * 0.82, oy + s * 0.50, rgb, 1.8);
+        self.draw_line(ox + s * 0.54, oy + s * 0.22, ox + s * 0.82, oy + s * 0.50, rgb, 1.8);
+        self.draw_line(ox + s * 0.54, oy + s * 0.78, ox + s * 0.82, oy + s * 0.50, rgb, 1.8);
+    }
+
+    pub fn draw_icon_settings(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let cx = x as f32 + s * 0.5;
+        let cy = y as f32 + s * 0.5;
+        self.draw_circle(cx, cy, s * 0.22, rgb, 1.8, false);
+        for i in 0..8 {
+            let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
+            let r1 = s * 0.28;
+            let r2 = s * 0.44;
+            self.draw_line(
+                cx + angle.cos() * r1,
+                cy + angle.sin() * r1,
+                cx + angle.cos() * r2,
+                cy + angle.sin() * r2,
+                rgb,
+                1.8,
+            );
+        }
+    }
+
+    pub fn draw_icon_chat(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.15, oy + s * 0.18, ox + s * 0.85, oy + s * 0.18, rgb, 1.7);
+        self.draw_line(ox + s * 0.85, oy + s * 0.18, ox + s * 0.85, oy + s * 0.68, rgb, 1.7);
+        self.draw_line(ox + s * 0.85, oy + s * 0.68, ox + s * 0.38, oy + s * 0.68, rgb, 1.7);
+        self.draw_line(ox + s * 0.38, oy + s * 0.68, ox + s * 0.15, oy + s * 0.86, rgb, 1.7);
+        self.draw_line(ox + s * 0.15, oy + s * 0.86, ox + s * 0.15, oy + s * 0.18, rgb, 1.7);
+    }
+
+    pub fn draw_icon_terminal(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.18, oy + s * 0.28, ox + s * 0.45, oy + s * 0.50, rgb, 1.8);
+        self.draw_line(ox + s * 0.45, oy + s * 0.50, ox + s * 0.18, oy + s * 0.72, rgb, 1.8);
+        self.draw_line(ox + s * 0.52, oy + s * 0.72, ox + s * 0.82, oy + s * 0.72, rgb, 1.8);
+    }
+
+    pub fn draw_icon_monitor(&mut self, x: i32, y: i32, sz: i32, rgb: u32, num: Option<u32>) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.12, oy + s * 0.16, ox + s * 0.88, oy + s * 0.16, rgb, 1.7);
+        self.draw_line(ox + s * 0.88, oy + s * 0.16, ox + s * 0.88, oy + s * 0.68, rgb, 1.7);
+        self.draw_line(ox + s * 0.88, oy + s * 0.68, ox + s * 0.12, oy + s * 0.68, rgb, 1.7);
+        self.draw_line(ox + s * 0.12, oy + s * 0.68, ox + s * 0.12, oy + s * 0.16, rgb, 1.7);
+        self.draw_line(ox + s * 0.50, oy + s * 0.68, ox + s * 0.50, oy + s * 0.86, rgb, 1.7);
+        self.draw_line(ox + s * 0.30, oy + s * 0.86, ox + s * 0.70, oy + s * 0.86, rgb, 1.7);
+        if let Some(n) = num {
+            self.draw_text_centered(
+                x + 2,
+                y + 1,
+                sz - 4,
+                (sz as f32 * 0.68) as i32,
+                &n.to_string(),
+                9.5,
+                true,
+                rgb,
+            );
+        }
+    }
+
+    pub fn draw_icon_lock(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        // Body
+        self.draw_line(ox + s * 0.20, oy + s * 0.46, ox + s * 0.80, oy + s * 0.46, rgb, 1.7);
+        self.draw_line(ox + s * 0.80, oy + s * 0.46, ox + s * 0.80, oy + s * 0.86, rgb, 1.7);
+        self.draw_line(ox + s * 0.80, oy + s * 0.86, ox + s * 0.20, oy + s * 0.86, rgb, 1.7);
+        self.draw_line(ox + s * 0.20, oy + s * 0.86, ox + s * 0.20, oy + s * 0.46, rgb, 1.7);
+        // Shackle
+        self.draw_line(ox + s * 0.32, oy + s * 0.46, ox + s * 0.32, oy + s * 0.24, rgb, 1.7);
+        self.draw_line(ox + s * 0.68, oy + s * 0.46, ox + s * 0.68, oy + s * 0.24, rgb, 1.7);
+        self.draw_line(ox + s * 0.32, oy + s * 0.24, ox + s * 0.68, oy + s * 0.24, rgb, 1.7);
+    }
+
+    pub fn draw_icon_mic(&mut self, x: i32, y: i32, sz: i32, rgb: u32, muted: bool) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.38, oy + s * 0.16, ox + s * 0.62, oy + s * 0.16, rgb, 1.7);
+        self.draw_line(ox + s * 0.38, oy + s * 0.16, ox + s * 0.38, oy + s * 0.52, rgb, 1.7);
+        self.draw_line(ox + s * 0.62, oy + s * 0.16, ox + s * 0.62, oy + s * 0.52, rgb, 1.7);
+        self.draw_line(ox + s * 0.24, oy + s * 0.48, ox + s * 0.50, oy + s * 0.68, rgb, 1.7);
+        self.draw_line(ox + s * 0.76, oy + s * 0.48, ox + s * 0.50, oy + s * 0.68, rgb, 1.7);
+        self.draw_line(ox + s * 0.50, oy + s * 0.68, ox + s * 0.50, oy + s * 0.86, rgb, 1.7);
+        if muted {
+            self.draw_line(ox + s * 0.15, oy + s * 0.15, ox + s * 0.85, oy + s * 0.85, rgb, 1.8);
+        }
+    }
+
+    pub fn draw_icon_volume(&mut self, x: i32, y: i32, sz: i32, rgb: u32, muted: bool) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.15, oy + s * 0.38, ox + s * 0.34, oy + s * 0.38, rgb, 1.7);
+        self.draw_line(ox + s * 0.34, oy + s * 0.38, ox + s * 0.56, oy + s * 0.18, rgb, 1.7);
+        self.draw_line(ox + s * 0.56, oy + s * 0.18, ox + s * 0.56, oy + s * 0.82, rgb, 1.7);
+        self.draw_line(ox + s * 0.56, oy + s * 0.82, ox + s * 0.34, oy + s * 0.62, rgb, 1.7);
+        self.draw_line(ox + s * 0.34, oy + s * 0.62, ox + s * 0.15, oy + s * 0.62, rgb, 1.7);
+        self.draw_line(ox + s * 0.15, oy + s * 0.38, ox + s * 0.15, oy + s * 0.62, rgb, 1.7);
+        if muted {
+            self.draw_line(ox + s * 0.66, oy + s * 0.36, ox + s * 0.88, oy + s * 0.64, rgb, 1.8);
+            self.draw_line(ox + s * 0.88, oy + s * 0.36, ox + s * 0.66, oy + s * 0.64, rgb, 1.8);
+        } else {
+            self.draw_line(ox + s * 0.68, oy + s * 0.34, ox + s * 0.78, oy + s * 0.50, rgb, 1.7);
+            self.draw_line(ox + s * 0.78, oy + s * 0.50, ox + s * 0.68, oy + s * 0.66, rgb, 1.7);
+        }
+    }
+
+    pub fn draw_icon_record(&mut self, x: i32, y: i32, sz: i32, rgb: u32, active: bool) {
+        let s = sz as f32;
+        let cx = x as f32 + s * 0.5;
+        let cy = y as f32 + s * 0.5;
+        self.draw_circle(cx, cy, s * 0.36, rgb, 1.8, false);
+        self.draw_circle(cx, cy, if active { s * 0.22 } else { s * 0.14 }, rgb, 1.0, true);
+    }
+
+    pub fn draw_icon_pen(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.20, oy + s * 0.80, ox + s * 0.74, oy + s * 0.26, rgb, 2.0);
+        self.draw_line(ox + s * 0.16, oy + s * 0.84, ox + s * 0.32, oy + s * 0.78, rgb, 1.6);
+        self.draw_line(ox + s * 0.16, oy + s * 0.84, ox + s * 0.22, oy + s * 0.68, rgb, 1.6);
+    }
+
+    pub fn draw_icon_zap(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.56, oy + s * 0.12, ox + s * 0.22, oy + s * 0.54, rgb, 1.8);
+        self.draw_line(ox + s * 0.22, oy + s * 0.54, ox + s * 0.50, oy + s * 0.54, rgb, 1.8);
+        self.draw_line(ox + s * 0.50, oy + s * 0.54, ox + s * 0.44, oy + s * 0.88, rgb, 1.8);
+        self.draw_line(ox + s * 0.44, oy + s * 0.88, ox + s * 0.78, oy + s * 0.46, rgb, 1.8);
+        self.draw_line(ox + s * 0.78, oy + s * 0.46, ox + s * 0.50, oy + s * 0.46, rgb, 1.8);
+    }
+
+    pub fn draw_icon_more(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let cy = y as f32 + s * 0.5;
+        let ox = x as f32;
+        self.draw_circle(ox + s * 0.24, cy, 1.6, rgb, 1.0, true);
+        self.draw_circle(ox + s * 0.50, cy, 1.6, rgb, 1.0, true);
+        self.draw_circle(ox + s * 0.76, cy, 1.6, rgb, 1.0, true);
+    }
+
+    pub fn draw_icon_radio(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let cx = x as f32 + s * 0.5;
+        let cy = y as f32 + s * 0.5;
+        self.draw_circle(cx, cy, s * 0.16, rgb, 1.0, true);
+        self.draw_circle(cx, cy, s * 0.36, rgb, 1.5, false);
+    }
+
+    pub fn draw_icon_cpu(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.24, oy + s * 0.24, ox + s * 0.76, oy + s * 0.24, rgb, 1.7);
+        self.draw_line(ox + s * 0.76, oy + s * 0.24, ox + s * 0.76, oy + s * 0.76, rgb, 1.7);
+        self.draw_line(ox + s * 0.76, oy + s * 0.76, ox + s * 0.24, oy + s * 0.76, rgb, 1.7);
+        self.draw_line(ox + s * 0.24, oy + s * 0.76, ox + s * 0.24, oy + s * 0.24, rgb, 1.7);
+    }
+
+    pub fn draw_icon_info(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let cx = x as f32 + s * 0.5;
+        let cy = y as f32 + s * 0.5;
+        self.draw_circle(cx, cy, s * 0.38, rgb, 1.7, false);
+        self.draw_line(cx, cy - s * 0.04, cx, cy + s * 0.22, rgb, 1.8);
+        self.draw_circle(cx, cy - s * 0.18, 1.3, rgb, 1.0, true);
+    }
+
+    pub fn draw_icon_trash(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        self.draw_line(ox + s * 0.18, oy + s * 0.26, ox + s * 0.82, oy + s * 0.26, rgb, 1.7);
+        self.draw_line(ox + s * 0.28, oy + s * 0.26, ox + s * 0.28, oy + s * 0.84, rgb, 1.7);
+        self.draw_line(ox + s * 0.72, oy + s * 0.26, ox + s * 0.72, oy + s * 0.84, rgb, 1.7);
+        self.draw_line(ox + s * 0.28, oy + s * 0.84, ox + s * 0.72, oy + s * 0.84, rgb, 1.7);
+    }
+
+    pub fn draw_icon_refresh(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let cx = x as f32 + s * 0.5;
+        let cy = y as f32 + s * 0.5;
+        self.draw_circle(cx, cy, s * 0.34, rgb, 1.8, false);
+        self.draw_line(cx + s * 0.12, cy - s * 0.34, cx + s * 0.36, cy - s * 0.34, rgb, 1.8);
+        self.draw_line(cx + s * 0.36, cy - s * 0.34, cx + s * 0.36, cy - s * 0.10, rgb, 1.8);
     }
 
     /// Measures the pixel width and height of a single line of text

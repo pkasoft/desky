@@ -189,6 +189,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 let slot_worker = Arc::clone(&decode_slot);
                 let disp_worker = display_target.clone();
                 std::thread::spawn(move || {
+                    let mut logged_codec_info = false;
                     let mut logged_first = false;
                     let mut h264_decoder = crate::platform::codec::PlatformH264Decoder::new().ok();
                     let mut h265_decoder = crate::platform::codec::PlatformH265Decoder::new().ok();
@@ -215,8 +216,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
 
                         if let Some((f_id, orig_w, orig_h, frame_bytes, codec_type)) = job {
                             crate::p2p::state::set_active_stream_codec(codec_type);
-                            if !logged_first {
-                                logged_first = true;
+                            if !logged_codec_info {
+                                logged_codec_info = true;
                                 tracing::info!(
                                     "Active Remote Video Stream: Codec = '{}' ({}x{})",
                                     crate::p2p::state::get_active_stream_codec_name(),

@@ -1,13 +1,14 @@
 //! Dedicated Multi-Tab Session Manager (Linux X11)
 //!
-//! Mirrors `src/windows/ui/viewport/tabs.rs` for managing `[ Home ]` and
-//! active remote computer session tabs.
+//! Mirrors `src/windows/ui/viewport/tabs.rs` for managing `[ Home ]`,
+//! active remote computer session tabs, monitor selection, and admin mode state.
 
 #![allow(dead_code)]
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+use super::settings_modal::{CAPTURE_CURSOR, SHOW_SETTINGS_MODAL, TARGET_FPS};
 use crate::linux::ui::launcher::request_main_redraw;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -18,6 +19,15 @@ pub struct SessionTab {
 
 static SESSION_TABS: OnceLock<Mutex<Vec<SessionTab>>> = OnceLock::new();
 pub static ACTIVE_TAB_INDEX: AtomicUsize = AtomicUsize::new(0);
+pub static ACTIVE_REMOTE_MONITOR: AtomicU32 = AtomicU32::new(0);
+
+// Toolbar visibility: true = shown, false = collapsed/hidden
+pub static SHOW_TOOLBAR: AtomicBool = AtomicBool::new(true);
+
+// Silent Admin Mode toggle: false = normal desktop stream, true = background admin manager
+pub static VIEWPORT_IS_ADMIN_MODE: AtomicBool = AtomicBool::new(false);
+pub static ADMIN_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
+pub static REMOTE_PRIVACY_MODE: AtomicBool = AtomicBool::new(false);
 
 fn tabs_store() -> &'static Mutex<Vec<SessionTab>> {
     SESSION_TABS.get_or_init(|| {
@@ -44,6 +54,7 @@ pub fn get_session_tabs() -> Vec<SessionTab> {
 }
 
 pub fn switch_session_tab(tab_idx: usize) {
+    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
     let tabs = get_session_tabs();
     if let Some(tab) = tabs.get(tab_idx) {
         ACTIVE_TAB_INDEX.store(tab_idx, Ordering::Relaxed);
@@ -57,7 +68,11 @@ pub fn switch_session_tab(tab_idx: usize) {
                 .unwrap_or(false);
 
             if !is_active || !matches_active {
-                crate::p2p::start_client_session(&tab.id, 60, true);
+                crate::p2p::start_client_session(
+                    &tab.id,
+                    TARGET_FPS.load(Ordering::Relaxed),
+                    CAPTURE_CURSOR.load(Ordering::Relaxed),
+                );
             }
         }
         request_main_redraw();
@@ -91,6 +106,7 @@ pub fn close_session_tab(tab_idx: usize) {
 }
 
 pub fn spawn_or_add_tab_viewport(target: &str) {
+    SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
     let mut idx = 1;
     if let Ok(mut tabs) = tabs_store().lock() {
         if tabs.is_empty() {
@@ -110,6 +126,10 @@ pub fn spawn_or_add_tab_viewport(target: &str) {
         }
     }
     ACTIVE_TAB_INDEX.store(idx, Ordering::Relaxed);
-    crate::p2p::start_client_session(target, 60, true);
+    crate::p2p::start_client_session(
+        target,
+        TARGET_FPS.load(Ordering::Relaxed),
+        CAPTURE_CURSOR.load(Ordering::Relaxed),
+    );
     request_main_redraw();
 }

@@ -452,10 +452,20 @@ pub fn get_active_stream_codec_badge() -> &'static str {
 // 1 = Force H.265 (HEVC GPU)
 // 2 = Force H.264 (AVC GPU)
 // 3 = Force Motion-JPEG (4:4:4 SIMD)
+#[cfg(target_os = "windows")]
 pub static CLIENT_CODEC_PREF: AtomicU8 = AtomicU8::new(0);
+#[cfg(target_os = "linux")]
+pub static CLIENT_CODEC_PREF: AtomicU8 = AtomicU8::new(3);
 
 pub fn get_client_codec_pref() -> u8 {
-    CLIENT_CODEC_PREF.load(Ordering::Relaxed)
+    let pref = CLIENT_CODEC_PREF.load(Ordering::Relaxed);
+    #[cfg(target_os = "linux")]
+    {
+        if pref == 0 && !crate::platform::codec::is_h264_decode_hardware_available() {
+            return 3;
+        }
+    }
+    pref
 }
 
 pub fn set_client_codec_pref(pref: u8) {
@@ -463,7 +473,20 @@ pub fn set_client_codec_pref(pref: u8) {
         1 if crate::platform::codec::is_h265_hardware_available() => 1,
         2 if crate::platform::codec::is_h264_hardware_available() => 2,
         3 => 3,
-        _ => 0,
+        _ => {
+            #[cfg(target_os = "linux")]
+            {
+                if !crate::platform::codec::is_h264_decode_hardware_available() {
+                    3
+                } else {
+                    0
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                0
+            }
+        }
     };
     CLIENT_CODEC_PREF.store(sanitized, Ordering::Relaxed);
 }
