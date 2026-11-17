@@ -54,7 +54,7 @@ Desky is an ultra-lightweight, high-framerate remote desktop application designe
 ### Build
 
 ```bash
-git clone git@github.com:PraxiumX/desky.git
+git clone git@github.com:pkasoft/desky.git
 cd desky
 cargo build --release
 ```
