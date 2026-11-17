@@ -41,6 +41,10 @@ fn main() -> anyhow::Result<()> {
     info!(" Desky v{} - Native Remote Desktop", env!("CARGO_PKG_VERSION"));
     #[cfg(target_os = "windows")]
     {
+        if std::env::args().any(|a| a == "--uninstall") {
+            windows::install::uninstall_from_system();
+            return Ok(());
+        }
         info!(" Operating System: Windows 64-bit");
         info!(" UI Architecture: Direct Win32 pkasoft.com White Theme");
         info!(" Graphics: High-Speed GDI & 4:4:4 Pipeline");

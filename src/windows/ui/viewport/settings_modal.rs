@@ -1,26 +1,46 @@
 //! Full-Screen Settings View & Diagnostics Page
+//!
+//! Two-pane responsive architecture:
+//! - Left Sidebar: Category navigation with native Lucide vector icons
+//! - Right Content Area: Modern grouped cards, interactive segment pills,
+//!   and native Windows desktop shortcut & installation management.
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_SEMIBOLD, HDC, HGDIOBJ,
-    InvalidateRect, TRANSPARENT,
+    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, InvalidateRect,
+    SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT, DT_RIGHT, DT_SINGLELINE,
+    DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ, TRANSPARENT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    LoadCursorW, MessageBoxW, SetCursor, IDC_ARROW, IDC_HAND, MB_ICONERROR, MB_ICONINFORMATION,
+    MB_OK,
 };
 
 use super::theme::{
-    create_segoe_font, draw_rounded_box, format_bitrate, PK_BG, PK_CARD,
-    PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
+    create_mono_font, create_segoe_font, draw_rounded_box, format_bitrate,
+    PK_BG, PK_BTN_HOVER, PK_CARD, PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT,
+    PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
 };
 
 // Full-Screen Settings Page state
 pub static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 
 // Active settings sidebar category:
-// 0 = Stream & Display, 1 = Codecs, 2 = Recording, 3 = Security, 4 = Connection Info
+// 0 = General (App info, Desktop Shortcut / Install, Identity)
+// 1 = Display & Stream (Scaling, FPS, Quality Presets, Cursor)
+// 2 = Hardware Codecs (GPU Acceleration, Codec Prefs, 4:4:4)
+// 3 = Audio & Voice (Desktop Audio, Voice Intercom)
+// 4 = Security & Access (Unattended Password, E2EE, Screen Privacy)
+// 5 = Session Recording (Channels, Quality Scale, Save Folder)
+// 6 = About & Diagnostics (Latency Ping, Bitrate, System Specs, AGPL License)
 pub static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
+
+// Hover element tracker for interactive styling
+pub static SETTINGS_HOVER_ID: AtomicI32 = AtomicI32::new(-1);
 
 // Display mode: 0 = Auto Fit, 1 = Fill Window, 2 = 1:1 Original resolution
 pub static DISPLAY_MODE: AtomicU8 = AtomicU8::new(0);
@@ -31,17 +51,27 @@ pub static TARGET_FPS: AtomicU32 = AtomicU32::new(60);
 // Remote cursor capture toggle
 pub static CAPTURE_CURSOR: AtomicBool = AtomicBool::new(true);
 
+pub const CATEGORY_NAMES: [(&str, &str); 7] = [
+    ("General", "App mode, desktop shortcuts & machine identity"),
+    ("Display & Stream", "Display scaling, framerate & stream quality"),
+    ("Hardware Codecs", "GPU hardware acceleration & video codecs"),
+    ("Audio & Voice", "Desktop audio streaming & voice intercom"),
+    ("Security & Access", "Unattended access, E2EE encryption & privacy"),
+    ("Session Recording", "Screen recording quality, audio & save directory"),
+    ("About & Network", "Connection diagnostics, system specs & license"),
+];
+
 pub unsafe fn draw_fullscreen_settings_view(
     hdc: HDC,
     client_w: i32,
     client_h: i32,
     mode: u8,
-    fps: u32,
+    _fps: u32,
     top_y: i32,
     orig_w: u32,
     orig_h: u32,
 ) {
-    // 1. Full-Screen Canvas (PK_BG)
+    // 1. Full-Screen Canvas Fill
     let full_rect = RECT {
         left: 0,
         top: top_y,
@@ -52,541 +82,1067 @@ pub unsafe fn draw_fullscreen_settings_view(
     FillRect(hdc, &full_rect, bg_brush);
     let _ = DeleteObject(HGDIOBJ(bg_brush.0));
 
-    let line_brush = CreateSolidBrush(PK_CARD_BORDER);
-    let green_brush = CreateSolidBrush(PK_GREEN);
-    let green_dark_brush = CreateSolidBrush(PK_GREEN_DARK);
-    let input_brush = CreateSolidBrush(PK_INPUT_BG);
-    let disabled_brush = CreateSolidBrush(COLORREF(0x00EAEAEA));
-
-    let font_title = create_segoe_font(16, FW_BOLD);
-    let font_lbl = create_segoe_font(13, FW_SEMIBOLD);
-    let font_btn = create_segoe_font(12, FW_SEMIBOLD);
-
     SetBkMode(hdc, TRANSPARENT);
 
-    let panel_w = (client_w - 48).clamp(340, 640);
-    let panel_x = (client_w - panel_w) / 2;
+    let hover_id = SETTINGS_HOVER_ID.load(Ordering::Relaxed);
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
 
-    // Top Navigation & Close Bar (5 categories: Display, Codecs, Recording, Security, Info)
-    let tab_y = top_y + 14;
-    let tab_h = 32;
-    let close_w = 76;
-    let close_x = panel_x + panel_w - close_w;
-    let cat_w = (panel_w - close_w - 30) / 5;
-    let cat0_x = panel_x;
-    let cat1_x = cat0_x + cat_w + 6;
-    let cat2_x = cat1_x + cat_w + 6;
-    let cat3_x = cat2_x + cat_w + 6;
-    let cat4_x = cat3_x + cat_w + 6;
-
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(4);
-
-    let old_font = SelectObject(hdc, HGDIOBJ(font_btn.0));
-
-    // Category 0: Display Tab Button
-    let (c0_bg, c0_border, c0_fg) = if active_cat == 0 {
-        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    // Responsive geometry:
+    // Left sidebar + right content pane
+    let pad_x = if client_w >= 900 { 28 } else { 16 };
+    let pad_y = 16;
+    let sidebar_w = if client_w >= 1000 {
+        220
+    } else if client_w >= 780 {
+        190
     } else {
-        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        160
     };
-    draw_rounded_box(hdc, cat0_x, tab_y, cat_w, tab_h, c0_bg, c0_border, 6);
-    SetTextColor(hdc, c0_fg);
-    let mut c0_txt: Vec<u16> = "Display".encode_utf16().collect();
-    let mut c0_rc = RECT { left: cat0_x, top: tab_y, right: cat0_x + cat_w, bottom: tab_y + tab_h };
-    let _ = DrawTextW(hdc, &mut c0_txt, &mut c0_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
 
-    // Category 1: Codecs Tab Button
-    let (c1_bg, c1_border, c1_fg) = if active_cat == 1 {
-        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
-    } else {
-        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
-    };
-    draw_rounded_box(hdc, cat1_x, tab_y, cat_w, tab_h, c1_bg, c1_border, 6);
-    SetTextColor(hdc, c1_fg);
-    let mut c1_txt: Vec<u16> = "Codecs".encode_utf16().collect();
-    let mut c1_rc = RECT { left: cat1_x, top: tab_y, right: cat1_x + cat_w, bottom: tab_y + tab_h };
-    let _ = DrawTextW(hdc, &mut c1_txt, &mut c1_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    let sidebar_x = pad_x;
+    let sidebar_y = top_y + pad_y;
+    let sidebar_h = client_h - sidebar_y - pad_y;
 
-    // Category 2: Recording Tab Button
-    let (c2_bg, c2_border, c2_fg) = if active_cat == 2 {
-        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
-    } else {
-        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
-    };
-    draw_rounded_box(hdc, cat2_x, tab_y, cat_w, tab_h, c2_bg, c2_border, 6);
-    SetTextColor(hdc, c2_fg);
-    let mut c2_txt: Vec<u16> = "Recording".encode_utf16().collect();
-    let mut c2_rc = RECT { left: cat2_x, top: tab_y, right: cat2_x + cat_w, bottom: tab_y + tab_h };
-    let _ = DrawTextW(hdc, &mut c2_txt, &mut c2_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    let content_x = sidebar_x + sidebar_w + 20;
+    let content_w = (client_w - content_x - pad_x).max(300);
+    let content_y = sidebar_y;
+    let _content_h = sidebar_h;
 
-    // Category 3: Security Tab Button
-    let (c3_bg, c3_border, c3_fg) = if active_cat == 3 {
-        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
-    } else {
-        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
-    };
-    draw_rounded_box(hdc, cat3_x, tab_y, cat_w, tab_h, c3_bg, c3_border, 6);
-    SetTextColor(hdc, c3_fg);
-    let mut c3_txt: Vec<u16> = "Security".encode_utf16().collect();
-    let mut c3_rc = RECT { left: cat3_x, top: tab_y, right: cat3_x + cat_w, bottom: tab_y + tab_h };
-    let _ = DrawTextW(hdc, &mut c3_txt, &mut c3_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    // Fonts
+    let font_header = create_segoe_font(18, FW_BOLD);
+    let font_title = create_segoe_font(15, FW_BOLD);
+    let font_tab = create_segoe_font(13, FW_SEMIBOLD);
+    let font_sub = create_segoe_font(12, FW_NORMAL);
+    let font_btn = create_segoe_font(12, FW_SEMIBOLD);
+    let font_mono = create_mono_font(12, FW_NORMAL);
+    let font_badge = create_segoe_font(11, FW_BOLD);
 
-    // Category 4: Info Tab Button
-    let (c4_bg, c4_border, c4_fg) = if active_cat == 4 {
-        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
-    } else {
-        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
-    };
-    draw_rounded_box(hdc, cat4_x, tab_y, cat_w, tab_h, c4_bg, c4_border, 6);
-    SetTextColor(hdc, c4_fg);
-    let mut c4_txt: Vec<u16> = "Info".encode_utf16().collect();
-    let mut c4_rc = RECT { left: cat4_x, top: tab_y, right: cat4_x + cat_w, bottom: tab_y + tab_h };
-    let _ = DrawTextW(hdc, &mut c4_txt, &mut c4_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+    // ==========================================
+    // 2. LEFT SIDEBAR NAVIGATION
+    // ==========================================
+    // Sidebar background panel
+    draw_rounded_box(hdc, sidebar_x, sidebar_y, sidebar_w, sidebar_h, PK_CARD, PK_CARD_BORDER, 8);
 
-    // Close Button [ Close × ]
-    draw_rounded_box(hdc, close_x, tab_y, close_w, tab_h, PK_CARD, PK_CARD_BORDER, 6);
+    // Sidebar Section Header: "DESKY SETTINGS"
+    let _ = SelectObject(hdc, HGDIOBJ(font_badge.0));
     SetTextColor(hdc, PK_MUTED);
-    let mut close_txt: Vec<u16> = "Close ×".encode_utf16().collect();
-    let mut close_rc = RECT { left: close_x, top: tab_y, right: close_x + close_w, bottom: tab_y + tab_h };
-    let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
-    let draw_segmented_strip_ext = |x: i32, y: i32, w: i32, h: i32, labels: &[&str], enabled: &[bool], active_idx: usize| {
-        let count = labels.len().max(1) as i32;
-        let seg_w = w / count;
-
-        draw_rounded_box(hdc, x, y, w, h, PK_INPUT_BG, PK_CARD_BORDER, 6);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        for (i, label) in labels.iter().enumerate() {
-            let sx = x + (i as i32) * seg_w;
-            let sr = if i as i32 == count - 1 { x + w } else { sx + seg_w };
-            let is_active = i == active_idx;
-            let is_enabled = enabled.get(i).copied().unwrap_or(true);
-
-            let cell_rc = RECT {
-                left: sx + 1,
-                top: y + 1,
-                right: sr - 1,
-                bottom: y + h - 1,
-            };
-            if !is_enabled {
-                FillRect(hdc, &cell_rc, disabled_brush);
-                SetTextColor(hdc, COLORREF(0x00A0A0A0));
-            } else if is_active {
-                FillRect(hdc, &cell_rc, green_brush);
-                SetTextColor(hdc, COLORREF(0x00FFFFFF));
-            } else {
-                FillRect(hdc, &cell_rc, input_brush);
-                SetTextColor(hdc, PK_MUTED);
-            }
-
-            if (i as i32) < count - 1 {
-                let div_rc = RECT {
-                    left: sr - 1,
-                    top: y + 4,
-                    right: sr,
-                    bottom: y + h - 4,
-                };
-                FillRect(hdc, &div_rc, line_brush);
-            }
-
-            let mut lw: Vec<u16> = label.encode_utf16().collect();
-            let mut lrc = cell_rc;
-            let _ = DrawTextW(hdc, &mut lw, &mut lrc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-        }
+    let mut sb_head_txt: Vec<u16> = "DESKY SETTINGS".encode_utf16().collect();
+    let mut sb_head_rc = RECT {
+        left: sidebar_x + 16,
+        top: sidebar_y + 16,
+        right: sidebar_x + sidebar_w - 16,
+        bottom: sidebar_y + 34,
     };
+    let _ = DrawTextW(hdc, &mut sb_head_txt, &mut sb_head_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-    if active_cat == 0 {
-        // Category 0: Display Settings
-        let sec0_y = top_y + 60;
-        let strip_h = 36;
-        let step = 74;
+    // Sidebar Category Buttons
+    let item_h = 38;
+    let item_start_y = sidebar_y + 42;
+    for (i, (name, _)) in CATEGORY_NAMES.iter().enumerate() {
+        let iy = item_start_y + (i as i32) * (item_h + 4);
+        let ix = sidebar_x + 8;
+        let iw = sidebar_w - 16;
+        let is_active = (i as u8) == active_cat;
+        let is_hover = hover_id == 100 + (i as i32);
 
-        // 1. Display Scaling
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s0_lbl: Vec<u16> = "Display Scaling".encode_utf16().collect();
-        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
-        let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let scale_labels = ["Auto Fit", "Stretch", "Original (1:1)"];
-        let all_enabled = [true, true, true];
-        draw_segmented_strip_ext(panel_x, sec0_y + 22, panel_w, strip_h, &scale_labels, &all_enabled, (mode as usize).min(2));
-
-        // 2. Stream Quality
-        let sec1_y = sec0_y + step;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s1_lbl: Vec<u16> = "Stream Quality".encode_utf16().collect();
-        let mut s1_rc = RECT { left: panel_x, top: sec1_y, right: panel_x + panel_w, bottom: sec1_y + 20 };
-        let _ = DrawTextW(hdc, &mut s1_lbl, &mut s1_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let q_mode = crate::p2p::get_quality_mode() as usize;
-        let q_labels = ["Auto (ABR)", "High Quality", "Balanced", "Low Data"];
-        let q_enabled = [true, true, true, true];
-        let q_idx = match q_mode {
-            0 => 0,
-            1 | 2 => 1,
-            3 => 2,
-            _ => 3,
-        };
-        draw_segmented_strip_ext(panel_x, sec1_y + 22, panel_w, strip_h, &q_labels, &q_enabled, q_idx);
-
-        // 3. Target Framerate
-        let sec2_y = sec1_y + step;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s2_lbl: Vec<u16> = "Target Framerate".encode_utf16().collect();
-        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
-        let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let fps_labels = ["30 FPS (Low Data)", "60 FPS (Smooth)", "120 FPS (Ultra)"];
-        let fps_enabled = [true, true, true];
-        let fps_idx = match fps {
-            30 => 0,
-            120 => 2,
-            _ => 1,
-        };
-        draw_segmented_strip_ext(panel_x, sec2_y + 22, panel_w, strip_h, &fps_labels, &fps_enabled, fps_idx);
-
-        // 4. Remote Cursor Rendering
-        let sec3_y = sec2_y + step;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s3_lbl: Vec<u16> = "Remote Cursor Rendering".encode_utf16().collect();
-        let mut s3_rc = RECT { left: panel_x, top: sec3_y, right: panel_x + panel_w, bottom: sec3_y + 20 };
-        let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let cur_labels = ["Show Cursor", "Hide Cursor"];
-        let cur_enabled = [true, true];
-        let cursor_on = CAPTURE_CURSOR.load(Ordering::Relaxed);
-        draw_segmented_strip_ext(panel_x, sec3_y + 22, panel_w, strip_h, &cur_labels, &cur_enabled, if cursor_on { 0 } else { 1 });
-
-        // Bottom [ Done ] Button
-        let done_y = sec3_y + step + 6;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, COLORREF(0x00FFFFFF));
-        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
-        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
-        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    } else if active_cat == 1 {
-        // Category 1: Codec Settings
-        let sec0_y = top_y + 60;
-        let strip_h = 36;
-        let step = 74;
-
-        // 1. Codec Selection Strip with Active / Passive indicators
-        let h264_hw = crate::platform::codec::is_h264_hardware_available();
-        let h265_hw = crate::platform::codec::is_h265_hardware_available();
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s0_lbl: Vec<u16> = "Video Codec Selection & Hardware Offload".encode_utf16().collect();
-        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
-        let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let codec_labels = [
-            "Auto (Best)",
-            if h265_hw { "H.265 (HEVC)" } else { "H.265 (N/A)" },
-            if h264_hw { "H.264 (AVC)" } else { "H.264 (N/A)" },
-            "Motion-JPEG",
-        ];
-        let codec_enabled = [true, h265_hw, h264_hw, true];
-        let pref_idx = crate::p2p::get_client_codec_pref() as usize;
-        draw_segmented_strip_ext(panel_x, sec0_y + 22, panel_w, strip_h, &codec_labels, &codec_enabled, pref_idx.min(3));
-
-        // 2. Active Session Pipeline Card
-        let sec1_y = sec0_y + step;
-        let card1_h = 60;
-        draw_rounded_box(hdc, panel_x, sec1_y, panel_w, card1_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, PK_GREEN_DARK);
-        let active_name = crate::p2p::get_active_stream_codec_name();
-        let active_title = format!("Active Transmission: {}", active_name);
-        let mut at_w: Vec<u16> = active_title.encode_utf16().collect();
-        let mut at_rc = RECT { left: panel_x + 12, top: sec1_y + 8, right: panel_x + panel_w - 12, bottom: sec1_y + 30 };
-        let _ = DrawTextW(hdc, &mut at_w, &mut at_rc, DT_SINGLELINE | DT_VCENTER);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_MUTED);
-        let desc = match crate::p2p::get_active_stream_codec() {
-            0x16 => "Hardware MFT accelerated (NV12 with macroblock & stride boundary guards)",
-            0x17 => "Hardware Transform accelerated (HEVC Main Profile 60 FPS zero-copy)",
-            _ => "Universal baseline (Pure-Rust SIMD 4:4:4 Chroma, zero-latency JPEG)",
-        };
-        let mut d_w: Vec<u16> = desc.encode_utf16().collect();
-        let mut d_rc = RECT { left: panel_x + 12, top: sec1_y + 32, right: panel_x + panel_w - 12, bottom: sec1_y + 54 };
-        let _ = DrawTextW(hdc, &mut d_w, &mut d_rc, DT_SINGLELINE | DT_VCENTER);
-
-        // 3. Hardware Capabilities Summary Box
-        let sec2_y = sec1_y + card1_h + 14;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s2_lbl: Vec<u16> = "Hardware Codec Availability".encode_utf16().collect();
-        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
-        let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let card2_h = 82;
-        draw_rounded_box(hdc, panel_x, sec2_y + 22, panel_w, card2_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        let cap_txt = format!(
-            "• H.264 / AVC GPU: {}\n• H.265 / HEVC GPU: {}\n• Motion-JPEG: ACTIVE (Universal Pure-Rust SIMD 4:4:4 Baseline)",
-            if h264_hw { "ACTIVE (Hardware MFT Acceleration Ready)" } else { "PASSIVE (No Hardware MFT)" },
-            if h265_hw { "ACTIVE (Hardware MFT Ready)" } else { "PASSIVE (Requires HEVC Video Extensions from Microsoft)" },
-        );
-        SetTextColor(hdc, PK_TEXT);
-        let mut c_w: Vec<u16> = cap_txt.encode_utf16().collect();
-        let mut c_rc = RECT { left: panel_x + 12, top: sec2_y + 26, right: panel_x + panel_w - 12, bottom: sec2_y + 22 + card2_h - 4 };
-        let _ = DrawTextW(hdc, &mut c_w, &mut c_rc, DT_WORDBREAK);
-
-        // Bottom [ Done ] Button
-        let done_y = sec2_y + 22 + card2_h + 24;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, COLORREF(0x00FFFFFF));
-        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
-        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
-        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    } else if active_cat == 2 {
-        // Category 2: Recording Settings
-        let sec0_y = top_y + 60;
-        let strip_h = 36;
-        let step = 70;
-
-        let all_2_enabled = [true, true];
-        let all_3_enabled = [true, true, true];
-
-        // 1. Audio Capture: Remote Media
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s0_lbl: Vec<u16> = "Target Machine Media Audio (Remote Loopback)".encode_utf16().collect();
-        let mut s0_rc = RECT { left: panel_x, top: sec0_y, right: panel_x + panel_w, bottom: sec0_y + 20 };
-        let _ = DrawTextW(hdc, &mut s0_lbl, &mut s0_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let rem_audio_on = crate::recorder::is_remote_audio_recording_enabled();
-        let rem_labels = ["Capture Target Media (ON)", "Mute Target Audio"];
-        draw_segmented_strip_ext(panel_x, sec0_y + 22, panel_w, strip_h, &rem_labels, &all_2_enabled, if rem_audio_on { 0 } else { 1 });
-
-        // 2. Audio Capture: This Machine (Local)
-        let sec1_y = sec0_y + step;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s1_lbl: Vec<u16> = "This Machine Audio (Local Microphone / Host)".encode_utf16().collect();
-        let mut s1_rc = RECT { left: panel_x, top: sec1_y, right: panel_x + panel_w, bottom: sec1_y + 20 };
-        let _ = DrawTextW(hdc, &mut s1_lbl, &mut s1_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let loc_audio_on = crate::recorder::is_local_audio_recording_enabled();
-        let loc_labels = ["Capture This Machine (ON)", "Mute Local Audio"];
-        draw_segmented_strip_ext(panel_x, sec1_y + 22, panel_w, strip_h, &loc_labels, &all_2_enabled, if loc_audio_on { 0 } else { 1 });
-
-        // 3. Recording Quality Scale
-        let sec2_y = sec1_y + step;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s2_lbl: Vec<u16> = "Recording Resolution Scale".encode_utf16().collect();
-        let mut s2_rc = RECT { left: panel_x, top: sec2_y, right: panel_x + panel_w, bottom: sec2_y + 20 };
-        let _ = DrawTextW(hdc, &mut s2_lbl, &mut s2_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let scale_val = crate::recorder::get_recording_quality_scale() as usize;
-        let scale_labels = ["Native (100%)", "Balanced (75%)", "Compact (50%)"];
-        draw_segmented_strip_ext(panel_x, sec2_y + 22, panel_w, strip_h, &scale_labels, &all_3_enabled, scale_val.min(2));
-
-        // 4. Storage Folder card with Open Folder button
-        let sec3_y = sec2_y + step;
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_TEXT);
-        let mut s3_lbl: Vec<u16> = "Recordings Storage Folder".encode_utf16().collect();
-        let mut s3_rc = RECT { left: panel_x, top: sec3_y, right: panel_x + panel_w, bottom: sec3_y + 20 };
-        let _ = DrawTextW(hdc, &mut s3_lbl, &mut s3_rc, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
-
-        let card_h = 44;
-        let folder_card_y = sec3_y + 22;
-        draw_rounded_box(hdc, panel_x, folder_card_y, panel_w, card_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
-
-        let save_dir_str = crate::recorder::get_recording_save_dir().to_string_lossy().to_string();
-        let btn_open_w = 110;
-        let btn_open_x = panel_x + panel_w - btn_open_w - 6;
-        let btn_open_y = folder_card_y + 5;
-        let btn_open_h = 34;
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_MUTED);
-        let mut dir_w: Vec<u16> = save_dir_str.encode_utf16().collect();
-        let mut dir_rc = RECT { left: panel_x + 12, top: folder_card_y, right: btn_open_x - 8, bottom: folder_card_y + card_h };
-        let _ = DrawTextW(hdc, &mut dir_w, &mut dir_rc, DT_SINGLELINE | DT_VCENTER);
-
-        draw_rounded_box(hdc, btn_open_x, btn_open_y, btn_open_w, btn_open_h, PK_GREEN_TINT, PK_GREEN, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, PK_GREEN_DARK);
-        let mut btn_open_txt: Vec<u16> = "Open Folder".encode_utf16().collect();
-        let mut btn_open_rc = RECT { left: btn_open_x, top: btn_open_y, right: btn_open_x + btn_open_w, bottom: btn_open_y + btn_open_h };
-        let _ = DrawTextW(hdc, &mut btn_open_txt, &mut btn_open_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-
-        // Bottom [ Done ] Button
-        let done_y = folder_card_y + card_h + 20;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, COLORREF(0x00FFFFFF));
-        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
-        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
-        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    } else if active_cat == 3 {
-        // Category 3: Unattended Security
-        let is_unattended = crate::identity::is_unattended_enabled();
-        let sec_y = top_y + 60;
-
-        // Card 1: Status box
-        draw_rounded_box(hdc, panel_x, sec_y, panel_w, 76, PK_INPUT_BG, PK_CARD_BORDER, 8);
-        crate::ui::draw_lock(hdc, panel_x + 16, sec_y + 16, 24, if is_unattended { PK_GREEN } else { PK_MUTED }, 2);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, if is_unattended { PK_GREEN_DARK } else { PK_TEXT });
-        let status_title = if is_unattended { "Unattended Access: ACTIVE" } else { "Unattended Access: DISABLED" };
-        let mut st_w: Vec<u16> = status_title.encode_utf16().collect();
-        let mut st_rc = RECT { left: panel_x + 50, top: sec_y + 10, right: panel_x + panel_w - 16, bottom: sec_y + 34 };
-        let _ = DrawTextW(hdc, &mut st_w, &mut st_rc, DT_SINGLELINE | DT_VCENTER);
-
-        let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-        SetTextColor(hdc, PK_MUTED);
-        let status_desc = if is_unattended {
-            "Permanent master password is set with salted SHA-256 hash. Authorized remote desks authenticate automatically."
+        let (bg, border, fg) = if is_active {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if is_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
-            "Unattended access is off. Incoming connection requests must be manually accepted at this desk."
+            (PK_CARD, PK_CARD, PK_MUTED)
         };
-        let mut sd_w: Vec<u16> = status_desc.encode_utf16().collect();
-        let mut sd_rc = RECT { left: panel_x + 50, top: sec_y + 36, right: panel_x + panel_w - 16, bottom: sec_y + 70 };
-        let _ = DrawTextW(hdc, &mut sd_w, &mut sd_rc, DT_WORDBREAK);
 
-        // Card 2: Action Toggle Button
-        let act_y = sec_y + 92;
-        let btn_w = 230;
-        let btn_h = 40;
-        let btn_x = panel_x + (panel_w - btn_w) / 2;
+        draw_rounded_box(hdc, ix, iy, iw, item_h, bg, border, 6);
 
-        if is_unattended {
-            draw_rounded_box(hdc, btn_x, act_y, btn_w, btn_h, COLORREF(0x00EBF0FF), PK_RED, 6);
-            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-            SetTextColor(hdc, PK_RED);
-            let mut btn_txt: Vec<u16> = "Disable Unattended Access".encode_utf16().collect();
-            let mut btn_rc = RECT { left: btn_x, top: act_y, right: btn_x + btn_w, bottom: act_y + btn_h };
-            let _ = DrawTextW(hdc, &mut btn_txt, &mut btn_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-        } else {
-            draw_rounded_box(hdc, btn_x, act_y, btn_w, btn_h, PK_GREEN_TINT, PK_GREEN, 6);
-            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-            SetTextColor(hdc, PK_GREEN_DARK);
-            let mut btn_txt: Vec<u16> = "Enable Master Password".encode_utf16().collect();
-            let mut btn_rc = RECT { left: btn_x, top: act_y, right: btn_x + btn_w, bottom: act_y + btn_h };
-            let _ = DrawTextW(hdc, &mut btn_txt, &mut btn_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        // Active left accent indicator bar
+        if is_active {
+            let acc_brush = CreateSolidBrush(PK_GREEN);
+            let acc_rc = RECT {
+                left: ix + 2,
+                top: iy + 8,
+                right: ix + 5,
+                bottom: iy + item_h - 8,
+            };
+            FillRect(hdc, &acc_rc, acc_brush);
+            let _ = DeleteObject(HGDIOBJ(acc_brush.0));
         }
 
-        // Bottom [ Done ] Button
-        let done_y = act_y + 64;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, COLORREF(0x00FFFFFF));
-        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
-        let mut done_rc = RECT { left: done_x, top: done_y, right: done_x + done_w, bottom: done_y + done_h };
-        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
-    } else {
-        // Category 4: Connection Info
-        let (_active_q, active_scale, _active_c444) = crate::p2p::get_active_quality_params();
-        let bitrate_str = format_bitrate(crate::p2p::get_session_bitrate_kbps());
-        let rtt_ms = crate::p2p::get_session_rtt_ms();
-        let res_str = if orig_w > 0 && orig_h > 0 {
-            format!("{}x{} ({}%)", orig_w, orig_h, active_scale)
-        } else {
-            format!("{}% Native", active_scale)
-        };
-
-        let rows = [
-            (
-                "Latency (Ping)",
-                if rtt_ms > 0 {
-                    format!("{} ms", rtt_ms)
-                } else {
-                    "Local LAN (<1 ms)".to_string()
-                },
-            ),
-            ("Stream Bitrate", bitrate_str),
-            ("Resolution", res_str),
-            ("Video Codec", crate::p2p::get_active_stream_codec_name().to_string()),
-            ("Encryption", "ChaCha20-Poly1305 E2EE".to_string()),
-        ];
-
-        let row_h = 40;
-        let tbl_y = top_y + 60;
-        for (i, (k, v)) in rows.iter().enumerate() {
-            let ry = tbl_y + (i as i32) * (row_h + 4);
-            let row_bg = if i % 2 == 0 { PK_CARD } else { PK_INPUT_BG };
-            draw_rounded_box(hdc, panel_x, ry, panel_w, row_h, row_bg, PK_CARD_BORDER, 6);
-
-            let _ = SelectObject(hdc, HGDIOBJ(font_lbl.0));
-            SetTextColor(hdc, PK_MUTED);
-            let mut kw: Vec<u16> = k.encode_utf16().collect();
-            let mut k_rc = RECT {
-                left: panel_x + 16,
-                top: ry,
-                right: panel_x + 200,
-                bottom: ry + row_h,
-            };
-            let _ = DrawTextW(hdc, &mut kw, &mut k_rc, DT_SINGLELINE | DT_VCENTER);
-
-            let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-            SetTextColor(hdc, PK_GREEN_DARK);
-            let mut vw: Vec<u16> = v.encode_utf16().collect();
-            let mut v_rc = RECT {
-                left: panel_x + 200,
-                top: ry,
-                right: panel_x + panel_w - 16,
-                bottom: ry + row_h,
-            };
-            let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+        // Vector Icon for category
+        let icon_x = ix + 12;
+        let icon_y = iy + (item_h - 16) / 2;
+        match i {
+            0 => crate::ui::draw_settings(hdc, icon_x, icon_y, 16, fg, 2),
+            1 => crate::ui::draw_monitor(hdc, icon_x, icon_y, 16, fg, 2),
+            2 => crate::ui::draw_cpu(hdc, icon_x, icon_y, 16, fg, 2),
+            3 => crate::ui::draw_volume(hdc, icon_x, icon_y, 16, fg, 2),
+            4 => crate::ui::draw_lock(hdc, icon_x, icon_y, 16, fg, 2),
+            5 => crate::ui::draw_record(hdc, icon_x, icon_y, 16, fg, 2, false),
+            _ => crate::ui::draw_info(hdc, icon_x, icon_y, 16, fg, 2),
         }
 
-        // Bottom [ Done ] Button
-        let done_y = tbl_y + (rows.len() as i32) * (row_h + 4) + 24;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        draw_rounded_box(hdc, done_x, done_y, done_w, done_h, PK_GREEN, PK_GREEN_DARK, 6);
-        let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
-        SetTextColor(hdc, COLORREF(0x00FFFFFF));
-        let mut done_txt: Vec<u16> = "Done".encode_utf16().collect();
-        let mut done_rc = RECT {
-            left: done_x,
-            top: done_y,
-            right: done_x + done_w,
-            bottom: done_y + done_h,
+        // Category Text Label
+        let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
+        SetTextColor(hdc, fg);
+        let mut name_txt: Vec<u16> = name.encode_utf16().collect();
+        let mut name_rc = RECT {
+            left: ix + 36,
+            top: iy,
+            right: ix + iw - 6,
+            bottom: iy + item_h,
         };
-        let _ = DrawTextW(hdc, &mut done_txt, &mut done_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        let _ = DrawTextW(hdc, &mut name_txt, &mut name_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     }
 
-    let _ = SelectObject(hdc, old_font);
-    let _ = DeleteObject(HGDIOBJ(line_brush.0));
-    let _ = DeleteObject(HGDIOBJ(green_brush.0));
-    let _ = DeleteObject(HGDIOBJ(green_dark_brush.0));
-    let _ = DeleteObject(HGDIOBJ(input_brush.0));
-    let _ = DeleteObject(HGDIOBJ(disabled_brush.0));
+    // Sidebar bottom metadata badge
+    let _ = SelectObject(hdc, HGDIOBJ(font_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut ver_txt: Vec<u16> = format!("Desky v{}\npkasoft.com", env!("CARGO_PKG_VERSION"))
+        .encode_utf16()
+        .collect();
+    let mut ver_rc = RECT {
+        left: sidebar_x + 16,
+        top: sidebar_y + sidebar_h - 48,
+        right: sidebar_x + sidebar_w - 16,
+        bottom: sidebar_y + sidebar_h - 10,
+    };
+    let _ = DrawTextW(hdc, &mut ver_txt, &mut ver_rc, DT_LEFT);
+
+    // ==========================================
+    // 3. RIGHT CONTENT AREA
+    // ==========================================
+    // Content Header Bar
+    let header_y = content_y + 4;
+    let (cat_title, cat_subtitle) = CATEGORY_NAMES[active_cat as usize];
+
+    // Category Title
+    let _ = SelectObject(hdc, HGDIOBJ(font_header.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut title_txt: Vec<u16> = cat_title.encode_utf16().collect();
+    let mut title_rc = RECT {
+        left: content_x,
+        top: header_y,
+        right: content_x + content_w - 90,
+        bottom: header_y + 26,
+    };
+    let _ = DrawTextW(hdc, &mut title_txt, &mut title_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    // Category Subtitle
+    let _ = SelectObject(hdc, HGDIOBJ(font_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut sub_txt: Vec<u16> = cat_subtitle.encode_utf16().collect();
+    let mut sub_rc = RECT {
+        left: content_x,
+        top: header_y + 26,
+        right: content_x + content_w - 90,
+        bottom: header_y + 46,
+    };
+    let _ = DrawTextW(hdc, &mut sub_txt, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    // Quick-Exit [ ESC × ] Close button in top-right
+    let close_w = 78;
+    let close_h = 32;
+    let close_x = content_x + content_w - close_w;
+    let close_y = header_y;
+    let is_close_hover = hover_id == 9099;
+    let (c_bg, c_border, c_fg) = if is_close_hover {
+        (COLORREF(0x00EBF0FF), PK_RED, PK_RED)
+    } else {
+        (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+    };
+    draw_rounded_box(hdc, close_x, close_y, close_w, close_h, c_bg, c_border, 6);
+    let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
+    SetTextColor(hdc, c_fg);
+    let mut close_txt: Vec<u16> = "ESC ×".encode_utf16().collect();
+    let mut close_rc = RECT {
+        left: close_x,
+        top: close_y,
+        right: close_x + close_w,
+        bottom: close_y + close_h,
+    };
+    let _ = DrawTextW(hdc, &mut close_txt, &mut close_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    // Content Cards Container start Y
+    let body_y = header_y + 58;
+
+    // Render active category views
+    match active_cat {
+        0 => draw_category_general(
+            hdc, content_x, body_y, content_w, hover_id, font_title, font_sub, font_btn,
+            font_mono, font_badge,
+        ),
+        1 => draw_category_display(
+            hdc, content_x, body_y, content_w, mode, hover_id, font_title, font_sub, font_btn,
+        ),
+        2 => draw_category_codecs(
+            hdc, content_x, body_y, content_w, hover_id, font_title, font_sub, font_btn, font_badge,
+        ),
+        3 => draw_category_audio(
+            hdc, content_x, body_y, content_w, hover_id, font_title, font_sub, font_btn, font_badge,
+        ),
+        4 => draw_category_security(
+            hdc, content_x, body_y, content_w, hover_id, font_title, font_sub, font_btn, font_badge,
+        ),
+        5 => draw_category_recording(
+            hdc, content_x, body_y, content_w, hover_id, font_title, font_sub, font_btn, font_mono,
+        ),
+        _ => draw_category_about(
+            hdc, content_x, body_y, content_w, orig_w, orig_h, hover_id, font_title, font_sub,
+            font_btn, font_mono, font_badge,
+        ),
+    }
+
+    // GDI Cleanup
+    let _ = DeleteObject(HGDIOBJ(font_header.0));
     let _ = DeleteObject(HGDIOBJ(font_title.0));
-    let _ = DeleteObject(HGDIOBJ(font_lbl.0));
+    let _ = DeleteObject(HGDIOBJ(font_tab.0));
+    let _ = DeleteObject(HGDIOBJ(font_sub.0));
     let _ = DeleteObject(HGDIOBJ(font_btn.0));
+    let _ = DeleteObject(HGDIOBJ(font_mono.0));
+    let _ = DeleteObject(HGDIOBJ(font_badge.0));
 }
 
+// =========================================================================
+// Category 0: General (Desktop Shortcut & Windows Installation Highlight)
+// =========================================================================
+unsafe fn draw_category_general(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+    f_mono: windows::Win32::Graphics::Gdi::HFONT,
+    f_badge: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let is_installed = crate::windows::install::is_installed();
+    let just_installed = super::toolbar::JUST_INSTALLED.load(Ordering::Relaxed);
+
+    // 1. Hero Card: Windows Integration & Desktop Shortcut
+    let hero_h = 138;
+    let hero_border = if is_installed || just_installed { PK_GREEN } else { COLORREF(0x004F6A2D) };
+    draw_rounded_box(hdc, cx, cy, cw, hero_h, PK_CARD, hero_border, 8);
+
+    // Title & Status Badge
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut h_txt: Vec<u16> = "Desktop Shortcut & Windows Start Integration".encode_utf16().collect();
+    let mut h_rc = RECT {
+        left: cx + 18,
+        top: cy + 14,
+        right: cx + cw - 180,
+        bottom: cy + 36,
+    };
+    let _ = DrawTextW(hdc, &mut h_txt, &mut h_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    // Status Pill on top-right of Hero Card
+    let (badge_txt_str, badge_bg, badge_fg) = if is_installed || just_installed {
+        ("✓ INSTALLED", PK_GREEN_TINT, PK_GREEN_DARK)
+    } else {
+        ("PORTABLE RUNTIME", COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
+    };
+    let b_w = 140;
+    let b_h = 24;
+    let b_x = cx + cw - b_w - 18;
+    let b_y = cy + 14;
+    draw_rounded_box(hdc, b_x, b_y, b_w, b_h, badge_bg, PK_CARD_BORDER, 6);
+    let _ = SelectObject(hdc, HGDIOBJ(f_badge.0));
+    SetTextColor(hdc, badge_fg);
+    let mut b_txt: Vec<u16> = badge_txt_str.encode_utf16().collect();
+    let mut b_rc = RECT { left: b_x, top: b_y, right: b_x + b_w, bottom: b_y + b_h };
+    let _ = DrawTextW(hdc, &mut b_txt, &mut b_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    // Subtitle description
+    let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut sub_txt: Vec<u16> =
+        "Pin Desky to your Desktop and Windows Start Search so you can launch it instantly without searching Downloads."
+            .encode_utf16()
+            .collect();
+    let mut sub_rc = RECT {
+        left: cx + 18,
+        top: cy + 38,
+        right: cx + cw - 18,
+        bottom: cy + 74,
+    };
+    let _ = DrawTextW(hdc, &mut sub_txt, &mut sub_rc, DT_LEFT | DT_WORDBREAK);
+
+    // Action Button: [ 📌 Create Desktop Shortcut / Install ]
+    let btn_w = 260;
+    let btn_h = 38;
+    let btn_x = cx + 18;
+    let btn_y = cy + 82;
+    let is_btn_hover = hover_id == 201;
+
+    let btn_label = if just_installed {
+        "✓ Shortcuts Created Successfully"
+    } else if !is_installed {
+        "📌 Install to Start & Desktop"
+    } else {
+        "📌 Re-create Desktop Shortcut"
+    };
+
+    let (bg, border, fg) = if just_installed {
+        (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+    } else if is_btn_hover {
+        (PK_GREEN_DARK, PK_GREEN_DARK, COLORREF(0x00FFFFFF))
+    } else {
+        (PK_GREEN, PK_GREEN, COLORREF(0x00FFFFFF))
+    };
+
+    draw_rounded_box(hdc, btn_x, btn_y, btn_w, btn_h, bg, border, 6);
+    let _ = SelectObject(hdc, HGDIOBJ(f_btn.0));
+    SetTextColor(hdc, fg);
+    let mut act_txt: Vec<u16> = btn_label.encode_utf16().collect();
+    let mut act_rc = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+    let _ = DrawTextW(hdc, &mut act_txt, &mut act_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    // Uninstall / remove button (if installed)
+    if is_installed || just_installed {
+        let uninst_w = 150;
+        let uninst_x = btn_x + btn_w + 12;
+        let is_un_hover = hover_id == 202;
+        let (ubg, ubdr, ufg) = if is_un_hover {
+            (COLORREF(0x00EBF0FF), PK_RED, PK_RED)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, uninst_x, btn_y, uninst_w, btn_h, ubg, ubdr, 6);
+        SetTextColor(hdc, ufg);
+        let mut un_txt: Vec<u16> = "Remove Shortcuts".encode_utf16().collect();
+        let mut un_rc = RECT {
+            left: uninst_x,
+            top: btn_y,
+            right: uninst_x + uninst_w,
+            bottom: btn_y + btn_h,
+        };
+        let _ = DrawTextW(hdc, &mut un_txt, &mut un_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // 2. Card: Client Identity & Relay Matchmaker
+    let card2_y = cy + hero_h + 16;
+    let card2_h = 140;
+    draw_rounded_box(hdc, cx, card2_y, cw, card2_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut id_head_txt: Vec<u16> = "Machine Identity & P2P Matchmaker".encode_utf16().collect();
+    let mut id_head_rc = RECT {
+        left: cx + 18,
+        top: card2_y + 14,
+        right: cx + cw - 18,
+        bottom: card2_y + 36,
+    };
+    let _ = DrawTextW(hdc, &mut id_head_txt, &mut id_head_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let ident = crate::identity::load_or_create_identity();
+    let local_id = {
+        let guard = crate::windows::ui::launcher::LOCAL_DESKY_ID.lock().unwrap();
+        if !guard.is_empty() {
+            guard.clone()
+        } else {
+            ident.desky_id.clone().unwrap_or_else(|| "Connecting...".into())
+        }
+    };
+    let vds_server = std::env::var("DESKY_VDS_SERVER")
+        .unwrap_or_else(|_| crate::config::DEFAULT_VDS_SERVER.into());
+
+    let rows = [
+        ("Assigned Desky ID", local_id),
+        ("Hardware Machine GUID", ident.machine_id),
+        ("P2P Relay Server", vds_server),
+    ];
+
+    let row_h = 28;
+    let row_start_y = card2_y + 44;
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let ry = row_start_y + (i as i32) * row_h;
+        let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+        SetTextColor(hdc, PK_MUTED);
+        let mut kw: Vec<u16> = k.encode_utf16().collect();
+        let mut k_rc = RECT {
+            left: cx + 18,
+            top: ry,
+            right: cx + 220,
+            bottom: ry + row_h,
+        };
+        let _ = DrawTextW(hdc, &mut kw, &mut k_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+        let _ = SelectObject(hdc, HGDIOBJ(f_mono.0));
+        SetTextColor(hdc, PK_GREEN_DARK);
+        let mut vw: Vec<u16> = v.encode_utf16().collect();
+        let mut v_rc = RECT {
+            left: cx + 220,
+            top: ry,
+            right: cx + cw - 18,
+            bottom: ry + row_h,
+        };
+        let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+}
+
+// =========================================================================
+// Category 1: Display & Stream
+// =========================================================================
+unsafe fn draw_category_display(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    mode: u8,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let card_h = 76;
+    let gap = 12;
+
+    // 1. Display Scaling Mode
+    let c0_y = cy;
+    draw_card_frame(hdc, cx, c0_y, cw, card_h, "Viewport Scaling Mode", "Choose how remote desktop geometry fits your local window", f_title, f_sub);
+    let opts0 = ["Auto Fit (Aspect)", "Fill Window (Stretch)", "1:1 Native Resolution"];
+    draw_segment_pills(hdc, cx + 16, c0_y + 36, cw - 32, 28, &opts0, mode as usize, 300, hover_id, f_btn);
+
+    // 2. Stream Quality & Bandwidth
+    let c1_y = c0_y + card_h + gap;
+    draw_card_frame(hdc, cx, c1_y, cw, card_h, "Stream Quality & Bandwidth Profile", "Optimize bandwidth consumption vs image crispness", f_title, f_sub);
+    let q_mode = crate::p2p::get_quality_mode();
+    let q_idx = match q_mode { 0 => 0, 1 => 1, 3 => 2, _ => 3 };
+    let opts1 = ["Low (Data Saver)", "Balanced (Standard)", "High Quality", "Lossless 4:4:4"];
+    draw_segment_pills(hdc, cx + 16, c1_y + 36, cw - 32, 28, &opts1, q_idx, 310, hover_id, f_btn);
+
+    // 3. Target Framerate Limit
+    let c2_y = c1_y + card_h + gap;
+    draw_card_frame(hdc, cx, c2_y, cw, card_h, "Target Framerate Limit", "Higher framerates provide smoother cursor tracking and video", f_title, f_sub);
+    let cur_fps = TARGET_FPS.load(Ordering::Relaxed);
+    let fps_idx = match cur_fps { 30 => 0, 120 => 2, _ => 1 };
+    let opts2 = ["30 FPS (Power Saver)", "60 FPS (Fluid Desktop)", "120 FPS (Ultra Smooth)"];
+    draw_segment_pills(hdc, cx + 16, c2_y + 36, cw - 32, 28, &opts2, fps_idx, 320, hover_id, f_btn);
+
+    // 4. Remote Mouse Cursor
+    let c3_y = c2_y + card_h + gap;
+    draw_card_frame(hdc, cx, c3_y, cw, card_h, "Remote Cursor Visibility", "Render remote host hardware cursor on top of video feed", f_title, f_sub);
+    let cur_on = CAPTURE_CURSOR.load(Ordering::Relaxed);
+    let cur_idx = if cur_on { 0 } else { 1 };
+    let opts3 = ["Show Remote Cursor", "Hide Remote Cursor"];
+    draw_segment_pills(hdc, cx + 16, c3_y + 36, cw - 32, 28, &opts3, cur_idx, 330, hover_id, f_btn);
+}
+
+// =========================================================================
+// Category 2: Hardware Codecs
+// =========================================================================
+unsafe fn draw_category_codecs(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+    f_badge: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let card_h = 76;
+    let gap = 12;
+
+    // 1. Video Codec Selection
+    let c0_y = cy;
+    draw_card_frame(hdc, cx, c0_y, cw, card_h, "Primary Streaming Codec", "Select hardware-accelerated encoder/decoder format", f_title, f_sub);
+    let pref = crate::p2p::get_client_codec_pref();
+    let opts = ["Auto (Recommended)", "H.265 / HEVC", "H.264 / AVC", "JPEG Software"];
+    draw_segment_pills(hdc, cx + 16, c0_y + 36, cw - 32, 28, &opts, pref as usize, 400, hover_id, f_btn);
+
+    // 2. Hardware Engine Diagnostics Card
+    let c1_y = c0_y + card_h + gap;
+    let c1_h = 160;
+    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut h_txt: Vec<u16> = "GPU Hardware Acceleration Engine".encode_utf16().collect();
+    let mut h_rc = RECT { left: cx + 18, top: c1_y + 14, right: cx + cw - 18, bottom: c1_y + 34 };
+    let _ = DrawTextW(hdc, &mut h_txt, &mut h_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut sub_txt: Vec<u16> = "Hardware encoders offload rendering from CPU to dedicated GPU silicon.".encode_utf16().collect();
+    let mut sub_rc = RECT { left: cx + 18, top: c1_y + 34, right: cx + cw - 18, bottom: c1_y + 54 };
+    let _ = DrawTextW(hdc, &mut sub_txt, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let h264_ok = crate::platform::codec::is_h264_hardware_available();
+    let h265_ok = crate::platform::codec::is_h265_hardware_available();
+
+    let hw_rows = [
+        ("DirectX DXGI H.264 AVC", if h264_ok { "Hardware Accelerated (Active)" } else { "Software Fallback" }, h264_ok),
+        ("DirectX DXGI H.265 HEVC", if h265_ok { "Hardware Accelerated (Available)" } else { "Not Detected" }, h265_ok),
+        ("Color Subsampling Pipeline", "YUV 4:4:4 Full Dynamic Range", true),
+    ];
+
+    let row_h = 28;
+    let r_start_y = c1_y + 64;
+    for (i, (name, val, is_good)) in hw_rows.iter().enumerate() {
+        let ry = r_start_y + (i as i32) * row_h;
+        let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+        SetTextColor(hdc, PK_MUTED);
+        let mut nw: Vec<u16> = name.encode_utf16().collect();
+        let mut n_rc = RECT { left: cx + 18, top: ry, right: cx + 240, bottom: ry + row_h };
+        let _ = DrawTextW(hdc, &mut nw, &mut n_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+        let (_bg, fg) = if *is_good {
+            (PK_GREEN_TINT, PK_GREEN_DARK)
+        } else {
+            (COLORREF(0x00EBF0FF), PK_RED)
+        };
+        let _ = SelectObject(hdc, HGDIOBJ(f_badge.0));
+        SetTextColor(hdc, fg);
+        let mut vw: Vec<u16> = val.encode_utf16().collect();
+        let mut v_rc = RECT { left: cx + 240, top: ry, right: cx + cw - 18, bottom: ry + row_h };
+        let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    }
+}
+
+// =========================================================================
+// Category 3: Audio & Voice
+// =========================================================================
+unsafe fn draw_category_audio(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+    _f_badge: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let card_h = 76;
+    let gap = 12;
+
+    // 1. Desktop Audio Streaming
+    let c0_y = cy;
+    draw_card_frame(hdc, cx, c0_y, cw, card_h, "Remote Desktop Audio Streaming", "Stream remote system sounds through local speakers", f_title, f_sub);
+    let is_muted = crate::windows::audio::is_audio_muted();
+    let audio_idx = if is_muted { 1 } else { 0 };
+    let opts0 = ["Audio Enabled (Streaming)", "Audio Muted"];
+    draw_segment_pills(hdc, cx + 16, c0_y + 36, cw - 32, 28, &opts0, audio_idx, 500, hover_id, f_btn);
+
+    // 2. Intercom Voice Microphone
+    let c1_y = c0_y + card_h + gap;
+    draw_card_frame(hdc, cx, c1_y, cw, card_h, "Intercom Voice Talk (Microphone)", "Transmit your local microphone audio to remote host", f_title, f_sub);
+    let is_voice = crate::windows::audio::is_intercom_voice_active();
+    let voice_idx = if is_voice { 0 } else { 1 };
+    let opts1 = ["Microphone Active (Transmitting)", "Microphone Off"];
+    draw_segment_pills(hdc, cx + 16, c1_y + 36, cw - 32, 28, &opts1, voice_idx, 510, hover_id, f_btn);
+}
+
+// =========================================================================
+// Category 4: Security & Access
+// =========================================================================
+unsafe fn draw_category_security(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+    _f_badge: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let card_h = 100;
+    let gap = 12;
+
+    // 1. Unattended Access Password
+    let c0_y = cy;
+    draw_rounded_box(hdc, cx, c0_y, cw, card_h, PK_CARD, PK_CARD_BORDER, 8);
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut h_txt: Vec<u16> = "Unattended Access (Preset Password)".encode_utf16().collect();
+    let mut h_rc = RECT { left: cx + 18, top: c0_y + 14, right: cx + cw - 18, bottom: c0_y + 34 };
+    let _ = DrawTextW(hdc, &mut h_txt, &mut h_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut sub_txt: Vec<u16> =
+        "Allow authorized clients to connect automatically using an unattended password without manual popup approval."
+            .encode_utf16()
+            .collect();
+    let mut sub_rc = RECT { left: cx + 18, top: c0_y + 34, right: cx + cw - 18, bottom: c0_y + 54 };
+    let _ = DrawTextW(hdc, &mut sub_txt, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let is_unattended = crate::identity::is_unattended_enabled();
+    let btn_w = 240;
+    let btn_h = 32;
+    let btn_x = cx + 18;
+    let btn_y = c0_y + 58;
+    let is_btn_hover = hover_id == 601;
+
+    let (btn_txt_str, bg, border, fg) = if is_unattended {
+        ("Disable Unattended Access", PK_RED, PK_RED, COLORREF(0x00FFFFFF))
+    } else if is_btn_hover {
+        ("Enable Unattended Password", PK_GREEN_DARK, PK_GREEN_DARK, COLORREF(0x00FFFFFF))
+    } else {
+        ("Enable Unattended Password", PK_GREEN, PK_GREEN, COLORREF(0x00FFFFFF))
+    };
+
+    draw_rounded_box(hdc, btn_x, btn_y, btn_w, btn_h, bg, border, 6);
+    let _ = SelectObject(hdc, HGDIOBJ(f_btn.0));
+    SetTextColor(hdc, fg);
+    let mut bw: Vec<u16> = btn_txt_str.encode_utf16().collect();
+    let mut b_rc = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+    let _ = DrawTextW(hdc, &mut bw, &mut b_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+
+    // 2. Encryption Card
+    let c1_y = c0_y + card_h + gap;
+    let c1_h = 80;
+    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut e_txt: Vec<u16> = "End-to-End Encryption (E2EE)".encode_utf16().collect();
+    let mut e_rc = RECT { left: cx + 18, top: c1_y + 14, right: cx + cw - 18, bottom: c1_y + 34 };
+    let _ = DrawTextW(hdc, &mut e_txt, &mut e_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut esub_txt: Vec<u16> =
+        "All video, keyboard, mouse, and clipboard streams are authenticated and encrypted with ChaCha20-Poly1305."
+            .encode_utf16()
+            .collect();
+    let mut esub_rc = RECT { left: cx + 18, top: c1_y + 34, right: cx + cw - 18, bottom: c1_y + 68 };
+    let _ = DrawTextW(hdc, &mut esub_txt, &mut esub_rc, DT_LEFT | DT_WORDBREAK);
+}
+
+// =========================================================================
+// Category 5: Session Recording
+// =========================================================================
+unsafe fn draw_category_recording(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+    f_mono: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let card_h = 76;
+    let gap = 12;
+
+    // 1. Audio Channels
+    let c0_y = cy;
+    draw_card_frame(hdc, cx, c0_y, cw, card_h, "Audio Ingestion Channels", "Include remote sound or local microphone in screen recording", f_title, f_sub);
+    let rem_audio = crate::recorder::is_remote_audio_recording_enabled();
+    let opts0 = ["Remote Audio (Recorded)", "Remote Audio (Muted)"];
+    draw_segment_pills(hdc, cx + 16, c0_y + 36, cw - 32, 28, &opts0, if rem_audio { 0 } else { 1 }, 700, hover_id, f_btn);
+
+    // 2. Recording Quality Scale
+    let c1_y = c0_y + card_h + gap;
+    draw_card_frame(hdc, cx, c1_y, cw, card_h, "Recording Video Quality & Resolution", "Resolution scale for captured session video files", f_title, f_sub);
+    let scale_idx = crate::recorder::get_recording_quality_scale() as usize;
+    let opts1 = ["100% Native Resolution", "75% High Quality", "50% Compressed"];
+    draw_segment_pills(hdc, cx + 16, c1_y + 36, cw - 32, 28, &opts1, scale_idx.min(2), 710, hover_id, f_btn);
+
+    // 3. Save Directory Card
+    let c2_y = c1_y + card_h + gap;
+    let c2_h = 82;
+    draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut dir_txt: Vec<u16> = "Recording Save Directory".encode_utf16().collect();
+    let mut dir_rc = RECT { left: cx + 18, top: c2_y + 14, right: cx + cw - 18, bottom: c2_y + 34 };
+    let _ = DrawTextW(hdc, &mut dir_txt, &mut dir_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let dir = crate::recorder::get_recording_save_dir();
+    let _ = SelectObject(hdc, HGDIOBJ(f_mono.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut path_txt: Vec<u16> = dir.to_string_lossy().encode_utf16().collect();
+    let mut path_rc = RECT { left: cx + 18, top: c2_y + 40, right: cx + cw - 160, bottom: c2_y + 68 };
+    let _ = DrawTextW(hdc, &mut path_txt, &mut path_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    // [ Open in Explorer ] Button
+    let btn_w = 130;
+    let btn_h = 32;
+    let btn_x = cx + cw - btn_w - 18;
+    let btn_y = c2_y + 36;
+    let is_open_hover = hover_id == 720;
+    let (bg, border, fg) = if is_open_hover {
+        (PK_BTN_HOVER, PK_GREEN, PK_GREEN_DARK)
+    } else {
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_TEXT)
+    };
+    draw_rounded_box(hdc, btn_x, btn_y, btn_w, btn_h, bg, border, 6);
+    let _ = SelectObject(hdc, HGDIOBJ(f_btn.0));
+    SetTextColor(hdc, fg);
+    let mut ob_txt: Vec<u16> = "Open Folder".encode_utf16().collect();
+    let mut ob_rc = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+    let _ = DrawTextW(hdc, &mut ob_txt, &mut ob_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+}
+
+// =========================================================================
+// Category 6: About & Diagnostics
+// =========================================================================
+unsafe fn draw_category_about(
+    hdc: HDC,
+    cx: i32,
+    cy: i32,
+    cw: i32,
+    orig_w: u32,
+    orig_h: u32,
+    hover_id: i32,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+    f_btn: windows::Win32::Graphics::Gdi::HFONT,
+    f_mono: windows::Win32::Graphics::Gdi::HFONT,
+    _f_badge: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let c0_y = cy;
+    let c0_h = 164;
+    draw_rounded_box(hdc, cx, c0_y, cw, c0_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut h_txt: Vec<u16> = "Live Network Diagnostics".encode_utf16().collect();
+    let mut h_rc = RECT { left: cx + 18, top: c0_y + 14, right: cx + cw - 18, bottom: c0_y + 34 };
+    let _ = DrawTextW(hdc, &mut h_txt, &mut h_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let rtt_ms = {
+        let rtt = crate::p2p::get_session_rtt_ms();
+        if rtt > 0 { rtt } else { crate::p2p::get_server_ping_ms() }
+    };
+    let kbps = crate::p2p::get_session_bitrate_kbps();
+    let bitrate_str = if kbps > 0 {
+        format_bitrate(kbps)
+    } else {
+        "Direct P2P Link (Standby)".to_string()
+    };
+    let res_str = if orig_w > 0 && orig_h > 0 {
+        format!("{}x{} Native", orig_w, orig_h)
+    } else {
+        "100% Native".to_string()
+    };
+
+    let rows = [
+        ("Network Latency (RTT)", if rtt_ms > 0 { format!("{} ms", rtt_ms) } else { "Local LAN (<1 ms)".into() }),
+        ("Live Stream Bitrate", bitrate_str),
+        ("Active Stream Codec", crate::p2p::get_active_stream_codec_name().to_string()),
+        ("Viewport Resolution", res_str),
+    ];
+
+    let row_h = 26;
+    let start_y = c0_y + 44;
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let ry = start_y + (i as i32) * row_h;
+        let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+        SetTextColor(hdc, PK_MUTED);
+        let mut kw: Vec<u16> = k.encode_utf16().collect();
+        let mut k_rc = RECT { left: cx + 18, top: ry, right: cx + 200, bottom: ry + row_h };
+        let _ = DrawTextW(hdc, &mut kw, &mut k_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+        let _ = SelectObject(hdc, HGDIOBJ(f_mono.0));
+        SetTextColor(hdc, PK_GREEN_DARK);
+        let mut vw: Vec<u16> = v.encode_utf16().collect();
+        let mut v_rc = RECT { left: cx + 200, top: ry, right: cx + cw - 18, bottom: ry + row_h };
+        let _ = DrawTextW(hdc, &mut vw, &mut v_rc, DT_RIGHT | DT_SINGLELINE | DT_VCENTER);
+    }
+
+    // 2. About pkasoft Desky Card
+    let c1_y = c0_y + c0_h + 16;
+    let c1_h = 130;
+    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut a_txt: Vec<u16> = "Desky Remote Desktop".encode_utf16().collect();
+    let mut a_rc = RECT { left: cx + 18, top: c1_y + 14, right: cx + cw - 18, bottom: c1_y + 34 };
+    let _ = DrawTextW(hdc, &mut a_txt, &mut a_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut desc_txt: Vec<u16> = format!(
+        "Version {} • Built with Rust and native Win32 direct rendering.\nLicensed under GNU AGPLv3 for open personal use. Developed by pkasoft studio.",
+        env!("CARGO_PKG_VERSION")
+    ).encode_utf16().collect();
+    let mut desc_rc = RECT { left: cx + 18, top: c1_y + 36, right: cx + cw - 18, bottom: c1_y + 80 };
+    let _ = DrawTextW(hdc, &mut desc_txt, &mut desc_rc, DT_LEFT | DT_WORDBREAK);
+
+    // [ Visit pkasoft.com ] Button
+    let btn_w = 160;
+    let btn_h = 32;
+    let btn_x = cx + 18;
+    let btn_y = c1_y + 86;
+    let is_web_hover = hover_id == 801;
+    let (bg, border, fg) = if is_web_hover {
+        (PK_GREEN_DARK, PK_GREEN_DARK, COLORREF(0x00FFFFFF))
+    } else {
+        (PK_GREEN, PK_GREEN, COLORREF(0x00FFFFFF))
+    };
+    draw_rounded_box(hdc, btn_x, btn_y, btn_w, btn_h, bg, border, 6);
+    let _ = SelectObject(hdc, HGDIOBJ(f_btn.0));
+    SetTextColor(hdc, fg);
+    let mut wb_txt: Vec<u16> = "pkasoft.com ↗".encode_utf16().collect();
+    let mut wb_rc = RECT { left: btn_x, top: btn_y, right: btn_x + btn_w, bottom: btn_y + btn_h };
+    let _ = DrawTextW(hdc, &mut wb_txt, &mut wb_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+}
+
+// =========================================================================
+// UI Component Helpers
+// =========================================================================
+unsafe fn draw_card_frame(
+    hdc: HDC,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    title: &str,
+    subtitle: &str,
+    f_title: windows::Win32::Graphics::Gdi::HFONT,
+    f_sub: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    draw_rounded_box(hdc, x, y, w, h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut t_txt: Vec<u16> = title.encode_utf16().collect();
+    let mut t_rc = RECT { left: x + 18, top: y + 10, right: x + w - 18, bottom: y + 26 };
+    let _ = DrawTextW(hdc, &mut t_txt, &mut t_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+    SetTextColor(hdc, PK_MUTED);
+    let mut s_txt: Vec<u16> = subtitle.encode_utf16().collect();
+    let mut s_rc = RECT { left: x + 18, top: y + 25, right: x + w - 18, bottom: y + 36 };
+    let _ = DrawTextW(hdc, &mut s_txt, &mut s_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+}
+
+unsafe fn draw_segment_pills(
+    hdc: HDC,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    items: &[&str],
+    selected_idx: usize,
+    hover_base_id: i32,
+    current_hover_id: i32,
+    font: windows::Win32::Graphics::Gdi::HFONT,
+) {
+    let count = items.len().max(1);
+    let gap = 4;
+    let seg_w = (w - (count as i32 - 1) * gap) / (count as i32);
+
+    let _ = SelectObject(hdc, HGDIOBJ(font.0));
+
+    for (i, label) in items.iter().enumerate() {
+        let sx = x + (i as i32) * (seg_w + gap);
+        let is_selected = i == selected_idx;
+        let is_hover = current_hover_id == hover_base_id + (i as i32);
+
+        let (bg, border, fg) = if is_selected {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if is_hover {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+
+        draw_rounded_box(hdc, sx, y, seg_w, h, bg, border, 6);
+        SetTextColor(hdc, fg);
+        let mut txt: Vec<u16> = label.encode_utf16().collect();
+        let mut rc = RECT { left: sx, top: y, right: sx + seg_w, bottom: y + h };
+        let _ = DrawTextW(hdc, &mut txt, &mut rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    }
+}
+
+// =========================================================================
+// Mouse Move & Hover Tracking
+// =========================================================================
+pub fn handle_settings_mousemove(
+    hwnd: HWND,
+    client_w: i32,
+    _client_h: i32,
+    client_x: i32,
+    client_y: i32,
+    top_y: i32,
+) {
+    let pad_x = if client_w >= 900 { 28 } else { 16 };
+    let pad_y = 16;
+    let sidebar_w = if client_w >= 1000 {
+        220
+    } else if client_w >= 780 {
+        190
+    } else {
+        160
+    };
+    let sidebar_x = pad_x;
+    let sidebar_y = top_y + pad_y;
+
+    let content_x = sidebar_x + sidebar_w + 20;
+    let content_w = (client_w - content_x - pad_x).max(300);
+    let header_y = sidebar_y + 4;
+    let body_y = header_y + 58;
+
+    let mut new_hover = -1;
+
+    // 1. Close button [ ESC × ]
+    let close_w = 78;
+    let close_h = 32;
+    let close_x = content_x + content_w - close_w;
+    if client_x >= close_x && client_x <= close_x + close_w && client_y >= header_y && client_y <= header_y + close_h {
+        new_hover = 9099;
+    }
+
+    // 2. Sidebar category buttons
+    let item_h = 38;
+    let item_start_y = sidebar_y + 42;
+    for i in 0..7 {
+        let iy = item_start_y + i * (item_h + 4);
+        let ix = sidebar_x + 8;
+        let iw = sidebar_w - 16;
+        if client_x >= ix && client_x <= ix + iw && client_y >= iy && client_y <= iy + item_h {
+            new_hover = 100 + i;
+            break;
+        }
+    }
+
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
+
+    // 3. Content controls based on active category
+    if new_hover == -1 {
+        match active_cat {
+            0 => {
+                // Hero card action buttons
+                let btn_w = 260;
+                let btn_h = 38;
+                let btn_x = content_x + 18;
+                let btn_y = body_y + 82;
+                if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                    new_hover = 201;
+                }
+                let un_x = btn_x + btn_w + 12;
+                let un_w = 150;
+                if client_x >= un_x && client_x <= un_x + un_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                    new_hover = 202;
+                }
+            }
+            1 => {
+                let card_h = 76;
+                let gap = 12;
+                let check_segs = |cy: i32, count: usize, base: i32| -> Option<i32> {
+                    let y = cy + 36;
+                    let h = 28;
+                    let w = content_w - 32;
+                    let x = content_x + 16;
+                    let seg_w = (w - (count as i32 - 1) * 4) / count as i32;
+                    if client_y >= y && client_y <= y + h {
+                        for s in 0..count {
+                            let sx = x + (s as i32) * (seg_w + 4);
+                            if client_x >= sx && client_x <= sx + seg_w {
+                                return Some(base + s as i32);
+                            }
+                        }
+                    }
+                    None
+                };
+                if let Some(h) = check_segs(body_y, 3, 300) { new_hover = h; }
+                else if let Some(h) = check_segs(body_y + card_h + gap, 4, 310) { new_hover = h; }
+                else if let Some(h) = check_segs(body_y + (card_h + gap) * 2, 3, 320) { new_hover = h; }
+                else if let Some(h) = check_segs(body_y + (card_h + gap) * 3, 2, 330) { new_hover = h; }
+            }
+            2 => {
+                let y = body_y + 36;
+                let h = 28;
+                let w = content_w - 32;
+                let x = content_x + 16;
+                let seg_w = (w - 3 * 4) / 4;
+                if client_y >= y && client_y <= y + h {
+                    for s in 0..4 {
+                        let sx = x + (s as i32) * (seg_w + 4);
+                        if client_x >= sx && client_x <= sx + seg_w {
+                            new_hover = 400 + s as i32;
+                            break;
+                        }
+                    }
+                }
+            }
+            3 => {
+                let card_h = 76;
+                let gap = 12;
+                let check_segs = |cy: i32, count: usize, base: i32| -> Option<i32> {
+                    let y = cy + 36;
+                    let h = 28;
+                    let w = content_w - 32;
+                    let x = content_x + 16;
+                    let seg_w = (w - (count as i32 - 1) * 4) / count as i32;
+                    if client_y >= y && client_y <= y + h {
+                        for s in 0..count {
+                            let sx = x + (s as i32) * (seg_w + 4);
+                            if client_x >= sx && client_x <= sx + seg_w {
+                                return Some(base + s as i32);
+                            }
+                        }
+                    }
+                    None
+                };
+                if let Some(h) = check_segs(body_y, 2, 500) { new_hover = h; }
+                else if let Some(h) = check_segs(body_y + card_h + gap, 2, 510) { new_hover = h; }
+            }
+            4 => {
+                let btn_w = 240;
+                let btn_h = 32;
+                let btn_x = content_x + 18;
+                let btn_y = body_y + 58;
+                if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                    new_hover = 601;
+                }
+            }
+            5 => {
+                let card_h = 76;
+                let gap = 12;
+                let c2_y = body_y + (card_h + gap) * 2;
+                let btn_w = 130;
+                let btn_h = 32;
+                let btn_x = content_x + content_w - btn_w - 18;
+                let btn_y = c2_y + 36;
+                if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                    new_hover = 720;
+                }
+            }
+            6 => {
+                let c0_h = 164;
+                let c1_y = body_y + c0_h + 16;
+                let btn_w = 160;
+                let btn_h = 32;
+                let btn_x = content_x + 18;
+                let btn_y = c1_y + 86;
+                if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                    new_hover = 801;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let prev = SETTINGS_HOVER_ID.swap(new_hover, Ordering::Relaxed);
+    if prev != new_hover {
+        unsafe {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+
+    let cursor_id = if new_hover != -1 { IDC_HAND } else { IDC_ARROW };
+    unsafe {
+        let _ = SetCursor(Some(LoadCursorW(None, cursor_id).unwrap_or_default()));
+    }
+}
+
+// =========================================================================
+// Click & Action Handling
+// =========================================================================
 pub fn close_settings_modal(hwnd: HWND) {
     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
     crate::windows::ui::launcher::sync_edit_target_visibility();
@@ -595,285 +1151,313 @@ pub fn close_settings_modal(hwnd: HWND) {
     }
 }
 
-pub fn handle_settings_click(hwnd: HWND, client_w: i32, _client_h: i32, client_x: i32, client_y: i32, top_y: i32) -> bool {
-    let panel_w = (client_w - 48).clamp(340, 640);
-    let panel_x = (client_w - panel_w) / 2;
+pub fn handle_settings_click(
+    hwnd: HWND,
+    client_w: i32,
+    _client_h: i32,
+    client_x: i32,
+    client_y: i32,
+    top_y: i32,
+) -> bool {
+    let pad_x = if client_w >= 900 { 28 } else { 16 };
+    let pad_y = 16;
+    let sidebar_w = if client_w >= 1000 {
+        220
+    } else if client_w >= 780 {
+        190
+    } else {
+        160
+    };
+    let sidebar_x = pad_x;
+    let sidebar_y = top_y + pad_y;
 
-    let tab_y = top_y + 14;
-    let tab_h = 32;
-    let close_w = 76;
-    let close_x = panel_x + panel_w - close_w;
-    let cat_w = (panel_w - close_w - 30) / 5;
-    let cat0_x = panel_x;
-    let cat1_x = cat0_x + cat_w + 6;
-    let cat2_x = cat1_x + cat_w + 6;
-    let cat3_x = cat2_x + cat_w + 6;
-    let cat4_x = cat3_x + cat_w + 6;
+    let content_x = sidebar_x + sidebar_w + 20;
+    let content_w = (client_w - content_x - pad_x).max(300);
+    let header_y = sidebar_y + 4;
+    let body_y = header_y + 58;
 
-    // Close Button [ Close × ]
-    if client_x >= close_x && client_x <= close_x + close_w && client_y >= tab_y && client_y <= tab_y + tab_h {
+    // 1. Close Button [ ESC × ]
+    let close_w = 78;
+    let close_h = 32;
+    let close_x = content_x + content_w - close_w;
+    if client_x >= close_x && client_x <= close_x + close_w && client_y >= header_y && client_y <= header_y + close_h {
         close_settings_modal(hwnd);
         return true;
     }
 
-    // Category 0 Tab: Display
-    if client_x >= cat0_x && client_x <= cat0_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
-        SETTINGS_CATEGORY.store(0, Ordering::Relaxed);
-        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-        return true;
-    }
-
-    // Category 1 Tab: Codecs
-    if client_x >= cat1_x && client_x <= cat1_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
-        SETTINGS_CATEGORY.store(1, Ordering::Relaxed);
-        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-        return true;
-    }
-
-    // Category 2 Tab: Recording
-    if client_x >= cat2_x && client_x <= cat2_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
-        SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
-        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-        return true;
-    }
-
-    // Category 3 Tab: Security
-    if client_x >= cat3_x && client_x <= cat3_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
-        SETTINGS_CATEGORY.store(3, Ordering::Relaxed);
-        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-        return true;
-    }
-
-    // Category 4 Tab: Info
-    if client_x >= cat4_x && client_x <= cat4_x + cat_w && client_y >= tab_y && client_y <= tab_y + tab_h {
-        SETTINGS_CATEGORY.store(4, Ordering::Relaxed);
-        unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-        return true;
-    }
-
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(4);
-
-    if active_cat == 0 {
-        let sec0_y = top_y + 60;
-        let strip_h = 36;
-        let step = 74;
-
-        let hit_segment = |sy: i32, count: i32| -> Option<usize> {
-            if client_x >= panel_x
-                && client_x <= panel_x + panel_w
-                && client_y >= sy
-                && client_y <= sy + strip_h
-            {
-                let seg_w = (panel_w / count.max(1)).max(1);
-                let idx = ((client_x - panel_x) / seg_w).clamp(0, count - 1) as usize;
-                Some(idx)
-            } else {
-                None
-            }
-        };
-
-        // 1. Display Scaling (3 options)
-        if let Some(idx) = hit_segment(sec0_y + 22, 3) {
-            DISPLAY_MODE.store(idx as u8, Ordering::Relaxed);
+    // 2. Sidebar category clicks
+    let item_h = 38;
+    let item_start_y = sidebar_y + 42;
+    for i in 0..7 {
+        let iy = item_start_y + i * (item_h + 4);
+        let ix = sidebar_x + 8;
+        let iw = sidebar_w - 16;
+        if client_x >= ix && client_x <= ix + iw && client_y >= iy && client_y <= iy + item_h {
+            SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
             unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
             return true;
         }
+    }
 
-        // 2. Stream Quality (4 options)
-        if let Some(idx) = hit_segment(sec0_y + step + 22, 4) {
-            let mode_val = match idx {
-                0 => 0,
-                1 => 1,
-                2 => 3,
-                _ => 4,
-            };
-            crate::p2p::set_quality_mode(mode_val);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
 
-        // 3. Target Framerate (3 options)
-        if let Some(idx) = hit_segment(sec0_y + step * 2 + 22, 3) {
-            let fps_val = match idx {
-                0 => 30,
-                2 => 120,
-                _ => 60,
-            };
-            TARGET_FPS.store(fps_val, Ordering::Relaxed);
-            let cur = CAPTURE_CURSOR.load(Ordering::Relaxed);
-            crate::p2p::update_client_preferences(fps_val, cur);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
-
-        // 4. Remote Cursor (2 options)
-        if let Some(idx) = hit_segment(sec0_y + step * 3 + 22, 2) {
-            let cur_val = idx == 0;
-            CAPTURE_CURSOR.store(cur_val, Ordering::Relaxed);
-            let fps = TARGET_FPS.load(Ordering::Relaxed);
-            crate::p2p::update_client_preferences(fps, cur_val);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
-
-        // Done Button
-        let done_y = sec0_y + step * 3 + step + 6;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            close_settings_modal(hwnd);
-            return true;
-        }
-    } else if active_cat == 1 {
-        // Category 1: Codec Settings
-        let sec0_y = top_y + 60;
-        let strip_h = 36;
-
-        let hit_segment = |sy: i32, count: i32| -> Option<usize> {
-            if client_x >= panel_x
-                && client_x <= panel_x + panel_w
-                && client_y >= sy
-                && client_y <= sy + strip_h
-            {
-                let seg_w = (panel_w / count.max(1)).max(1);
-                let idx = ((client_x - panel_x) / seg_w).clamp(0, count - 1) as usize;
-                Some(idx)
-            } else {
-                None
-            }
-        };
-
-        // 1. Codec Selection (4 options: Auto, H265, H264, MJPEG)
-        if let Some(idx) = hit_segment(sec0_y + 22, 4) {
-            let h265_hw = crate::platform::codec::is_h265_hardware_available();
-            let h264_hw = crate::platform::codec::is_h264_hardware_available();
-            let is_enabled = match idx {
-                1 => h265_hw,
-                2 => h264_hw,
-                _ => true,
-            };
-            if is_enabled {
-                crate::p2p::set_client_codec_pref(idx as u8);
+    // 3. Category-Specific Actions
+    match active_cat {
+        0 => {
+            // Hero Action Button [ 📌 Install to Start & Desktop / Re-create ]
+            let btn_w = 260;
+            let btn_h = 38;
+            let btn_x = content_x + 18;
+            let btn_y = body_y + 82;
+            if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                match crate::windows::install::install_to_system() {
+                    Ok(dest) => {
+                        super::toolbar::JUST_INSTALLED.store(true, Ordering::Relaxed);
+                        crate::windows::ui::launcher::append_status_log(&format!(
+                            "[✓] Installed to Start Menu & Desktop: {}",
+                            dest.display()
+                        ));
+                        unsafe {
+                            let msg = format!(
+                                "Desky has been successfully installed!\n\n\
+                                • Desktop shortcut created\n\
+                                • Windows Start Menu integrated (search 'Desky' in Windows Search)\n\
+                                • Installed to: {}\n\n\
+                                You can now launch Desky anytime from your Desktop or Start Menu.",
+                                dest.display()
+                            );
+                            let wide_msg: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+                            let wide_title: Vec<u16> = "Desky - Installed Successfully"
+                                .encode_utf16()
+                                .chain(std::iter::once(0))
+                                .collect();
+                            let _ = MessageBoxW(
+                                Some(hwnd),
+                                PCWSTR(wide_msg.as_ptr()),
+                                PCWSTR(wide_title.as_ptr()),
+                                MB_OK | MB_ICONINFORMATION,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        crate::windows::ui::launcher::append_status_log(&format!(
+                            "[!] Installation error: {}",
+                            e
+                        ));
+                        unsafe {
+                            let msg = format!("Failed to install Desky:\n\n{}", e);
+                            let wide_msg: Vec<u16> = msg.encode_utf16().chain(std::iter::once(0)).collect();
+                            let wide_title: Vec<u16> = "Desky - Installation Error"
+                                .encode_utf16()
+                                .chain(std::iter::once(0))
+                                .collect();
+                            let _ = MessageBoxW(
+                                Some(hwnd),
+                                PCWSTR(wide_msg.as_ptr()),
+                                PCWSTR(wide_title.as_ptr()),
+                                MB_OK | MB_ICONERROR,
+                            );
+                        }
+                    }
+                }
                 unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
             }
-            return true;
-        }
 
-        // Done button
-        let card1_h = 60;
-        let card2_h = 82;
-        let sec1_y = sec0_y + 74;
-        let sec2_y = sec1_y + card1_h + 14;
-        let done_y = sec2_y + 22 + card2_h + 24;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            close_settings_modal(hwnd);
-            return true;
+            // [ Remove Shortcuts ]
+            let un_x = btn_x + btn_w + 12;
+            let un_w = 150;
+            if client_x >= un_x && client_x <= un_x + un_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                crate::windows::install::uninstall_from_system();
+                super::toolbar::JUST_INSTALLED.store(false, Ordering::Relaxed);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
+            }
         }
-    } else if active_cat == 2 {
-        // Category 2: Recording Settings
-        let sec0_y = top_y + 60;
-        let strip_h = 36;
-        let step = 70;
-
-        let hit_segment = |sy: i32, count: i32| -> Option<usize> {
-            if client_x >= panel_x
-                && client_x <= panel_x + panel_w
-                && client_y >= sy
-                && client_y <= sy + strip_h
-            {
-                let seg_w = (panel_w / count.max(1)).max(1);
-                let idx = ((client_x - panel_x) / seg_w).clamp(0, count - 1) as usize;
-                Some(idx)
-            } else {
+        1 => {
+            let card_h = 76;
+            let gap = 12;
+            let hit_segs = |cy: i32, count: usize| -> Option<usize> {
+                let y = cy + 36;
+                let h = 28;
+                let w = content_w - 32;
+                let x = content_x + 16;
+                let seg_w = (w - (count as i32 - 1) * 4) / count as i32;
+                if client_y >= y && client_y <= y + h {
+                    for s in 0..count {
+                        let sx = x + (s as i32) * (seg_w + 4);
+                        if client_x >= sx && client_x <= sx + seg_w {
+                            return Some(s);
+                        }
+                    }
+                }
                 None
+            };
+
+            // Scaling
+            if let Some(idx) = hit_segs(body_y, 3) {
+                DISPLAY_MODE.store(idx as u8, Ordering::Relaxed);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
             }
-        };
-
-        // 1. Remote Media Audio toggle
-        if let Some(idx) = hit_segment(sec0_y + 22, 2) {
-            crate::recorder::set_remote_audio_recording_enabled(idx == 0);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
-
-        // 2. Local Media Audio toggle
-        if let Some(idx) = hit_segment(sec0_y + step + 22, 2) {
-            crate::recorder::set_local_audio_recording_enabled(idx == 0);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
-
-        // 3. Resolution scale
-        if let Some(idx) = hit_segment(sec0_y + step * 2 + 22, 3) {
-            crate::recorder::set_recording_quality_scale(idx as u8);
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
-        }
-
-        // 4. Open Folder button
-        let card_h = 44;
-        let folder_card_y = sec0_y + step * 3 + 22;
-        let btn_open_w = 110;
-        let btn_open_x = panel_x + panel_w - btn_open_w - 6;
-        let btn_open_y = folder_card_y + 5;
-        let btn_open_h = 34;
-        if client_x >= btn_open_x && client_x <= btn_open_x + btn_open_w && client_y >= btn_open_y && client_y <= btn_open_y + btn_open_h {
-            let dir = crate::recorder::get_recording_save_dir();
-            let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
-            return true;
-        }
-
-        // Done button
-        let done_y = folder_card_y + card_h + 20;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            close_settings_modal(hwnd);
-            return true;
-        }
-    } else if active_cat == 3 {
-        // Category 3: Unattended Security
-        let sec_y = top_y + 60;
-        let act_y = sec_y + 92;
-        let btn_w = 230;
-        let btn_h = 40;
-        let btn_x = panel_x + (panel_w - btn_w) / 2;
-
-        if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= act_y && client_y <= act_y + btn_h {
-            if crate::identity::is_unattended_enabled() {
-                crate::identity::disable_unattended();
-            } else {
-                crate::identity::set_unattended_password("Desky@2026");
+            // Quality
+            if let Some(idx) = hit_segs(body_y + card_h + gap, 4) {
+                let mode_val = match idx { 0 => 0, 1 => 1, 2 => 3, _ => 4 };
+                crate::p2p::set_quality_mode(mode_val);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
             }
-            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
-            return true;
+            // FPS
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 2, 3) {
+                let fps_val = match idx { 0 => 30, 2 => 120, _ => 60 };
+                TARGET_FPS.store(fps_val, Ordering::Relaxed);
+                let cur = CAPTURE_CURSOR.load(Ordering::Relaxed);
+                crate::p2p::update_client_preferences(fps_val, cur);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
+            }
+            // Cursor
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 3, 2) {
+                let cur_val = idx == 0;
+                CAPTURE_CURSOR.store(cur_val, Ordering::Relaxed);
+                let fps = TARGET_FPS.load(Ordering::Relaxed);
+                crate::p2p::update_client_preferences(fps, cur_val);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
+            }
         }
-
-        let done_y = act_y + 64;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            close_settings_modal(hwnd);
-            return true;
+        2 => {
+            let y = body_y + 36;
+            let h = 28;
+            let w = content_w - 32;
+            let x = content_x + 16;
+            let seg_w = (w - 3 * 4) / 4;
+            if client_y >= y && client_y <= y + h {
+                for s in 0..4 {
+                    let sx = x + (s as i32) * (seg_w + 4);
+                    if client_x >= sx && client_x <= sx + seg_w {
+                        let h265_hw = crate::platform::codec::is_h265_hardware_available();
+                        let h264_hw = crate::platform::codec::is_h264_hardware_available();
+                        let is_enabled = match s {
+                            1 => h265_hw,
+                            2 => h264_hw,
+                            _ => true,
+                        };
+                        if is_enabled {
+                            crate::p2p::set_client_codec_pref(s as u8);
+                            unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                        }
+                        return true;
+                    }
+                }
+            }
         }
-    } else {
-        // Category 4: Info
-        let row_h = 40;
-        let tbl_y = top_y + 60;
-        let done_y = tbl_y + 4 * (row_h + 4) + 24;
-        let done_w = 140;
-        let done_x = (client_w - done_w) / 2;
-        let done_h = 36;
-        if client_x >= done_x && client_x <= done_x + done_w && client_y >= done_y && client_y <= done_y + done_h {
-            close_settings_modal(hwnd);
-            return true;
+        3 => {
+            let card_h = 76;
+            let gap = 12;
+            let hit_segs = |cy: i32, count: usize| -> Option<usize> {
+                let y = cy + 36;
+                let h = 28;
+                let w = content_w - 32;
+                let x = content_x + 16;
+                let seg_w = (w - (count as i32 - 1) * 4) / count as i32;
+                if client_y >= y && client_y <= y + h {
+                    for s in 0..count {
+                        let sx = x + (s as i32) * (seg_w + 4);
+                        if client_x >= sx && client_x <= sx + seg_w {
+                            return Some(s);
+                        }
+                    }
+                }
+                None
+            };
+            if let Some(idx) = hit_segs(body_y, 2) {
+                let current_muted = crate::windows::audio::is_audio_muted();
+                let want_muted = idx == 1;
+                if current_muted != want_muted {
+                    let _ = crate::windows::audio::toggle_audio_mute();
+                    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                }
+                return true;
+            }
+            if let Some(idx) = hit_segs(body_y + card_h + gap, 2) {
+                let current_voice = crate::windows::audio::is_intercom_voice_active();
+                let want_voice = idx == 0;
+                if current_voice != want_voice {
+                    let _ = crate::windows::audio::toggle_intercom_voice();
+                    unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                }
+                return true;
+            }
         }
+        4 => {
+            let btn_w = 240;
+            let btn_h = 32;
+            let btn_x = content_x + 18;
+            let btn_y = body_y + 58;
+            if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                if crate::identity::is_unattended_enabled() {
+                    crate::identity::disable_unattended();
+                } else {
+                    crate::identity::set_unattended_password("Desky@2026");
+                }
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
+            }
+        }
+        5 => {
+            let card_h = 76;
+            let gap = 12;
+            let hit_segs = |cy: i32, count: usize| -> Option<usize> {
+                let y = cy + 36;
+                let h = 28;
+                let w = content_w - 32;
+                let x = content_x + 16;
+                let seg_w = (w - (count as i32 - 1) * 4) / count as i32;
+                if client_y >= y && client_y <= y + h {
+                    for s in 0..count {
+                        let sx = x + (s as i32) * (seg_w + 4);
+                        if client_x >= sx && client_x <= sx + seg_w {
+                            return Some(s);
+                        }
+                    }
+                }
+                None
+            };
+            if let Some(idx) = hit_segs(body_y, 2) {
+                crate::recorder::set_remote_audio_recording_enabled(idx == 0);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
+            }
+            if let Some(idx) = hit_segs(body_y + card_h + gap, 3) {
+                crate::recorder::set_recording_quality_scale(idx as u8);
+                unsafe { let _ = InvalidateRect(Some(hwnd), None, false); }
+                return true;
+            }
+            let c2_y = body_y + (card_h + gap) * 2;
+            let btn_w = 130;
+            let btn_h = 32;
+            let btn_x = content_x + content_w - btn_w - 18;
+            let btn_y = c2_y + 36;
+            if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                let dir = crate::recorder::get_recording_save_dir();
+                let _ = std::process::Command::new("explorer.exe").arg(&dir).spawn();
+                return true;
+            }
+        }
+        6 => {
+            let c0_h = 164;
+            let c1_y = body_y + c0_h + 16;
+            let btn_w = 160;
+            let btn_h = 32;
+            let btn_x = content_x + 18;
+            let btn_y = c1_y + 86;
+            if client_x >= btn_x && client_x <= btn_x + btn_w && client_y >= btn_y && client_y <= btn_y + btn_h {
+                let _ = std::process::Command::new("explorer.exe").arg("https://pkasoft.com").spawn();
+                return true;
+            }
+        }
+        _ => {}
     }
 
     false

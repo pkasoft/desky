@@ -16,6 +16,7 @@ pub mod cursor;
 pub mod desktop;
 pub mod dxgi_capture;
 pub mod input;
+pub mod install;
 pub mod os_version;
 pub use crate::recorder;
 pub mod server_2012;
@@ -76,6 +77,9 @@ pub fn run() -> anyhow::Result<()> {
 
     tracing::info!("Spawning native Win32 window and starting message pump...");
     let app = ui::NativeWin32App::new()?;
+    if !crate::windows::install::is_installed() {
+        ui::launcher::append_status_log("💡 Desky is running portable. Click [📌 Pin to Start & Desktop] in the top bar to install.");
+    }
     app.run_message_loop();
     Ok(())
 }
