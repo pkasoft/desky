@@ -337,10 +337,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         }
 
                         let (q, sc, c444) = match abr_tier {
-                            3 => (82u8, 100u8, is_direct_peer),
-                            2 => (74u8, 100u8, is_direct_peer),
-                            1 => (66u8, 90u8, false),
-                            _ => (56u8, 75u8, false),
+                            3 => (90u8, 100u8, true),
+                            2 => (85u8, 100u8, true),
+                            1 => (78u8, 100u8, is_direct_peer),
+                            _ => (70u8, 90u8, false),
                         };
                         ACTIVE_JPEG_QUALITY.store(q, Ordering::Relaxed);
                         ACTIVE_SCALE_PCT.store(sc, Ordering::Relaxed);
@@ -442,9 +442,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     };
                     let ts_ms = (session_start.elapsed().as_millis() & 0xFFFF_FFFF) as u32;
 
-                    // Request a compact initial keyframe until the very first frame arrives so screen loads in <50ms!
+                    // Request full 100% native resolution and high clarity from the very first frame!
                     let (q_val, sc_val, c444) = if !received_any_frame {
-                        (64u8, 75u8, false)
+                        (82u8, 100u8, true)
                     } else {
                         get_active_quality_params()
                     };

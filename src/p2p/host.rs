@@ -226,32 +226,32 @@ impl P2PManager {
                                 .iter()
                                 .map(|s| s.jpeg_quality)
                                 .max()
-                                .unwrap_or(72)
-                                .clamp(40, 92);
+                                .unwrap_or(86)
+                                .clamp(50, 95);
                             let scale_pct = subscribers
                                 .iter()
                                 .map(|s| s.scale_pct)
                                 .max()
                                 .unwrap_or(100)
-                                .clamp(50, 100);
+                                .clamp(65, 100);
                             let req_chroma_444 =
-                                !any_relay && subscribers.iter().any(|s| s.chroma_444);
+                                subscribers.iter().any(|s| s.chroma_444);
 
-                            // Keep frames compact over WAN/Relay so CGNAT/home routers never tail-drop UDP bursts
+                            // Preserve high-clarity 4:4:4 chroma and crisp JPEG quality for desktop text
                             let (jpeg_quality, use_chroma_444) = if any_relay {
-                                if last_encoded_len > 28_000 {
-                                    ((req_quality.saturating_sub(12)).max(50), false)
-                                } else if last_encoded_len > 20_000 {
-                                    ((req_quality.saturating_sub(6)).max(56), false)
+                                if last_encoded_len > 140_000 {
+                                    ((req_quality.saturating_sub(8)).max(68), false)
+                                } else if last_encoded_len > 95_000 {
+                                    ((req_quality.saturating_sub(4)).max(74), req_chroma_444)
                                 } else {
-                                    (req_quality.min(72), false)
+                                    (req_quality.max(82), req_chroma_444)
                                 }
-                            } else if last_encoded_len > 68_000 {
-                                ((req_quality.saturating_sub(10)).max(55), false)
-                            } else if last_encoded_len > 52_000 {
-                                ((req_quality.saturating_sub(5)).max(62), req_chroma_444)
+                            } else if last_encoded_len > 360_000 {
+                                ((req_quality.saturating_sub(8)).max(74), false)
+                            } else if last_encoded_len > 260_000 {
+                                ((req_quality.saturating_sub(4)).max(80), req_chroma_444)
                             } else {
-                                (req_quality, req_chroma_444)
+                                (req_quality.max(86), req_chroma_444)
                             };
 
                             let cap_res = crate::platform::capture_screen_frame(

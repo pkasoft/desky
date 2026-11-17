@@ -521,31 +521,31 @@ pub fn apply_preset_for_mode(mode: u8) {
     match mode {
         1 => {
             // Lossless 4:4:4 / Ultra Text (Full native resolution, highest clarity)
-            ACTIVE_JPEG_QUALITY.store(90, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(94, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         2 => {
             // High Quality (Native resolution, high bitrate)
-            ACTIVE_JPEG_QUALITY.store(82, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(88, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         3 => {
             // Balanced / Standard (Native resolution, optimized bandwidth)
-            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(82, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         4 => {
             // Low Data / Power Saver (Native resolution, high compression, 4:2:0)
-            ACTIVE_JPEG_QUALITY.store(60, Ordering::Relaxed);
+            ACTIVE_JPEG_QUALITY.store(68, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(false, Ordering::Relaxed);
         }
         _ => {
-            // Auto Adaptive default baseline
-            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
+            // Auto Adaptive default baseline (Crisp 4:4:4 Q86)
+            ACTIVE_JPEG_QUALITY.store(86, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }

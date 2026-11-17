@@ -149,25 +149,81 @@ fn render_video_stream(
     let canvas_w = canvas.width as usize;
     let canvas_h = canvas.height as usize;
 
-    for dy in 0..dst_h {
-        let dst_y = off_y + dy;
-        if dst_y < view_y || dst_y >= canvas_h as i32 {
-            continue;
-        }
-        let sy = ((dy as usize) * src_h / (dst_h as usize)).min(src_h - 1);
-        let src_row = sy * src_w * 4;
-        let dst_row = (dst_y as usize) * canvas_w * 4;
-
-        for dx in 0..dst_w {
-            let dst_x = off_x + dx;
-            if dst_x < 0 || dst_x >= canvas_w as i32 {
+    if dst_w as usize == src_w && dst_h as usize == src_h {
+        // Fast 1:1 exact pixel copy
+        for dy in 0..dst_h {
+            let dst_y = off_y + dy;
+            if dst_y < view_y || dst_y >= canvas_h as i32 {
                 continue;
             }
-            let sx = ((dx as usize) * src_w / (dst_w as usize)).min(src_w - 1);
-            let s_idx = src_row + sx * 4;
-            let d_idx = dst_row + (dst_x as usize) * 4;
-            if s_idx + 4 <= frame.bgra.len() && d_idx + 4 <= canvas.data.len() {
-                canvas.data[d_idx..d_idx + 4].copy_from_slice(&frame.bgra[s_idx..s_idx + 4]);
+            let src_row = (dy as usize) * src_w * 4;
+            let dst_row = (dst_y as usize) * canvas_w * 4;
+            for dx in 0..dst_w {
+                let dst_x = off_x + dx;
+                if dst_x < 0 || dst_x >= canvas_w as i32 {
+                    continue;
+                }
+                let s_idx = src_row + (dx as usize) * 4;
+                let d_idx = dst_row + (dst_x as usize) * 4;
+                if s_idx + 4 <= frame.bgra.len() && d_idx + 4 <= canvas.data.len() {
+                    canvas.data[d_idx..d_idx + 4].copy_from_slice(&frame.bgra[s_idx..s_idx + 4]);
+                }
+            }
+        }
+    } else {
+        // Bilinear interpolation for smooth, crisp scaled remote desktop text
+        let x_ratio = ((src_w.saturating_sub(1)) << 8) / (dst_w.max(1) as usize);
+        let y_ratio = ((src_h.saturating_sub(1)) << 8) / (dst_h.max(1) as usize);
+        let src_stride = src_w * 4;
+
+        for dy in 0..dst_h {
+            let dst_y = off_y + dy;
+            if dst_y < view_y || dst_y >= canvas_h as i32 {
+                continue;
+            }
+            let sy_fp = (dy as usize) * y_ratio;
+            let sy = sy_fp >> 8;
+            let fy = (sy_fp & 0xFF) as u32;
+            let inv_fy = 256 - fy;
+            let sy1 = (sy + 1).min(src_h.saturating_sub(1));
+
+            let row0 = sy * src_stride;
+            let row1 = sy1 * src_stride;
+            let dst_row = (dst_y as usize) * canvas_w * 4;
+
+            for dx in 0..dst_w {
+                let dst_x = off_x + dx;
+                if dst_x < 0 || dst_x >= canvas_w as i32 {
+                    continue;
+                }
+                let sx_fp = (dx as usize) * x_ratio;
+                let sx = sx_fp >> 8;
+                let fx = (sx_fp & 0xFF) as u32;
+                let inv_fx = 256 - fx;
+                let sx1 = (sx + 1).min(src_w.saturating_sub(1));
+
+                let w00 = inv_fx * inv_fy;
+                let w10 = fx * inv_fy;
+                let w01 = inv_fx * fy;
+                let w11 = fx * fy;
+
+                let i00 = row0 + sx * 4;
+                let i10 = row0 + sx1 * 4;
+                let i01 = row1 + sx * 4;
+                let i11 = row1 + sx1 * 4;
+                let d_idx = dst_row + (dst_x as usize) * 4;
+
+                if i11 + 3 < frame.bgra.len() && d_idx + 3 < canvas.data.len() {
+                    for c in 0..3 {
+                        let v = (frame.bgra[i00 + c] as u32 * w00
+                            + frame.bgra[i10 + c] as u32 * w10
+                            + frame.bgra[i01 + c] as u32 * w01
+                            + frame.bgra[i11 + c] as u32 * w11)
+                            >> 16;
+                        canvas.data[d_idx + c] = v as u8;
+                    }
+                    canvas.data[d_idx + 3] = 255;
+                }
             }
         }
     }

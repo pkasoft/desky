@@ -143,15 +143,50 @@ pub fn capture_screen_frame(
     let cap_h = ((orig_h * clamped_scale) / 100).max(2) & !1;
     let mut scaled = vec![0u8; (cap_w as usize) * (cap_h as usize) * 4];
 
+    // High-clarity bilinear downsampling (prevents text/UI line aliasing when scaled)
+    let x_ratio = ((orig_w - 1) << 8) / cap_w.max(1);
+    let y_ratio = ((orig_h - 1) << 8) / cap_h.max(1);
+    let orig_stride = (orig_w as usize) * 4;
+    let dst_stride = (cap_w as usize) * 4;
+
     for y in 0..cap_h {
-        let src_y = ((y * orig_h) / cap_h).min(orig_h - 1) as usize;
-        let src_row = src_y * (orig_w as usize) * 4;
-        let dst_row = (y as usize) * (cap_w as usize) * 4;
+        let sy_fp = y * y_ratio;
+        let sy = (sy_fp >> 8) as usize;
+        let fy = (sy_fp & 0xFF) as u32;
+        let inv_fy = 256 - fy;
+        let sy1 = (sy + 1).min(orig_h as usize - 1);
+
+        let row0 = sy * orig_stride;
+        let row1 = sy1 * orig_stride;
+        let dst_row = (y as usize) * dst_stride;
+
         for x in 0..cap_w {
-            let src_x = ((x * orig_w) / cap_w).min(orig_w - 1) as usize;
-            let s_idx = src_row + src_x * 4;
+            let sx_fp = x * x_ratio;
+            let sx = (sx_fp >> 8) as usize;
+            let fx = (sx_fp & 0xFF) as u32;
+            let inv_fx = 256 - fx;
+            let sx1 = (sx + 1).min(orig_w as usize - 1);
+
+            let w00 = inv_fx * inv_fy;
+            let w10 = fx * inv_fy;
+            let w01 = inv_fx * fy;
+            let w11 = fx * fy;
+
+            let i00 = row0 + sx * 4;
+            let i10 = row0 + sx1 * 4;
+            let i01 = row1 + sx * 4;
+            let i11 = row1 + sx1 * 4;
             let d_idx = dst_row + (x as usize) * 4;
-            scaled[d_idx..d_idx + 4].copy_from_slice(&data[s_idx..s_idx + 4]);
+
+            for c in 0..3 {
+                let v = (data[i00 + c] as u32 * w00
+                    + data[i10 + c] as u32 * w10
+                    + data[i01 + c] as u32 * w01
+                    + data[i11 + c] as u32 * w11)
+                    >> 16;
+                scaled[d_idx + c] = v as u8;
+            }
+            scaled[d_idx + 3] = 255;
         }
     }
 
