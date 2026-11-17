@@ -375,19 +375,17 @@ pub fn draw_admin_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16, hover_s
                 canvas.draw_text(
                     40,
                     body_y + 84,
-                    &format!("CPU Usage:     {:.1}%", st.cpu_usage_pct),
+                    &format!("CPU Cores:     {} logical cores", st.cpu_count),
                     13.5,
                     false,
                     PK_TEXT,
                     Some(width - 80),
                 );
+                let used_mb = st.total_mem_mb.saturating_sub(st.free_mem_mb);
                 canvas.draw_text(
                     40,
                     body_y + 114,
-                    &format!(
-                        "Memory:        {} MB / {} MB",
-                        st.ram_used_mb, st.ram_total_mb
-                    ),
+                    &format!("Memory:        {} MB used / {} MB total", used_mb, st.total_mem_mb),
                     13.5,
                     false,
                     PK_TEXT,
@@ -501,11 +499,11 @@ pub fn handle_admin_key(keycode: u8, state: KeyButMask) {
             s.terminal_input.pop();
         }
         36 | 104 => {
-            let cmd = s.terminal_input.trim().to_string();
-            if !cmd.is_empty() {
-                s.terminal_lines.push(format!("PS> {}", cmd));
+            let command = s.terminal_input.trim().to_string();
+            if !command.is_empty() {
+                s.terminal_lines.push(format!("PS> {}", command));
                 s.terminal_input.clear();
-                crate::p2p::send_admin_request(AdminReq::ExecCommand { cmd });
+                crate::p2p::send_admin_request(AdminReq::ExecuteCommand { command });
             }
         }
         _ => {

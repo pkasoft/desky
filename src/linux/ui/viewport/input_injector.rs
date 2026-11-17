@@ -1,18 +1,29 @@
 //! Remote Input Injection & Coordinate Mapping Engine (Linux X11)
 //!
 //! Mirrors `src/windows/ui/viewport/input_injector.rs` by translating viewport
-//! coordinates and forwarding mouse/keyboard events to the remote peer.
+//! coordinates across Auto Fit (0), Stretch (1), and 1:1 (2) display modes and
+//! forwarding mouse/keyboard events to the remote peer.
 
 use std::sync::atomic::Ordering;
 use x11rb::protocol::xproto::KeyButMask;
 
-use super::tabs::ACTIVE_TAB_INDEX;
+use super::settings_modal::{DISPLAY_MODE, SHOW_SETTINGS_MODAL};
+use super::tabs::{ACTIVE_TAB_INDEX, VIEWPORT_IS_ADMIN_MODE};
 use super::toolbar::TOOLBAR_HEIGHT;
 use crate::protocol::{InputEvent, MouseButton};
 
 #[inline]
 pub fn is_remote_session_interactive() -> bool {
-    ACTIVE_TAB_INDEX.load(Ordering::Relaxed) > 0
+    if ACTIVE_TAB_INDEX.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+        return false;
+    }
+    if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+        return false;
+    }
+    true
 }
 
 pub fn map_client_to_screen(
@@ -23,26 +34,63 @@ pub fn map_client_to_screen(
     orig_w: u32,
     orig_h: u32,
 ) -> Option<(i32, i32)> {
-    let tb_h = TOOLBAR_HEIGHT as i16;
-    if my < tb_h || orig_w == 0 || orig_h == 0 {
+    let tb_h = TOOLBAR_HEIGHT as i32;
+    let client_x = mx as i32;
+    let client_y = my as i32;
+    let client_w = win_w as i32;
+    let client_h = win_h as i32;
+    let screen_w = orig_w as i32;
+    let screen_h = orig_h as i32;
+
+    if client_y < tb_h {
         return None;
     }
-    let view_w = win_w as f32;
-    let view_h = win_h.saturating_sub(TOOLBAR_HEIGHT) as f32;
-    let scale = (view_w / orig_w as f32).min(view_h / orig_h as f32);
-    let render_w = orig_w as f32 * scale;
-    let render_h = orig_h as f32 * scale;
-    let off_x = (view_w - render_w) / 2.0;
-    let off_y = (view_h - render_h) / 2.0;
+    let view_y = client_y - tb_h;
+    let view_h = client_h - tb_h;
+    if view_h <= 0 || client_w <= 0 || screen_w <= 0 || screen_h <= 0 {
+        return None;
+    }
 
-    let rel_x = (mx as f32) - off_x;
-    let rel_y = (my - tb_h) as f32 - off_y;
-    if rel_x >= 0.0 && rel_x < render_w && rel_y >= 0.0 && rel_y < render_h {
-        let sx = ((rel_x / scale) as i32).clamp(0, orig_w as i32 - 1);
-        let sy = ((rel_y / scale) as i32).clamp(0, orig_h as i32 - 1);
-        Some((sx, sy))
-    } else {
-        None
+    let mode = DISPLAY_MODE.load(Ordering::Relaxed);
+    match mode {
+        0 => {
+            let scale_x = client_w as f32 / screen_w as f32;
+            let scale_y = view_h as f32 / screen_h as f32;
+            let scale = scale_x.min(scale_y);
+
+            let render_w = (screen_w as f32 * scale) as i32;
+            let render_h = (screen_h as f32 * scale) as i32;
+
+            let offset_x = (client_w - render_w) / 2;
+            let offset_y = (view_h - render_h) / 2;
+
+            let rel_x = client_x - offset_x;
+            let rel_y = view_y - offset_y;
+
+            if rel_x >= 0 && rel_x < render_w && rel_y >= 0 && rel_y < render_h {
+                let sx = ((rel_x as f32 / scale) as i32).clamp(0, screen_w - 1);
+                let sy = ((rel_y as f32 / scale) as i32).clamp(0, screen_h - 1);
+                Some((sx, sy))
+            } else {
+                None
+            }
+        }
+        1 => {
+            let sx = ((client_x as f32 / client_w as f32) * screen_w as f32) as i32;
+            let sy = ((view_y as f32 / view_h as f32) * screen_h as f32) as i32;
+            Some((sx.clamp(0, screen_w - 1), sy.clamp(0, screen_h - 1)))
+        }
+        _ => {
+            let offset_x = (client_w - screen_w) / 2;
+            let offset_y = (view_h - screen_h) / 2;
+            let sx = client_x - offset_x;
+            let sy = view_y - offset_y;
+            if sx >= 0 && sx < screen_w && sy >= 0 && sy < screen_h {
+                Some((sx, sy))
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -131,7 +179,13 @@ pub fn inject_remote_key(keycode: u8, state: KeyButMask, is_down: bool) {
     }
     let is_ctrl = state.contains(KeyButMask::CONTROL);
     if is_down && is_ctrl && keycode == 55 {
-        if let Some(text) = crate::p2p::read_clipboard_text() {
+        let files = crate::p2p::read_clipboard_files();
+        if !files.is_empty() {
+            for f in files {
+                crate::p2p::send_file_transfer(f);
+            }
+            return;
+        } else if let Some(text) = crate::p2p::read_clipboard_text() {
             if !text.is_empty() {
                 crate::p2p::send_remote_clipboard(&text);
             }
