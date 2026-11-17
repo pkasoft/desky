@@ -74,5 +74,8 @@ pub fn trim_process_working_set() {
             usize::MAX,
             windows::Win32::System::Memory::SETPROCESSWORKINGSETSIZEEX_FLAGS(0),
         );
+        if let Ok(heap) = windows::Win32::System::Memory::GetProcessHeap() {
+            let _ = windows::Win32::System::Memory::HeapCompact(heap, windows::Win32::System::Memory::HEAP_FLAGS(0));
+        }
     }
 }

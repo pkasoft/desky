@@ -496,32 +496,32 @@ pub fn get_active_quality_params() -> (u8, u8, bool) {
 pub fn apply_preset_for_mode(mode: u8) {
     match mode {
         1 => {
-            // Ultra Text
-            ACTIVE_JPEG_QUALITY.store(88, Ordering::Relaxed);
+            // Lossless 4:4:4 / Ultra Text (Full native resolution, highest clarity)
+            ACTIVE_JPEG_QUALITY.store(90, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         2 => {
-            // High Clarity
-            ACTIVE_JPEG_QUALITY.store(78, Ordering::Relaxed);
+            // High Quality (Native resolution, high bitrate)
+            ACTIVE_JPEG_QUALITY.store(82, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         3 => {
-            // Balanced
-            ACTIVE_JPEG_QUALITY.store(72, Ordering::Relaxed);
-            ACTIVE_SCALE_PCT.store(85, Ordering::Relaxed);
+            // Balanced / Standard (Native resolution, optimized bandwidth)
+            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }
         4 => {
-            // Low Data / Speed
+            // Low Data / Power Saver (Native resolution, high compression, 4:2:0)
             ACTIVE_JPEG_QUALITY.store(60, Ordering::Relaxed);
-            ACTIVE_SCALE_PCT.store(70, Ordering::Relaxed);
+            ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(false, Ordering::Relaxed);
         }
         _ => {
-            // Auto Adaptive initial baseline
-            ACTIVE_JPEG_QUALITY.store(72, Ordering::Relaxed);
+            // Auto Adaptive default baseline
+            ACTIVE_JPEG_QUALITY.store(74, Ordering::Relaxed);
             ACTIVE_SCALE_PCT.store(100, Ordering::Relaxed);
             ACTIVE_CHROMA_444.store(true, Ordering::Relaxed);
         }

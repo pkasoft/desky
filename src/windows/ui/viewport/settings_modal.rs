@@ -602,10 +602,11 @@ unsafe fn draw_category_display(
     );
     let q_mode = crate::p2p::get_quality_mode();
     let q_idx = match q_mode {
-        0 => 0,
-        1 => 1,
-        3 => 2,
-        _ => 3,
+        4 => 0, // Low (Data Saver)
+        3 => 1, // Balanced (Standard)
+        2 => 2, // High Quality
+        1 => 3, // Lossless 4:4:4
+        _ => 1, // Default Balanced
     };
     let opts1 = ["Low (Data Saver)", "Balanced (Standard)", "High Quality", "Lossless 4:4:4"];
     draw_segment_pills(
@@ -1813,10 +1814,10 @@ pub fn handle_settings_click(
             // Quality
             if let Some(idx) = hit_segs(body_y + card_h + gap, 4) {
                 let mode_val = match idx {
-                    0 => 0,
-                    1 => 1,
-                    2 => 3,
-                    _ => 4,
+                    0 => 4, // Low (Data Saver)
+                    1 => 3, // Balanced (Standard)
+                    2 => 2, // High Quality
+                    _ => 1, // Lossless 4:4:4
                 };
                 crate::p2p::set_quality_mode(mode_val);
                 unsafe {

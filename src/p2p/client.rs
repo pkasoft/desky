@@ -268,6 +268,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             {
                                 if !logged_first {
                                     logged_first = true;
+                                    #[cfg(target_os = "windows")]
+                                    crate::windows::trim_process_working_set();
                                     set_session_status(SessionStatus::Connected(
                                         disp_worker.clone(),
                                     ));
@@ -348,6 +350,12 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     abr_bytes_received = 0;
                     abr_frames_completed = 0;
                     abr_frames_dropped = 0;
+                }
+
+                // Periodic memory compaction & working set trim every 15s to keep RAM tight (<50 MB)
+                if last_relay_hb.elapsed() >= Duration::from_secs(15) {
+                    #[cfg(target_os = "windows")]
+                    crate::windows::trim_process_working_set();
                 }
 
                 // Keep VDS relay return route alive if direct P2P hasn't been established yet
@@ -750,7 +758,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             {
                                                 idx
                                             } else {
-                                                if partial_frames.len() >= 12 {
+                                                partial_frames.retain(|f| f.created_at.elapsed() < Duration::from_millis(180));
+                                                if partial_frames.len() >= 4 {
                                                     let oldest = partial_frames.remove(0);
                                                     if oldest.received_count < oldest.total_chunks {
                                                         abr_frames_dropped += 1;

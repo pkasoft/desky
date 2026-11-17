@@ -670,7 +670,7 @@ pub struct H264MfDecoder {
     mf: Option<Arc<MfPlatSymbols>>,
     out_buf_size: u32,
     frame_index: u64,
-    last_frame: Option<Vec<u8>>,
+    nv12_scratch: Vec<u8>,
 }
 
 unsafe impl Send for H264MfDecoder {}
@@ -686,7 +686,7 @@ impl H264MfDecoder {
             mf: Some(mf),
             out_buf_size: 1_728_000,
             frame_index: 0,
-            last_frame: None,
+            nv12_scratch: Vec::with_capacity(1920 * 1088 * 3 / 2),
         })
     }
 
@@ -775,7 +775,6 @@ impl H264MfDecoder {
             self.width = width;
             self.height = height;
             self.frame_index = 0;
-            self.last_frame = None;
             info!("H.264 Media Foundation Decoder initialized for {}x{}", width, height);
             Ok(())
         }
@@ -807,11 +806,27 @@ impl H264MfDecoder {
             // Handle MF_E_TRANSFORM_STREAM_CHANGE (0xC00D6D61) - SPS/PPS renegotiation
             if let Err(ref e) = res {
                 if e.code().0 as u32 == 0xC00D6D61 || (status & 0x100 != 0) {
-                    if let Ok(new_out_type) = transform.GetOutputAvailableType(0, 0) {
-                        let _ = transform.SetOutputType(0, &new_out_type, 0);
-                        if let Ok(info) = transform.GetOutputStreamInfo(0) {
-                            self.out_buf_size = info.cbSize.max((expected_width * expected_height * 3 / 2) as u32);
+                    let mut found_nv12 = false;
+                    for type_idx in 0..32 {
+                        if let Ok(avail_type) = transform.GetOutputAvailableType(0, type_idx) {
+                            if let Ok(subtype) = avail_type.GetGUID(&MF_MT_SUBTYPE) {
+                                if subtype == MFVideoFormat_NV12 {
+                                    let _ = transform.SetOutputType(0, &avail_type, 0);
+                                    found_nv12 = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            break;
                         }
+                    }
+                    if !found_nv12 {
+                        if let Ok(new_out_type) = transform.GetOutputAvailableType(0, 0) {
+                            let _ = transform.SetOutputType(0, &new_out_type, 0);
+                        }
+                    }
+                    if let Ok(info) = transform.GetOutputStreamInfo(0) {
+                        self.out_buf_size = info.cbSize.max((expected_width * expected_height * 3 / 2) as u32);
                     }
                     if let Ok(new_mem) = mf.create_memory_buffer(self.out_buf_size) {
                         if let Ok(new_samp) = mf.create_sample() {
@@ -847,14 +862,18 @@ impl H264MfDecoder {
                         }
                     }
 
-                    // Attempt 1: Try IMF2DBuffer::ContiguousCopyTo
-                    let mut packed_nv12: Option<Vec<u8>> = None;
+                    let mut has_contiguous_nv12 = false;
+                    let mut contig_len_actual = 0usize;
                     if let Ok(buf2d) = m_buf.cast::<IMF2DBuffer>() {
                         if let Ok(contig_len) = buf2d.GetContiguousLength() {
-                            if contig_len > 0 {
-                                let mut dest = vec![0u8; contig_len as usize];
-                                if buf2d.ContiguousCopyTo(&mut dest).is_ok() {
-                                    packed_nv12 = Some(dest);
+                            let clen = contig_len as usize;
+                            if clen > 0 {
+                                if self.nv12_scratch.len() < clen {
+                                    self.nv12_scratch.resize(clen, 0);
+                                }
+                                if buf2d.ContiguousCopyTo(&mut self.nv12_scratch[..clen]).is_ok() {
+                                    has_contiguous_nv12 = true;
+                                    contig_len_actual = clen;
                                 }
                             }
                         }
@@ -863,28 +882,25 @@ impl H264MfDecoder {
                     let bgra_len = (expected_width * expected_height * 4) as usize;
                     let mut bgra = vec![0u8; bgra_len];
 
-                    if let Some(ref nv12) = packed_nv12 {
-                        // ContiguousCopyTo outputs unpadded rows (stride = expected_width).
-                        // Determine the exact dimensions of the contiguous buffer.
-                        let (contig_stride, contig_h) = if nv12.len() == (expected_width * expected_height * 3 / 2) as usize {
+                    if has_contiguous_nv12 {
+                        let (contig_stride, contig_h) = if contig_len_actual == (expected_width * expected_height * 3 / 2) as usize {
                             (expected_width as usize, expected_height as usize)
-                        } else if dec_w as usize > expected_width as usize && nv12.len() == (dec_w * dec_h * 3 / 2) as usize {
+                        } else if dec_w as usize > expected_width as usize && contig_len_actual == (dec_w * dec_h * 3 / 2) as usize {
                             (dec_w as usize, dec_h as usize)
-                        } else if dec_h as usize > expected_height as usize && nv12.len() == (expected_width * dec_h * 3 / 2) as usize {
+                        } else if dec_h as usize > expected_height as usize && contig_len_actual == (expected_width * dec_h * 3 / 2) as usize {
                             (expected_width as usize, dec_h as usize)
                         } else {
                             (expected_width as usize, expected_height as usize)
                         };
 
                         nv12_to_bgra_strided(
-                            nv12,
+                            &self.nv12_scratch[..contig_len_actual],
                             expected_width as usize,
                             expected_height as usize,
                             contig_stride,
                             contig_h,
                             &mut bgra,
                         );
-                        self.last_frame = Some(bgra.clone());
                         return Some(bgra);
                     } else {
                         let mut data_ptr = std::ptr::null_mut();
@@ -902,7 +918,6 @@ impl H264MfDecoder {
                                     &mut bgra,
                                 );
                                 let _ = m_buf.Unlock();
-                                self.last_frame = Some(bgra.clone());
                                 return Some(bgra);
                             }
                             let _ = m_buf.Unlock();
@@ -924,7 +939,7 @@ impl Default for H264MfDecoder {
             mf: None,
             out_buf_size: 1_728_000,
             frame_index: 0,
-            last_frame: None,
+            nv12_scratch: Vec::new(),
         })
     }
 }
@@ -972,10 +987,6 @@ impl VideoDecoder for H264MfDecoder {
 
             if let Some(bgra) = self.try_pull_output(expected_width, expected_height) {
                 return Ok(bgra);
-            }
-
-            if let Some(ref last) = self.last_frame {
-                return Ok(last.clone());
             }
 
             Err(anyhow!("H.264 decoder needs more input"))
