@@ -17,6 +17,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsWindow};
 
 use super::file_hud;
+use super::overflow_menu::draw_overflow_menu;
 use super::quick_actions::draw_quick_actions_popup;
 use super::settings_modal::{
     draw_fullscreen_settings_view, CAPTURE_CURSOR, DISPLAY_MODE, SETTINGS_CATEGORY,
@@ -26,7 +27,7 @@ use super::tabs::{
     get_session_tabs, ACTIVE_TAB_INDEX, ADMIN_HOVER_STATE, HWND_VIEWPORT, SHOW_TOOLBAR,
     VIEWPORT_IS_ADMIN_MODE,
 };
-use super::toolbar::{draw_tab_bar, TAB_HOVER_STATE, TOOLBAR_HEIGHT};
+use super::toolbar::{draw_tab_bar, get_more_x, get_zap_x, TAB_HOVER_STATE, TOOLBAR_HEIGHT};
 use super::whiteboard::{draw_whiteboard_overlay, draw_whiteboard_palette};
 use crate::windows::ui::theme;
 
@@ -351,9 +352,11 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
 
                             if toolbar_visible {
                                 draw_tab_bar(mem_dc, client_w, TOOLBAR_HEIGHT, &tabs, active_idx, hover_state);
-                                let settings_x = client_w - 32 - 12;
-                                let zap_x = settings_x - (32 + 5) * 7;
+                                let zap_x = get_zap_x(client_w, tabs.len(), active_idx);
                                 draw_quick_actions_popup(mem_dc, zap_x, 32, TOOLBAR_HEIGHT, hover_state);
+                                if let Some(more_x) = get_more_x(client_w, tabs.len(), active_idx) {
+                                    draw_overflow_menu(mem_dc, more_x, 32, TOOLBAR_HEIGHT, hover_state);
+                                }
                                 draw_whiteboard_palette(mem_dc, client_w, TOOLBAR_HEIGHT, hover_state);
                             }
                             file_hud::draw_file_transfer_hud(mem_dc, client_w, client_h);

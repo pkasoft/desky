@@ -31,6 +31,9 @@ use super::input_injector::{
     inject_remote_key, inject_remote_mouse, inject_remote_mouse_middle, inject_remote_mouse_move,
     inject_remote_wheel, map_client_to_screen,
 };
+use super::overflow_menu::{
+    hit_test_overflow_menu, is_overflow_menu_open, set_overflow_menu_open, toggle_overflow_menu,
+};
 use super::quick_actions::{
     execute_quick_action, hit_test_quick_actions, is_quick_actions_open, set_quick_actions_open,
     toggle_quick_actions,
@@ -44,7 +47,9 @@ use super::tabs::{
     ADMIN_HOVER_STATE, DRAGGING_TAB_INDEX, DRAG_START_POS, HWND_VIEWPORT, REMOTE_PRIVACY_MODE,
     VIEWPORT_IS_ADMIN_MODE,
 };
-use super::toolbar::{get_tab_hit_state, TAB_HOVER_STATE, TOOLBAR_HEIGHT};
+use super::toolbar::{
+    get_more_x, get_tab_hit_state, get_zap_x, scroll_tabs, TAB_HOVER_STATE, TOOLBAR_HEIGHT,
+};
 use super::whiteboard::{
     add_stroke_point, clear_strokes, end_stroke, hit_test_whiteboard_palette, is_whiteboard_active,
     set_whiteboard_active, start_stroke, toggle_whiteboard, WHITEBOARD_COLOR_IDX,
@@ -58,6 +63,141 @@ use crate::windows::ui::remote_desk_edit::create_remote_desk_edit;
 use crate::windows::ui::theme;
 
 pub static mut VIEWPORT_BRUSH: HBRUSH = HBRUSH(std::ptr::null_mut());
+
+pub unsafe fn execute_toolbar_action(hwnd: HWND, hit: i32) {
+    if hit == 9011 {
+        super::settings_modal::SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
+        SHOW_SETTINGS_MODAL.store(true, Ordering::Relaxed);
+        sync_edit_target_visibility();
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9006 {
+        SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+        sync_edit_target_visibility();
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9007 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        set_overflow_menu_open(false);
+        toggle_quick_actions();
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9020 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        set_quick_actions_open(false);
+        toggle_overflow_menu();
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9008 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        toggle_whiteboard();
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9010 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        let is_open = crate::p2p::toggle_chat();
+        if is_open {
+            crate::p2p::mark_chat_read();
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9009 {
+        if crate::recorder::is_recording() {
+            if let Some((path, total_bytes, total_frames, dur)) =
+                crate::recorder::stop_recording()
+            {
+                crate::windows::ui::launcher::append_status_log(&format!(
+                    "🎥 Session recording saved: {} ({} frames, {} KB, {:.1}s)",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    total_frames,
+                    total_bytes / 1024,
+                    dur.as_secs_f32()
+                ));
+            }
+        } else {
+            let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed).max(1280);
+            let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed).max(720);
+            let fps = TARGET_FPS.load(Ordering::Relaxed);
+            if let Ok(path) = crate::recorder::start_recording(orig_w, orig_h, fps) {
+                crate::windows::ui::launcher::append_status_log(&format!(
+                    "🔴 Recording started: {}",
+                    path.display()
+                ));
+            }
+        }
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9001 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        VIEWPORT_IS_ADMIN_MODE.store(false, Ordering::Relaxed);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9002 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        VIEWPORT_IS_ADMIN_MODE.store(true, Ordering::Relaxed);
+        crate::p2p::send_admin_request(crate::protocol::AdminReq::GetProcesses);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9003 {
+        let muted = crate::windows::audio::toggle_audio_mute();
+        info!("Audio toggle muted: {}", muted);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9004 {
+        let new_priv = !REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
+        REMOTE_PRIVACY_MODE.store(new_priv, Ordering::Relaxed);
+        crate::p2p::send_admin_request(crate::protocol::AdminReq::SetPrivacyMode {
+            enabled: new_priv,
+        });
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9005 {
+        let is_on = crate::windows::audio::toggle_intercom_voice();
+        info!("Intercom voice: {}", is_on);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9100 {
+        let cur = ACTIVE_REMOTE_MONITOR.load(Ordering::Relaxed);
+        let next = (cur + 1) % 3;
+        ACTIVE_REMOTE_MONITOR.store(next, Ordering::Relaxed);
+        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+            monitor_index: next,
+        });
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9101 {
+        ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
+        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+            monitor_index: 0,
+        });
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9102 {
+        ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
+        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+            monitor_index: 1,
+        });
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 9103 {
+        ACTIVE_REMOTE_MONITOR.store(2, Ordering::Relaxed);
+        crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
+            monitor_index: 2,
+        });
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 997 {
+        scroll_tabs(1);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 998 {
+        scroll_tabs(-1);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    } else if hit == 999 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            close_settings_modal(hwnd);
+        }
+        switch_session_tab(0);
+        let _ = InvalidateRect(Some(hwnd), None, false);
+    }
+}
 
 pub unsafe extern "system" fn viewport_wnd_proc(
     hwnd: HWND,
@@ -204,122 +344,8 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if client_y < TOOLBAR_HEIGHT {
                 let hit = get_tab_hit_state(hwnd, client_x, client_y);
 
-                if hit == 9011 {
-                    super::settings_modal::SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
-                    SHOW_SETTINGS_MODAL.store(true, Ordering::Relaxed);
-                    sync_edit_target_visibility();
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9006 {
-                    SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
-                    sync_edit_target_visibility();
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9007 {
-                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                        close_settings_modal(hwnd);
-                    }
-                    toggle_quick_actions();
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9008 {
-                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                        close_settings_modal(hwnd);
-                    }
-                    toggle_whiteboard();
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9010 {
-                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                        close_settings_modal(hwnd);
-                    }
-                    let is_open = crate::p2p::toggle_chat();
-                    if is_open {
-                        crate::p2p::mark_chat_read();
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9009 {
-                    if crate::recorder::is_recording() {
-                        if let Some((path, total_bytes, total_frames, dur)) =
-                            crate::recorder::stop_recording()
-                        {
-                            crate::windows::ui::launcher::append_status_log(&format!(
-                                "🎥 Session recording saved: {} ({} frames, {} KB, {:.1}s)",
-                                path.file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default(),
-                                total_frames,
-                                total_bytes / 1024,
-                                dur.as_secs_f32()
-                            ));
-                        }
-                    } else {
-                        let orig_w = REMOTE_ORIG_W.load(Ordering::Relaxed).max(1280);
-                        let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed).max(720);
-                        let fps = TARGET_FPS.load(Ordering::Relaxed);
-                        if let Ok(path) = crate::recorder::start_recording(orig_w, orig_h, fps) {
-                            crate::windows::ui::launcher::append_status_log(&format!(
-                                "🔴 Recording started: {}",
-                                path.display()
-                            ));
-                        }
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9001 {
-                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                        close_settings_modal(hwnd);
-                    }
-                    VIEWPORT_IS_ADMIN_MODE.store(false, Ordering::Relaxed);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9002 {
-                    if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
-                        close_settings_modal(hwnd);
-                    }
-                    VIEWPORT_IS_ADMIN_MODE.store(true, Ordering::Relaxed);
-                    crate::p2p::send_admin_request(crate::protocol::AdminReq::GetProcesses);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9003 {
-                    let muted = crate::windows::audio::toggle_audio_mute();
-                    info!("Audio toggle muted: {}", muted);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9004 {
-                    let new_priv = !REMOTE_PRIVACY_MODE.load(Ordering::Relaxed);
-                    REMOTE_PRIVACY_MODE.store(new_priv, Ordering::Relaxed);
-                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SetPrivacyMode {
-                        enabled: new_priv,
-                    });
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9005 {
-                    let is_on = crate::windows::audio::toggle_intercom_voice();
-                    info!("Intercom voice: {}", is_on);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9101 {
-                    ACTIVE_REMOTE_MONITOR.store(0, Ordering::Relaxed);
-                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
-                        monitor_index: 0,
-                    });
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9102 {
-                    ACTIVE_REMOTE_MONITOR.store(1, Ordering::Relaxed);
-                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
-                        monitor_index: 1,
-                    });
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                    return LRESULT(0);
-                } else if hit == 9103 {
-                    ACTIVE_REMOTE_MONITOR.store(2, Ordering::Relaxed);
-                    crate::p2p::send_admin_request(crate::protocol::AdminReq::SwitchMonitor {
-                        monitor_index: 2,
-                    });
-                    let _ = InvalidateRect(Some(hwnd), None, false);
+                if hit >= 9000 || hit == 997 || hit == 998 {
+                    execute_toolbar_action(hwnd, hit);
                     return LRESULT(0);
                 } else if hit >= 1000 {
                     if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
@@ -378,9 +404,29 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 }
             }
 
+            if is_overflow_menu_open() {
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                let tabs = super::get_session_tabs();
+                if let Some(more_x) = get_more_x(client_w, tabs.len(), active) {
+                    let of_hit = hit_test_overflow_menu(more_x, 32, TOOLBAR_HEIGHT, client_x, client_y);
+                    if of_hit > 0 && of_hit != 9020 {
+                        set_overflow_menu_open(false);
+                        execute_toolbar_action(hwnd, of_hit);
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                        return LRESULT(0);
+                    } else if of_hit == 9020 {
+                        return LRESULT(0);
+                    } else {
+                        set_overflow_menu_open(false);
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                }
+            }
+
             if is_quick_actions_open() {
-                let settings_x = client_w - 32 - 12;
-                let zap_x = settings_x - (32 + 5) * 7;
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                let tabs = super::get_session_tabs();
+                let zap_x = get_zap_x(client_w, tabs.len(), active);
                 let qa_hit =
                     hit_test_quick_actions(zap_x, 32, TOOLBAR_HEIGHT, client_x, client_y);
                 if qa_hit >= 9201 && qa_hit <= 9207 {
@@ -391,6 +437,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                     return LRESULT(0);
                 } else {
                     set_quick_actions_open(false);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
             }
 
@@ -690,6 +737,27 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 );
                 return LRESULT(0);
             }
+            if is_overflow_menu_open() {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let client_w = rect.right - rect.left;
+                let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+                let tabs = super::get_session_tabs();
+                if let Some(more_x) = get_more_x(client_w, tabs.len(), active) {
+                    let of_hit = hit_test_overflow_menu(more_x, 32, TOOLBAR_HEIGHT, client_x, client_y);
+                    if of_hit > 0 {
+                        let prev = TAB_HOVER_STATE.load(Ordering::Relaxed);
+                        if prev != of_hit {
+                            TAB_HOVER_STATE.store(of_hit, Ordering::Relaxed);
+                            let _ = InvalidateRect(Some(hwnd), None, false);
+                        }
+                        let c = LoadCursorW(None, IDC_HAND).unwrap_or_default();
+                        SetCursor(Some(c));
+                        return LRESULT(0);
+                    }
+                }
+            }
+
             if is_quick_actions_open() {
                 let c = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
                 SetCursor(Some(c));
@@ -857,7 +925,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_MOUSEWHEEL => {
-            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) || is_quick_actions_open() {
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) || is_quick_actions_open() || is_overflow_menu_open() {
                 return LRESULT(0);
             }
             let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
@@ -865,6 +933,12 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let screen_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
             let mut pt = POINT { x: screen_x, y: screen_y };
             let _ = ScreenToClient(hwnd, &mut pt);
+
+            if pt.y < TOOLBAR_HEIGHT {
+                scroll_tabs(delta);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
 
             let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
             if active == 0 {

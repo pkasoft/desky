@@ -31,10 +31,14 @@ pub mod record;
 pub mod zap;
 pub mod alert_triangle;
 pub mod message_square;
+pub mod more;
+pub mod chevron;
 
 pub use arrow_right::draw_arrow_right;
 pub use alert_triangle::draw_alert_triangle;
 pub use message_square::draw_message_square;
+pub use more::draw_more_horizontal;
+pub use chevron::{draw_chevron_left, draw_chevron_right};
 pub use bell::draw_bell;
 pub use check::draw_check;
 pub use copy::draw_copy;

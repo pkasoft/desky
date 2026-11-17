@@ -16,6 +16,7 @@
 pub mod chat_hud;
 pub mod file_hud;
 pub mod input_injector;
+pub mod overflow_menu;
 pub mod quick_actions;
 pub mod renderer;
 pub mod session_status_view;
@@ -32,6 +33,8 @@ pub use chat_hud::*;
 pub use file_hud::*;
 #[allow(unused_imports)]
 pub use input_injector::*;
+#[allow(unused_imports)]
+pub use overflow_menu::*;
 #[allow(unused_imports)]
 pub use quick_actions::*;
 pub use renderer::*;
