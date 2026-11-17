@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Desky Server Control &bull; desky-admn.pkasoft.com</title>
+  <style>
+    :root {
+      --bg: #0B0E14;
+      --card-bg: #131822;
+      --card-hover: #181F2C;
+      --border: #20293A;
+      --accent-green: #10B981;
+      --accent-cyan: #38BDF8;
+      --accent-amber: #F59E0B;
+      --text-main: #F9FAFB;
+      --text-muted: #9CA3AF;
+      --offline-color: #6B7280;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+    body { background: var(--bg); color: var(--text-main); min-height: 100vh; padding: 24px; }
+    .container { max-width: 1200px; margin: 0 auto; }
+
+    /* Header */
+    header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 24px; border-bottom: 1px solid var(--border); margin-bottom: 24px; flex-wrap: wrap; gap: 16px; }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-icon { width: 44px; height: 44px; background: rgba(16,185,129,0.15); border: 1.5px solid var(--accent-green); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--accent-green); }
+    .brand-title h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.3px; }
+    .brand-title p { font-size: 13px; color: var(--text-muted); }
+
+    .header-actions { display: flex; align-items: center; gap: 12px; }
+    .status-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; background: rgba(16,185,129,0.12); color: var(--accent-green); border: 1px solid rgba(16,185,129,0.3); }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-green); box-shadow: 0 0 10px var(--accent-green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+
+    .btn { padding: 8px 14px; font-size: 13px; font-weight: 600; border-radius: 6px; border: 1px solid var(--border); background: var(--card-bg); color: var(--text-main); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+    .btn:hover { background: var(--card-hover); border-color: var(--accent-green); }
+
+    /* Stat Cards Grid */
+    .grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 16px; margin-bottom: 28px; }
+    .stat-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 20px; transition: transform 0.2s, border-color 0.2s; position: relative; overflow: hidden; }
+    .stat-card:hover { border-color: rgba(16,185,129,0.4); transform: translateY(-2px); }
+    .stat-title { font-size: 12px; font-weight: 600; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-bottom: 8px; }
+    .stat-value { font-size: 26px; font-weight: 800; color: var(--text-main); }
+    .stat-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .stat-accent-green { border-bottom: 3px solid var(--accent-green); }
+    .stat-accent-cyan { border-bottom: 3px solid var(--accent-cyan); }
+    .stat-accent-amber { border-bottom: 3px solid var(--accent-amber); }
+
+    /* Section Card */
+    .content-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; flex-wrap: wrap; gap: 12px; }
+    .card-header h2 { font-size: 16px; font-weight: 700; }
+    .search-box { padding: 8px 14px; background: #0B0E14; border: 1px solid var(--border); border-radius: 8px; color: #fff; font-size: 13px; min-width: 260px; outline: none; }
+    .search-box:focus { border-color: var(--accent-green); }
+
+    /* Table */
+    .table-container { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    th { padding: 12px 14px; border-bottom: 1px solid var(--border); color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+    td { padding: 14px; border-bottom: 1px solid rgba(32,41,58,0.5); vertical-align: middle; }
+    tr:hover td { background: var(--card-hover); }
+
+    .badge-online { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; background: rgba(16,185,129,0.15); color: var(--accent-green); }
+    .badge-offline { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; background: rgba(107,114,128,0.15); color: var(--offline-color); }
+    .id-code { font-family: monospace; font-size: 14px; font-weight: 700; color: var(--accent-cyan); letter-spacing: 0.5px; }
+    .copy-btn { padding: 2px 6px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: #0B0E14; color: var(--text-muted); cursor: pointer; margin-left: 6px; }
+    .copy-btn:hover { color: #fff; border-color: var(--accent-green); }
+
+    /* Server Info footer */
+    .server-info { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--text-muted); padding-top: 16px; border-top: 1px solid var(--border); flex-wrap: wrap; gap: 12px; }
+    .server-info a { color: var(--accent-green); text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14M12 5l7 7-7 7"/></svg>
+        </div>
+        <div class="brand-title">
+          <h1>Desky Matchmaker & Relay Server</h1>
+          <p>Actix-Web &bull; Askama &bull; desky-admn.pkasoft.com</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="status-badge">
+          <div class="status-dot"></div>
+          <span>RUNNING</span>
+        </div>
+        <button class="btn" onclick="fetchData();">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Refresh
+        </button>
+      </div>
+    </header>
+
+    <!-- Top Metrics -->
+    <div class="grid-stats">
+      <div class="stat-card stat-accent-green">
+        <div class="stat-title">Active Online Hosts</div>
+        <div class="stat-value" id="val-online">{{ online_hosts }}</div>
+        <div class="stat-sub">Heartbeat active in memory</div>
+      </div>
+      <div class="stat-card stat-accent-cyan">
+        <div class="stat-title">Registered Peers</div>
+        <div class="stat-value" id="val-peers">{{ total_registered_peers }}</div>
+        <div class="stat-sub">Permanent SQLite records</div>
+      </div>
+      <div class="stat-card stat-accent-green">
+        <div class="stat-title">Direct P2P Brokered</div>
+        <div class="stat-value" id="val-matches">{{ matches_brokered }}</div>
+        <div class="stat-sub">Hole-punch matches</div>
+      </div>
+      <div class="stat-card stat-accent-cyan">
+        <div class="stat-title">Relayed Bandwidth</div>
+        <div class="stat-value" id="val-bandwidth">{{ relayed_bytes_formatted }}</div>
+        <div class="stat-sub" id="val-packets">{{ relayed_packets }} packets relayed</div>
+      </div>
+      <div class="stat-card stat-accent-amber">
+        <div class="stat-title">Server Uptime</div>
+        <div class="stat-value" id="val-uptime">{{ uptime_formatted }}</div>
+        <div class="stat-sub">Zero-downtime cluster</div>
+      </div>
+    </div>
+
+    <!-- Peers Explorer -->
+    <div class="content-card">
+      <div class="card-header">
+        <div>
+          <h2>Peer Directory & Active Routing Table</h2>
+          <p style="font-size: 13px; color: var(--text-muted); margin-top: 2px;">Real-time presence and network routing status for connected Desky peers</p>
+        </div>
+        <input type="text" id="search-input" class="search-box" placeholder="Filter by Desky ID or Endpoint..." oninput="filterTable();">
+      </div>
+
+      <div class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Desky ID</th>
+              <th>Status</th>
+              <th>Network Endpoint</th>
+              <th>Hardware ID</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody id="peers-tbody">
+            {% if peers.is_empty() %}
+            <tr>
+              <td colspan="5" style="text-align: center; color: var(--text-muted); padding: 30px;">No registered peers in database yet.</td>
+            </tr>
+            {% else %}
+            {% for p in peers %}
+            <tr>
+              <td>
+                <span class="id-code">{{ p.formatted_id }}</span>
+                <button class="copy-btn" onclick="navigator.clipboard.writeText('{{ p.desky_id }}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500);">Copy</button>
+              </td>
+              <td>
+                {% if p.online %}
+                  <span class="badge-online">&bull; ONLINE</span>
+                {% else %}
+                  <span class="badge-offline">&bull; OFFLINE</span>
+                {% endif %}
+              </td>
+              <td><code>{{ p.endpoint }}</code></td>
+              <td><span style="color: var(--text-muted); font-size: 12px;">{{ p.machine_id }}</span></td>
+              <td>{{ p.last_seen_text }}</td>
+            </tr>
+            {% endfor %}
+            {% endif %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Server System Information -->
+    <div class="server-info">
+      <div>
+        <strong>Desky Server v0.1.0</strong> &bull; UDP Matchmaker: <code>0.0.0.0:{{ udp_port }}</code> &bull; Web Dashboard: <code>0.0.0.0:{{ web_port }}</code> &bull; DB: <code>{{ db_path }}</code>
+      </div>
+      <div>
+        <a href="/api/stats{{ token_query }}" target="_blank">JSON Stats API</a> &bull;
+        <a href="/api/peers{{ token_query }}" target="_blank">Peers API</a> &bull;
+        <a href="/health" target="_blank">Health Check</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tokenQuery = "{{ token_query }}";
+    let allPeers = [];
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    function formatUptime(secs) {
+      const d = Math.floor(secs / (3600*24));
+      const h = Math.floor(secs % (3600*24) / 3600);
+      const m = Math.floor(secs % 3600 / 60);
+      const s = Math.floor(secs % 60);
+      if (d > 0) return d + "d " + h + "h " + m + "m";
+      if (h > 0) return h + "h " + m + "m " + s + "s";
+      return m + "m " + s + "s";
+    }
+
+    function formatRelativeTime(seconds) {
+      if (seconds < 5) return 'Just now';
+      if (seconds < 60) return seconds + 's ago';
+      if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
+      if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
+      return Math.floor(seconds / 86400) + 'd ago';
+    }
+
+    async function fetchData() {
+      try {
+        const statsRes = await fetch('/api/stats' + tokenQuery);
+        if (statsRes.ok) {
+          const s = await statsRes.json();
+          document.getElementById('val-online').innerText = s.online_hosts.toLocaleString();
+          document.getElementById('val-peers').innerText = s.total_registered_peers.toLocaleString();
+          document.getElementById('val-matches').innerText = s.matches_brokered.toLocaleString();
+          document.getElementById('val-bandwidth').innerText = formatBytes(s.relayed_bytes);
+          document.getElementById('val-packets').innerText = s.relayed_packets.toLocaleString() + ' packets relayed';
+          document.getElementById('val-uptime').innerText = formatUptime(s.uptime_seconds);
+        }
+
+        const peersRes = await fetch('/api/peers' + tokenQuery);
+        if (peersRes.ok) {
+          allPeers = await peersRes.json();
+          renderTable(allPeers);
+        }
+      } catch (err) {
+        console.error("Error fetching stats:", err);
+      }
+    }
+
+    function renderTable(peers) {
+      const tbody = document.getElementById('peers-tbody');
+      if (peers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 30px;">No registered peers in database yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = peers.map(p => `
+        <tr>
+          <td>
+            <span class="id-code">${p.formatted_id}</span>
+            <button class="copy-btn" onclick="navigator.clipboard.writeText('${p.desky_id}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy',1500);">Copy</button>
+          </td>
+          <td>
+            ${p.online ? '<span class="badge-online">&bull; ONLINE</span>' : '<span class="badge-offline">&bull; OFFLINE</span>'}
+          </td>
+          <td><code>${p.endpoint}</code></td>
+          <td><span style="color: var(--text-muted); font-size: 12px;">${p.machine_id}</span></td>
+          <td>${formatRelativeTime(p.last_seen_secs_ago)}</td>
+        </tr>
+      `).join('');
+    }
+
+    function filterTable() {
+      const query = document.getElementById('search-input').value.toLowerCase().trim();
+      if (!query) {
+        renderTable(allPeers);
+        return;
+      }
+      const filtered = allPeers.filter(p => 
+        p.desky_id.includes(query) ||
+        p.formatted_id.toLowerCase().includes(query) ||
+        p.endpoint.toLowerCase().includes(query) ||
+        p.machine_id.toLowerCase().includes(query)
+      );
+      renderTable(filtered);
+    }
+
+    setInterval(fetchData, 3000);
+  </script>
+</body>
+</html>

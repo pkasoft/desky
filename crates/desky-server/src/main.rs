@@ -231,6 +231,8 @@ impl Database {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -327,8 +329,9 @@ async fn main() -> Result<()> {
         let s_stats = Arc::clone(&stats);
         let s_hosts = Arc::clone(&hosts);
         let s_db = Arc::clone(&db);
-        tokio::spawn(async move {
-            if let Err(e) = run_web_server(web_cfg, s_stats, s_hosts, s_db).await {
+        std::thread::spawn(move || {
+            let sys = actix_web::rt::System::new();
+            if let Err(e) = sys.block_on(run_web_server(web_cfg, s_stats, s_hosts, s_db)) {
                 error!("Web server encountered an error: {:?}", e);
             }
         });
