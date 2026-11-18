@@ -119,11 +119,13 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                 }
 
                 let has_host_session = crate::p2p::get_active_host_session_info().is_some();
-                if has_host_session != last_host_session_active {
-                    last_host_session_active = has_host_session;
+                let has_pending = crate::p2p::get_pending_approval().is_some();
+                let host_ui_active = has_host_session || has_pending;
+                if host_ui_active != last_host_session_active {
+                    last_host_session_active = host_ui_active;
                     let _ = windows::Win32::UI::WindowsAndMessaging::PostMessageW(
                         Some(target_hwnd),
-                        crate::windows::ui::launcher::WM_APP_REDRAW,
+                        crate::windows::ui::launcher::WM_APP_SYNC_HOST_UI,
                         windows::Win32::Foundation::WPARAM(0),
                         windows::Win32::Foundation::LPARAM(0),
                     );

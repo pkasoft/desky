@@ -57,7 +57,7 @@ use super::whiteboard::{
 use crate::windows::ui::launcher::{
     get_responsive_layout, set_edit_target_hwnd, sync_edit_target_visibility,
     set_main_window_hwnd, update_edit_layout, ID_EDIT_TARGET_CODE, WM_APP_BRING_FRONT,
-    WM_APP_REDRAW, WM_APP_SHOW_PROGRESS,
+    WM_APP_REDRAW, WM_APP_SHOW_PROGRESS, WM_APP_SYNC_HOST_UI,
 };
 use crate::windows::ui::remote_desk_edit::create_remote_desk_edit;
 use crate::windows::ui::theme;
@@ -262,6 +262,10 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             sync_edit_target_visibility();
             crate::windows::ui::sync_host_session_ui();
             let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
+        WM_APP_SYNC_HOST_UI => {
+            crate::windows::ui::sync_host_session_ui();
             LRESULT(0)
         }
         WM_APP_BRING_FRONT => {

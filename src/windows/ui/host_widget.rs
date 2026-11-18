@@ -17,21 +17,22 @@ use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POI
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateRoundRectRgn,
     CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, GetStockObject, InvalidateRect,
-    RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, DT_CENTER, DT_LEFT,
-    DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ, NULL_BRUSH,
-    PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
+    RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, SetWindowRgn, UpdateWindow,
+    DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ,
+    NULL_BRUSH, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetParent, GetSystemMetrics,
     GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW, MoveWindow,
-    RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
-    SetTimer, SetWindowLongPtrW, SetWindowTextW, ShowWindow, GWLP_WNDPROC, HMENU, HTCAPTION, IDC_ARROW,
-    IDC_HAND, LWA_COLORKEY, SM_CXSCREEN, SM_CYSCREEN, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WM_CHAR, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN,
-    WM_MOUSEMOVE, WM_NCLBUTTONDOWN, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD,
-    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    PostMessageW, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow, SetLayeredWindowAttributes,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, GWLP_WNDPROC, HMENU, HTCAPTION,
+    HWND_TOPMOST, IDC_ARROW, IDC_HAND, LWA_COLORKEY, SM_CXSCREEN, SM_CYSCREEN, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_COMMAND, WM_CREATE,
+    WM_CTLCOLOREDIT, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE,
+    WM_NCLBUTTONDOWN, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD,
+    WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP,
 };
 
 use super::theme::{
@@ -57,7 +58,7 @@ static PREV_HOST_CHAT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static CHAT_EXPANDED: AtomicBool = AtomicBool::new(false);
 static COLLAPSED: AtomicBool = AtomicBool::new(false);
 static HOVER_BTN: AtomicI32 = AtomicI32::new(0);
-// 1 = Mic, 2 = Chat, 3 = End, 4 = Send, 5 = Input Lock/Allow
+// 1 = Mic, 2 = Chat, 3 = End, 4 = Send, 5 = Input Sovereignty
 // 10 = Minimize/Restore, 11 = Header Close
 // 20 = Approval Accept, 21 = Approval Decline
 
@@ -104,7 +105,15 @@ unsafe fn update_widget_layout(hwnd: HWND) {
         (x, y)
     };
 
-    let _ = MoveWindow(hwnd, target_x, target_y, target_w, target_h, true);
+    let _ = SetWindowPos(
+        hwnd,
+        Some(HWND_TOPMOST),
+        target_x,
+        target_y,
+        target_w,
+        target_h,
+        SWP_SHOWWINDOW,
+    );
     apply_widget_shape(hwnd, target_w, target_h);
 
     let edit_raw = HWND_CHAT_EDIT.load(Ordering::Relaxed);
@@ -120,6 +129,7 @@ unsafe fn update_widget_layout(hwnd: HWND) {
         }
     }
     let _ = InvalidateRect(Some(hwnd), None, false);
+    let _ = UpdateWindow(hwnd);
 }
 
 unsafe extern "system" fn host_chat_edit_proc(
@@ -166,8 +176,26 @@ unsafe extern "system" fn host_chat_edit_proc(
 }
 
 /// Synchronizes the visibility of the Host Control Panel and Screen Border.
-/// Automatically creates or destroys the window based on whether a request is pending or a session is active.
+/// Guarantees execution strictly on the Win32 UI thread.
 pub fn sync_host_session_ui() {
+    let ui_tid = super::launcher::UI_THREAD_ID.load(Ordering::Relaxed);
+    let cur_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    if ui_tid != 0 && cur_tid != ui_tid {
+        // Forward to the Win32 UI thread via message queue to avoid cross-thread deadlocks
+        unsafe {
+            let main_hwnd = super::launcher::HWND_MAIN_WINDOW;
+            if !main_hwnd.0.is_null() && IsWindow(Some(main_hwnd)).as_bool() {
+                let _ = PostMessageW(
+                    Some(main_hwnd),
+                    super::launcher::WM_APP_SYNC_HOST_UI,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
+
     let session = crate::p2p::get_active_host_session_info();
     let pending = crate::p2p::get_pending_approval();
 
@@ -185,14 +213,52 @@ pub fn sync_host_session_ui() {
 }
 
 pub fn spawn_host_widget() {
+    let ui_tid = super::launcher::UI_THREAD_ID.load(Ordering::Relaxed);
+    let cur_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    if ui_tid != 0 && cur_tid != ui_tid {
+        unsafe {
+            let main_hwnd = super::launcher::HWND_MAIN_WINDOW;
+            if !main_hwnd.0.is_null() && IsWindow(Some(main_hwnd)).as_bool() {
+                let _ = PostMessageW(
+                    Some(main_hwnd),
+                    super::launcher::WM_APP_SYNC_HOST_UI,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
+
+    let (target_w, target_h) = get_current_target_dimensions();
+    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+
+    let (x, y) = if is_approval_active() {
+        ((screen_w - target_w) / 2, (screen_h - target_h) / 2)
+    } else {
+        ((screen_w - target_w - 20).max(10), (screen_h - target_h - 52).max(10))
+    };
+
     let existing = HWND_HOST_WIDGET.load(Ordering::Relaxed);
     if existing != 0 {
         let hwnd = HWND(existing as *mut _);
         if unsafe { IsWindow(Some(hwnd)).as_bool() } {
             unsafe {
                 update_widget_layout(hwnd);
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    x,
+                    y,
+                    target_w,
+                    target_h,
+                    SWP_SHOWWINDOW,
+                );
                 let _ = SetForegroundWindow(hwnd);
                 let _ = InvalidateRect(Some(hwnd), None, false);
+                let _ = UpdateWindow(hwnd);
             }
             return;
         }
@@ -212,21 +278,11 @@ pub fn spawn_host_widget() {
         wc.hCursor = LoadCursorW(None, IDC_ARROW).unwrap_or_default();
         let _ = RegisterClassExW(&wc);
 
-        let (target_w, target_h) = get_current_target_dimensions();
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
-        let (x, y) = if is_approval_active() {
-            ((screen_w - target_w) / 2, (screen_h - target_h) / 2)
-        } else {
-            ((screen_w - target_w - 20).max(10), (screen_h - target_h - 52).max(10))
-        };
-
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
             class_name,
             w!("Desky | Host Control Panel"),
-            WS_POPUP | WS_VISIBLE,
+            WS_POPUP,
             x,
             y,
             target_w,
@@ -240,13 +296,42 @@ pub fn spawn_host_widget() {
         if let Ok(h) = hwnd {
             HWND_HOST_WIDGET.store(h.0 as isize, Ordering::Relaxed);
             apply_widget_shape(h, target_w, target_h);
-            let _ = SetTimer(Some(h), ID_TIMER_WIDGET_TICK, 400, None);
+            let _ = ShowWindow(h, SW_SHOW);
+            let _ = SetWindowPos(
+                h,
+                Some(HWND_TOPMOST),
+                x,
+                y,
+                target_w,
+                target_h,
+                SWP_SHOWWINDOW,
+            );
             let _ = SetForegroundWindow(h);
+            let _ = SetTimer(Some(h), ID_TIMER_WIDGET_TICK, 400, None);
+            let _ = InvalidateRect(Some(h), None, false);
+            let _ = UpdateWindow(h);
         }
     }
 }
 
 pub fn close_host_widget() {
+    let ui_tid = super::launcher::UI_THREAD_ID.load(Ordering::Relaxed);
+    let cur_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    if ui_tid != 0 && cur_tid != ui_tid {
+        unsafe {
+            let main_hwnd = super::launcher::HWND_MAIN_WINDOW;
+            if !main_hwnd.0.is_null() && IsWindow(Some(main_hwnd)).as_bool() {
+                let _ = PostMessageW(
+                    Some(main_hwnd),
+                    super::launcher::WM_APP_SYNC_HOST_UI,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
+
     let existing = HWND_HOST_WIDGET.swap(0, Ordering::Relaxed);
     if existing != 0 {
         let hwnd = HWND(existing as *mut _);
@@ -262,10 +347,39 @@ pub fn close_host_widget() {
 }
 
 pub fn spawn_screen_border() {
+    let ui_tid = super::launcher::UI_THREAD_ID.load(Ordering::Relaxed);
+    let cur_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    if ui_tid != 0 && cur_tid != ui_tid {
+        unsafe {
+            let main_hwnd = super::launcher::HWND_MAIN_WINDOW;
+            if !main_hwnd.0.is_null() && IsWindow(Some(main_hwnd)).as_bool() {
+                let _ = PostMessageW(
+                    Some(main_hwnd),
+                    super::launcher::WM_APP_SYNC_HOST_UI,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
+
     let existing = HWND_SCREEN_BORDER.load(Ordering::Relaxed);
     if existing != 0 {
         let hwnd = HWND(existing as *mut _);
         if unsafe { IsWindow(Some(hwnd)).as_bool() } {
+            unsafe {
+                let _ = ShowWindow(hwnd, SW_SHOW);
+                let _ = SetWindowPos(
+                    hwnd,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                );
+            }
             return;
         }
     }
@@ -291,7 +405,7 @@ pub fn spawn_screen_border() {
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_LAYERED,
             class_name,
             w!("Desky | Screen Border"),
-            WS_POPUP | WS_VISIBLE,
+            WS_POPUP,
             0,
             0,
             screen_w,
@@ -305,11 +419,38 @@ pub fn spawn_screen_border() {
         if let Ok(h) = hwnd {
             HWND_SCREEN_BORDER.store(h.0 as isize, Ordering::Relaxed);
             let _ = SetLayeredWindowAttributes(h, COLORREF(0x00000000), 0, LWA_COLORKEY);
+            let _ = ShowWindow(h, SW_SHOW);
+            let _ = SetWindowPos(
+                h,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                screen_w,
+                screen_h,
+                SWP_SHOWWINDOW,
+            );
         }
     }
 }
 
 pub fn close_screen_border() {
+    let ui_tid = super::launcher::UI_THREAD_ID.load(Ordering::Relaxed);
+    let cur_tid = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+    if ui_tid != 0 && cur_tid != ui_tid {
+        unsafe {
+            let main_hwnd = super::launcher::HWND_MAIN_WINDOW;
+            if !main_hwnd.0.is_null() && IsWindow(Some(main_hwnd)).as_bool() {
+                let _ = PostMessageW(
+                    Some(main_hwnd),
+                    super::launcher::WM_APP_SYNC_HOST_UI,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
+        }
+        return;
+    }
+
     let existing = HWND_SCREEN_BORDER.swap(0, Ordering::Relaxed);
     if existing != 0 {
         let hwnd = HWND(existing as *mut _);
@@ -514,7 +655,7 @@ unsafe extern "system" fn host_widget_wndproc(
                     let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 } else if client_x >= 90 && client_x <= 168 {
-                    // Remote Input Control / Sovereignty toggle
+                    // Remote Input Sovereignty toggle
                     let allowed = crate::p2p::toggle_host_remote_input();
                     tracing::info!("Host remote input sovereignty toggled: allowed={}", allowed);
                     let _ = InvalidateRect(Some(hwnd), None, false);

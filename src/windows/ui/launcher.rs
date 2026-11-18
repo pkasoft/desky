@@ -35,6 +35,9 @@ use super::viewport::{viewport_wndproc, VIEWPORT_BRUSH};
 pub const WM_APP_REDRAW: u32 = 0x8001;
 pub const WM_APP_BRING_FRONT: u32 = 0x8002;
 pub const WM_APP_SHOW_PROGRESS: u32 = 0x8004;
+pub const WM_APP_SYNC_HOST_UI: u32 = 0x8005;
+
+pub static UI_THREAD_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 pub const ID_EDIT_TARGET_CODE: usize = 1003;
 
@@ -146,7 +149,16 @@ pub fn prompt_incoming_request(client_id: &str) {
         "Incoming request from ID: {} - Host approval prompt opened.",
         client_id
     ));
-    super::host_widget::sync_host_session_ui();
+    unsafe {
+        if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
+            let _ = PostMessageW(
+                Some(HWND_MAIN_WINDOW),
+                WM_APP_SYNC_HOST_UI,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
 }
 
 pub fn set_assigned_desky_id(id: &str) {
@@ -164,6 +176,10 @@ pub fn get_hover_button() -> u8 {
 pub fn set_main_window_hwnd(hwnd: HWND) {
     unsafe {
         HWND_MAIN_WINDOW = hwnd;
+        UI_THREAD_ID.store(
+            windows::Win32::System::Threading::GetCurrentThreadId(),
+            Ordering::SeqCst,
+        );
     }
 }
 
