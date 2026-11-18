@@ -68,7 +68,6 @@ struct HostWidgetFonts {
     font_perm_hdr: HFONT,
     font_action: HFONT,
     font_tab: HFONT,
-    font_log_hdr: HFONT,
     font_evt_hdr: HFONT,
     font_time: HFONT,
     font_evt: HFONT,
@@ -92,7 +91,6 @@ fn get_widget_fonts() -> &'static HostWidgetFonts {
             font_perm_hdr: create_segoe_font(9, FW_BOLD),
             font_action: create_segoe_font(12, FW_BOLD),
             font_tab: create_segoe_font(11, FW_SEMIBOLD),
-            font_log_hdr: create_segoe_font(10, FW_SEMIBOLD),
             font_evt_hdr: create_segoe_font(10, FW_BOLD),
             font_time: create_segoe_font(9, FW_NORMAL),
             font_evt: create_segoe_font(10, FW_NORMAL),
@@ -720,7 +718,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let tab_div = RECT { left: col_left_w + 1, top: 35, right: w, bottom: 36 };
             FillRect(hdc_mem, &tab_div, border_brush);
 
-            // Tab 1: "Chat" (Active) - crisp white background with top green accent line
+            // "Chat" Tab - crisp white background with top green accent line
             let tab_chat_rc = RECT { left: col_left_w + 1, top: 0, right: col_left_w + 120, bottom: 35 };
             FillRect(hdc_mem, &tab_chat_rc, card_brush);
             let active_line = RECT { left: col_left_w + 1, top: 0, right: col_left_w + 120, bottom: 3 };
@@ -734,32 +732,11 @@ unsafe extern "system" fn host_widget_wndproc(
             let mut ctab_rc = RECT { left: col_left_w + 1, top: 2, right: col_left_w + 120, bottom: 35 };
             DrawTextW(hdc_mem, &mut chat_tab_txt, &mut ctab_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
-            // Tab 2: "File Transfer" (Inactive)
-            SetTextColor(hdc_mem, PK_MUTED);
-            let mut ft_tab_txt: Vec<u16> = "File Transfer".encode_utf16().collect();
-            let mut fttab_rc = RECT { left: col_left_w + 120, top: 0, right: col_left_w + 240, bottom: 35 };
-            DrawTextW(hdc_mem, &mut ft_tab_txt, &mut fttab_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-            // 2.2 Header: "Open Chat Log"
-            let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_log_hdr.0));
-            SetTextColor(hdc_mem, PK_GREEN_DARK);
-            let mut ocl_txt: Vec<u16> = "Open Chat Log".encode_utf16().collect();
-            let mut ocl_rc = RECT { left: col_left_w + 16, top: 44, right: w - 16, bottom: 62 };
-            DrawTextW(hdc_mem, &mut ocl_txt, &mut ocl_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-
-            // Link underline
-            let pen_link = CreatePen(PS_SOLID, 1, PK_GREEN);
-            let old_lpen = SelectObject(hdc_mem, HGDIOBJ(pen_link.0));
-            MoveToEx(hdc_mem, col_left_w + 16, 62, None);
-            LineTo(hdc_mem, col_left_w + 95, 62);
-            let _ = SelectObject(hdc_mem, old_lpen);
-            let _ = DeleteObject(HGDIOBJ(pen_link.0));
-
-            // 2.3 Event Banner: Monitor Icon + Session Event
+            // 2.2 Event Banner: Monitor Icon + Session Event
             let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_evt_hdr.0));
             SetTextColor(hdc_mem, PK_TEXT);
             let mut p_name_txt: Vec<u16> = peer_name.encode_utf16().collect();
-            let mut p_name_rc = RECT { left: col_left_w + 16, top: 70, right: w - 80, bottom: 88 };
+            let mut p_name_rc = RECT { left: col_left_w + 16, top: 46, right: w - 80, bottom: 64 };
             DrawTextW(hdc_mem, &mut p_name_txt, &mut p_name_rc, DT_LEFT | DT_SINGLELINE);
 
             let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_time.0));
@@ -767,21 +744,21 @@ unsafe extern "system" fn host_widget_wndproc(
             let now_time = crate::windows::ui::launcher::get_local_time_string();
             let short_time = if now_time.len() >= 5 { &now_time[..5] } else { "10:24" };
             let mut time_txt: Vec<u16> = short_time.encode_utf16().collect();
-            let mut time_rc = RECT { left: w - 80, top: 70, right: w - 16, bottom: 88 };
+            let mut time_rc = RECT { left: w - 80, top: 46, right: w - 16, bottom: 64 };
             DrawTextW(hdc_mem, &mut time_txt, &mut time_rc, DT_RIGHT | DT_SINGLELINE);
 
             // Monitor Icon + Event text
-            crate::ui::draw_monitor(hdc_mem, col_left_w + 16, 92, 16, PK_GREEN, 2);
+            crate::ui::draw_monitor(hdc_mem, col_left_w + 16, 68, 16, PK_GREEN, 2);
             let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_evt.0));
             SetTextColor(hdc_mem, PK_TEXT);
             let evt_label = if is_pending { "Session request received" } else { "Session established & active" };
             let mut srr_txt: Vec<u16> = evt_label.encode_utf16().collect();
-            let mut srr_rc = RECT { left: col_left_w + 38, top: 92, right: w - 16, bottom: 108 };
+            let mut srr_rc = RECT { left: col_left_w + 38, top: 68, right: w - 16, bottom: 84 };
             DrawTextW(hdc_mem, &mut srr_txt, &mut srr_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            // 2.4 Dynamic Real-Time Chat Stream (y: 114..h - 52)
+            // 2.3 Dynamic Real-Time Chat Stream (y: 92..h - 52)
             let msgs = crate::p2p::get_chat_messages();
-            let mut cur_y = 114;
+            let mut cur_y = 92;
 
             for msg in msgs.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
                 if cur_y + 34 > h - 52 {
