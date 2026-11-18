@@ -24,6 +24,24 @@ pub const CHAT_WIDTH: i32 = 310;
 
 static CHAT_INPUT_BUFFER: OnceLock<Mutex<String>> = OnceLock::new();
 static CHAT_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
+pub static HUD_CHAT_SCROLL: AtomicI32 = AtomicI32::new(0);
+pub static HUD_CHAT_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scroll_chat_hud(delta: i32) {
+    let step = 35;
+    let cur = HUD_CHAT_SCROLL.load(Ordering::Relaxed);
+    let max_s = HUD_CHAT_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_val = if delta > 0 {
+        (cur + step).min(max_s)
+    } else {
+        (cur - step).max(0)
+    };
+    HUD_CHAT_SCROLL.store(new_val, Ordering::Relaxed);
+}
+
+pub fn reset_chat_hud_scroll() {
+    HUD_CHAT_SCROLL.store(0, Ordering::Relaxed);
+}
 
 fn input_buf() -> &'static Mutex<String> {
     CHAT_INPUT_BUFFER.get_or_init(|| Mutex::new(String::new()))
@@ -57,7 +75,7 @@ pub fn submit_chat_input() {
     let input = get_chat_input();
     let trimmed = input.trim();
     if !trimmed.is_empty() {
-        crate::p2p::send_chat_message(trimmed);
+        crate::p2p::send_chat_message(trimmed); reset_chat_hud_scroll();
         clear_chat_input();
     }
 }
@@ -124,7 +142,7 @@ pub fn handle_chat_click(
     }
     match hit {
         BTN_CHAT_CLOSE => crate::p2p::set_chat_open(false),
-        BTN_CHAT_CLEAR => crate::p2p::clear_chat_history(),
+        BTN_CHAT_CLEAR => { crate::p2p::clear_chat_history(); reset_chat_hud_scroll(); },
         BTN_CHAT_SEND => submit_chat_input(),
         _ => {}
     }
@@ -197,18 +215,38 @@ pub fn draw_chat_hud(
     let msgs = crate::p2p::get_chat_messages();
     let msg_area_top = panel_y + 50;
     let msg_area_bot = client_h - 56;
-    let mut cur_y = msg_area_bot;
+    let avail_h = (msg_area_bot - msg_area_top).max(30);
 
-    for msg in msgs.iter().rev() {
-        if cur_y < msg_area_top + 24 {
+    let mut item_heights = Vec::with_capacity(msgs.len());
+    let mut total_h = 0;
+    for msg in msgs.iter() {
+        let (tw, th) = canvas.measure_text(&msg.text, 12.0, false);
+        let max_bubble_w = 210;
+        let line_count = ((tw as f32 / (max_bubble_w - 20) as f32).ceil() as i32).max(1);
+        let bubble_h = (line_count * th + 14).max(36);
+        let block_h = bubble_h + 16;
+        item_heights.push((bubble_h, block_h));
+        total_h += block_h;
+    }
+
+    let max_scroll = (total_h - avail_h).max(0);
+    HUD_CHAT_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+    let scroll = HUD_CHAT_SCROLL.load(Ordering::Relaxed).min(max_scroll);
+    HUD_CHAT_SCROLL.store(scroll, Ordering::Relaxed);
+
+    canvas.set_clip_rect(Some((panel_x, msg_area_top, client_w, msg_area_bot)));
+
+    let mut cur_y = msg_area_bot + scroll;
+
+    for (msg, (bubble_h, block_h)) in msgs.iter().zip(item_heights.iter()).rev() {
+        cur_y -= block_h;
+        if cur_y > msg_area_bot {
+            continue;
+        }
+        if cur_y + block_h < msg_area_top {
             break;
         }
         let bubble_w = 210;
-        let bubble_h = 36;
-        cur_y -= bubble_h + 16;
-        if cur_y < msg_area_top {
-            break;
-        }
         let bubble_x = if msg.is_me {
             client_w - bubble_w - 14
         } else {
@@ -219,12 +257,12 @@ pub fn draw_chat_hud(
         } else {
             (PK_INPUT_BG, PK_TEXT)
         };
-        canvas.draw_rounded_box(bubble_x, cur_y, bubble_w, bubble_h, fill_c, PK_CARD_BORDER, 6);
+        canvas.draw_rounded_box(bubble_x, cur_y, bubble_w, *bubble_h, fill_c, PK_CARD_BORDER, 6);
         canvas.draw_text_vcenter(
             bubble_x + 10,
             cur_y,
             bubble_w - 20,
-            bubble_h,
+            *bubble_h,
             &msg.text,
             12.0,
             false,
@@ -244,6 +282,20 @@ pub fn draw_chat_hud(
             PK_MUTED,
             Some(bubble_w),
         );
+    }
+
+    canvas.set_clip_rect(None);
+
+    if max_scroll > 0 {
+        let sb_w = 4;
+        let sb_x = client_w - 6;
+        let sb_y = msg_area_top;
+        let sb_h = avail_h;
+        canvas.draw_rounded_box(sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+        let thumb_h = ((avail_h as f32 / total_h as f32) * sb_h as f32).clamp(20.0, sb_h as f32) as i32;
+        let thumb_travel = sb_h - thumb_h;
+        let thumb_y = sb_y + ((max_scroll - scroll) as f32 / max_scroll as f32 * thumb_travel as f32) as i32;
+        canvas.draw_rounded_box(sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
     }
 
     if msgs.is_empty() {

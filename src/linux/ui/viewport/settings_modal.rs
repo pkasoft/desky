@@ -17,6 +17,24 @@ use crate::linux::ui::theme::{
 pub static SHOW_SETTINGS_MODAL: AtomicBool = AtomicBool::new(false);
 pub static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
 pub static SETTINGS_HOVER_ID: AtomicI32 = AtomicI32::new(-1);
+pub static SETTINGS_SCROLL_Y: AtomicI32 = AtomicI32::new(0);
+pub static SETTINGS_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scroll_settings(delta: i32) {
+    let step = 45;
+    let cur = SETTINGS_SCROLL_Y.load(Ordering::Relaxed);
+    let max_s = SETTINGS_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_scroll = if delta > 0 {
+        (cur - step).max(0)
+    } else {
+        (cur + step).min(max_s)
+    };
+    SETTINGS_SCROLL_Y.store(new_scroll, Ordering::Relaxed);
+}
+
+pub fn reset_settings_scroll() {
+    SETTINGS_SCROLL_Y.store(0, Ordering::Relaxed);
+}
 
 // Display mode: 0 = Auto Fit, 1 = Fill Window, 2 = 1:1 Original resolution
 pub static DISPLAY_MODE: AtomicU8 = AtomicU8::new(0);
@@ -174,7 +192,28 @@ pub fn draw_fullscreen_settings_view(
     canvas.draw_rounded_box(close_x, close_y, close_w, close_h, c_bg, PK_CARD_BORDER, 6);
     canvas.draw_text_centered(close_x, close_y, close_w, close_h, "× Close", 13.5, true, c_fg);
 
-    let body_y = header_y + 58;
+    let content_top = header_y + 56;
+    let content_bot = client_h - pad_y;
+    let avail_h = (content_bot - content_top).max(50);
+
+    let cat_content_h = match active_cat {
+        0 => 380,
+        1 => 650,
+        2 => 360,
+        3 => 320,
+        4 => 320,
+        5 => 460,
+        _ => 540,
+    };
+
+    let max_scroll = (cat_content_h - avail_h).max(0);
+    SETTINGS_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+    let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);
+    SETTINGS_SCROLL_Y.store(scroll_y, Ordering::Relaxed);
+
+    let body_y = content_top - scroll_y;
+
+    canvas.set_clip_rect(Some((content_x - 4, content_top, content_x + content_w + 10, content_bot)));
 
     match active_cat {
         0 => {
@@ -574,9 +613,23 @@ pub fn draw_fullscreen_settings_view(
             );
         }
     }
+
+    canvas.set_clip_rect(None);
+
+    if max_scroll > 0 {
+        let sb_w = 4;
+        let sb_x = content_x + content_w - sb_w;
+        let sb_y = content_top;
+        let sb_h = avail_h;
+        canvas.draw_rounded_box(sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+        let thumb_h = ((avail_h as f32 / cat_content_h as f32) * sb_h as f32).clamp(24.0, sb_h as f32) as i32;
+        let thumb_travel = sb_h - thumb_h;
+        let thumb_y = sb_y + ((scroll_y as f32 / max_scroll as f32) * thumb_travel as f32) as i32;
+        canvas.draw_rounded_box(sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
+    }
 }
 
-pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, top_y: i32) -> bool {
+pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, client_h: i32, top_y: i32) -> bool {
     if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
         return false;
     }
@@ -612,15 +665,34 @@ pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, top_y:
         let ix = sidebar_x + 8;
         let iw = sidebar_w - 16;
         if client_x >= ix && client_x <= ix + iw && client_y >= iy && client_y <= iy + item_h {
+            reset_settings_scroll();
             SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
             request_main_redraw();
             return true;
         }
     }
 
-    // 3. Check Category 1 (Display & Stream) interactive buttons
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed);
-    let body_y = header_y + 58;
+    // 3. Content card geometry & vertical scroll offset
+    let content_top = header_y + 56;
+    let content_bot = client_h - pad_y;
+    let avail_h = (content_bot - content_top).max(50);
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
+    let cat_content_h = match active_cat {
+        0 => 380,
+        1 => 650,
+        2 => 360,
+        3 => 320,
+        4 => 320,
+        5 => 460,
+        _ => 540,
+    };
+    let max_scroll = (cat_content_h - avail_h).max(0);
+    let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);
+    let body_y = content_top - scroll_y;
+
+    if client_y < content_top || client_y > content_bot {
+        return false;
+    }
     if active_cat == 1 {
         // Scaling modes
         let btn_w = (content_w - 36 - 16) / 3;

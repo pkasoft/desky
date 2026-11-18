@@ -304,13 +304,13 @@ pub unsafe fn draw_fullscreen_settings_view(
     let avail_h = (content_bot - content_top).max(50);
 
     let cat_content_h = match active_cat {
-        0 => 330,
-        1 => 600,
-        2 => 320,
-        3 => 270,
-        4 => 260,
-        5 => 380,
-        _ => 470,
+        0 => 380,
+        1 => 650,
+        2 => 360,
+        3 => 320,
+        4 => 320,
+        5 => 460,
+        _ => 540,
     };
 
     let max_scroll = (cat_content_h - avail_h).max(0);
@@ -1579,13 +1579,13 @@ pub fn handle_settings_mousemove(
 
     let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
     let cat_content_h = match active_cat {
-        0 => 330,
-        1 => 600,
-        2 => 320,
-        3 => 270,
-        4 => 260,
-        5 => 380,
-        _ => 470,
+        0 => 380,
+        1 => 650,
+        2 => 360,
+        3 => 320,
+        4 => 320,
+        5 => 460,
+        _ => 540,
     };
     let max_scroll = (cat_content_h - avail_h).max(0);
     let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);
@@ -1860,13 +1860,13 @@ pub fn handle_settings_click(
 
     let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
     let cat_content_h = match active_cat {
-        0 => 330,
-        1 => 600,
-        2 => 320,
-        3 => 270,
-        4 => 260,
-        5 => 380,
-        _ => 470,
+        0 => 380,
+        1 => 650,
+        2 => 360,
+        3 => 320,
+        4 => 320,
+        5 => 460,
+        _ => 540,
     };
     let max_scroll = (cat_content_h - avail_h).max(0);
     let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);

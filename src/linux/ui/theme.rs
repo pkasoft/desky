@@ -111,6 +111,7 @@ pub struct PixelCanvas {
     pub width: i32,
     pub height: i32,
     pub data: Vec<u8>,
+    pub clip_rect: Option<(i32, i32, i32, i32)>,
 }
 
 impl PixelCanvas {
@@ -121,7 +122,12 @@ impl PixelCanvas {
             width: w,
             height: h,
             data: vec![0u8; (w as usize) * (h as usize) * 4],
+            clip_rect: None,
         }
+    }
+
+    pub fn set_clip_rect(&mut self, clip: Option<(i32, i32, i32, i32)>) {
+        self.clip_rect = clip;
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -140,6 +146,11 @@ impl PixelCanvas {
 
     #[inline]
     pub fn set_pixel(&mut self, x: i32, y: i32, rgb: u32) {
+        if let Some((cx0, cy0, cx1, cy1)) = self.clip_rect {
+            if x < cx0 || y < cy0 || x >= cx1 || y >= cy1 {
+                return;
+            }
+        }
         if x < 0 || y < 0 || x >= self.width || y >= self.height {
             return;
         }
@@ -152,6 +163,11 @@ impl PixelCanvas {
 
     #[inline]
     pub fn blend_pixel(&mut self, x: i32, y: i32, rgb: u32, alpha: f32) {
+        if let Some((cx0, cy0, cx1, cy1)) = self.clip_rect {
+            if x < cx0 || y < cy0 || x >= cx1 || y >= cy1 {
+                return;
+            }
+        }
         if x < 0 || y < 0 || x >= self.width || y >= self.height || alpha <= 0.0 {
             return;
         }
@@ -174,10 +190,11 @@ impl PixelCanvas {
     }
 
     pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, rgb: u32) {
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + w).min(self.width);
-        let y1 = (y + h).min(self.height);
+        let (cx0, cy0, cx1, cy1) = self.clip_rect.unwrap_or((0, 0, self.width, self.height));
+        let x0 = x.max(cx0).max(0);
+        let y0 = y.max(cy0).max(0);
+        let x1 = (x + w).min(cx1).min(self.width);
+        let y1 = (y + h).min(cy1).min(self.height);
         if x0 >= x1 || y0 >= y1 {
             return;
         }

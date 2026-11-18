@@ -514,3 +514,11 @@ pub fn handle_admin_key(keycode: u8, state: KeyButMask) {
         }
     }
 }
+
+pub fn handle_admin_scroll(delta: i32) {
+    if let Ok(mut state) = get_admin_state().lock() {
+        let lines_to_scroll = (delta / 120) * 36;
+        state.scroll_y = (state.scroll_y - lines_to_scroll).max(0);
+    }
+}
+

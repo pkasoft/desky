@@ -13,7 +13,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::wrapper::ConnectionExt as _;
 
-use super::chat_hud::{handle_chat_click, handle_chat_key, is_mouse_over_chat_hud};
+use super::chat_hud::{handle_chat_click, handle_chat_key, is_mouse_over_chat_hud, scroll_chat_hud};
 use super::input_injector::{
     inject_remote_key, inject_remote_mouse_button, inject_remote_mouse_move, map_client_to_screen,
 };
@@ -27,8 +27,8 @@ use super::quick_actions::{
 use super::renderer::{render_viewport_frame, REMOTE_ORIG_H, REMOTE_ORIG_W};
 use super::session_status_view::{handle_password_key_input, handle_status_view_click};
 use super::settings_modal::{
-    close_settings_modal, handle_settings_click, SETTINGS_CATEGORY, SHOW_SETTINGS_MODAL,
-    TARGET_FPS,
+    close_settings_modal, handle_settings_click, scroll_settings, SETTINGS_CATEGORY,
+    SHOW_SETTINGS_MODAL, TARGET_FPS,
 };
 use super::tabs::{
     close_session_tab, get_session_tabs, init_session_tabs, switch_session_tab,
@@ -42,7 +42,7 @@ use super::whiteboard::{
     is_whiteboard_active, set_whiteboard_active, start_stroke, toggle_whiteboard,
     WHITEBOARD_COLOR_IDX,
 };
-use crate::linux::ui::admin::{handle_admin_click, handle_admin_key};
+use crate::linux::ui::admin::{handle_admin_click, handle_admin_key, handle_admin_scroll};
 use crate::linux::ui::launcher::{
     append_status_log, handle_homepage_click, handle_homepage_connect, BRING_TO_FRONT,
     NEEDS_REDRAW, RUNNING,
@@ -338,6 +338,47 @@ fn dispatch_mouse_button(win_w: u16, win_h: u16, button: u8, mx: i16, my: i16, i
         NEEDS_REDRAW.store(true, Ordering::Relaxed);
     }
 
+    // Handle mouse wheel scrolling (X11 Button 4 = Up, Button 5 = Down)
+    let is_wheel_up = is_down && button == 4;
+    let is_wheel_down = is_down && button == 5;
+    let wheel_delta = if is_wheel_up { 120 } else if is_wheel_down { -120 } else { 0 };
+
+    if wheel_delta != 0 {
+        if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+            scroll_settings(wheel_delta);
+            NEEDS_REDRAW.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        if client_y < tb_h {
+            scroll_tabs(wheel_delta);
+            NEEDS_REDRAW.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        let active_tab = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
+        if active_tab == 0 {
+            return;
+        }
+
+        if crate::p2p::is_chat_open() && is_mouse_over_chat_hud(client_x, client_y, client_w, client_h, tb_h) {
+            scroll_chat_hud(wheel_delta);
+            NEEDS_REDRAW.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
+            handle_admin_scroll(wheel_delta);
+            NEEDS_REDRAW.store(true, Ordering::Relaxed);
+            return;
+        }
+
+        let sw = REMOTE_ORIG_W.load(Ordering::Relaxed).max(1);
+        let sh = REMOTE_ORIG_H.load(Ordering::Relaxed).max(1);
+        inject_remote_mouse_button(mx, my, win_w, win_h, sw, sh, button, is_down);
+        return;
+    }
+
     // 1. Top Toolbar / Tab Bar
     if client_y < tb_h {
         if is_down && button == 1 {
@@ -359,7 +400,7 @@ fn dispatch_mouse_button(win_w: u16, win_h: u16, button: u8, mx: i16, my: i16, i
     // 2. Fullscreen Settings Modal
     if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
         if is_down && button == 1 {
-            let _ = handle_settings_click(client_x, client_y, client_w, tb_h);
+            let _ = handle_settings_click(client_x, client_y, client_w, client_h, tb_h);
         }
         return;
     }
