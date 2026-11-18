@@ -344,328 +344,207 @@ impl PixelCanvas {
     }
 
     // =========================================================================
-    // Lucide Vector Icon Suite (Matching Windows `src/ui/icons/` 1:1)
+    // Lucide Vector Icon Suite (Unified cross-platform vector geometry)
     // =========================================================================
 
     pub fn draw_icon_home(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.12, oy + s * 0.45, ox + s * 0.50, oy + s * 0.12, rgb, 1.8);
-        self.draw_line(ox + s * 0.50, oy + s * 0.12, ox + s * 0.88, oy + s * 0.45, rgb, 1.8);
-        self.draw_line(ox + s * 0.22, oy + s * 0.40, ox + s * 0.22, oy + s * 0.88, rgb, 1.8);
-        self.draw_line(ox + s * 0.78, oy + s * 0.40, ox + s * 0.78, oy + s * 0.88, rgb, 1.8);
-        self.draw_line(ox + s * 0.22, oy + s * 0.88, ox + s * 0.78, oy + s * 0.88, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_home(self, &ctx);
     }
 
     pub fn draw_icon_plus(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.5, oy + s * 0.2, ox + s * 0.5, oy + s * 0.8, rgb, 1.8);
-        self.draw_line(ox + s * 0.2, oy + s * 0.5, ox + s * 0.8, oy + s * 0.5, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_plus(self, &ctx);
     }
 
     pub fn draw_icon_x(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.22, oy + s * 0.22, ox + s * 0.78, oy + s * 0.78, rgb, 1.8);
-        self.draw_line(ox + s * 0.78, oy + s * 0.22, ox + s * 0.22, oy + s * 0.78, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_x(self, &ctx);
     }
 
     pub fn draw_icon_check(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.18, oy + s * 0.52, ox + s * 0.42, oy + s * 0.76, rgb, 2.0);
-        self.draw_line(ox + s * 0.42, oy + s * 0.76, ox + s * 0.84, oy + s * 0.26, rgb, 2.0);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 2.0);
+        crate::ui::icons::render_check(self, &ctx);
     }
 
     pub fn draw_icon_copy(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        // Back rect
-        self.draw_line(ox + s * 0.15, oy + s * 0.15, ox + s * 0.65, oy + s * 0.15, rgb, 1.6);
-        self.draw_line(ox + s * 0.15, oy + s * 0.15, ox + s * 0.15, oy + s * 0.65, rgb, 1.6);
-        // Front rect
-        let rx = (ox + s * 0.32) as i32;
-        let ry = (oy + s * 0.32) as i32;
-        let rw = (s * 0.55) as i32;
-        self.draw_line(rx as f32, ry as f32, (rx + rw) as f32, ry as f32, rgb, 1.6);
-        self.draw_line((rx + rw) as f32, ry as f32, (rx + rw) as f32, (ry + rw) as f32, rgb, 1.6);
-        self.draw_line((rx + rw) as f32, (ry + rw) as f32, rx as f32, (ry + rw) as f32, rgb, 1.6);
-        self.draw_line(rx as f32, (ry + rw) as f32, rx as f32, ry as f32, rgb, 1.6);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.6);
+        crate::ui::icons::render_copy(self, &ctx);
     }
 
     pub fn draw_icon_arrow_right(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.18, oy + s * 0.50, ox + s * 0.82, oy + s * 0.50, rgb, 1.8);
-        self.draw_line(ox + s * 0.54, oy + s * 0.22, ox + s * 0.82, oy + s * 0.50, rgb, 1.8);
-        self.draw_line(ox + s * 0.54, oy + s * 0.78, ox + s * 0.82, oy + s * 0.50, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_arrow_right(self, &ctx);
     }
 
     pub fn draw_icon_settings(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let cx = x as f32 + s * 0.5;
-        let cy = y as f32 + s * 0.5;
-        self.draw_circle(cx, cy, s * 0.22, rgb, 1.8, false);
-        for i in 0..8 {
-            let angle = (i as f32) * std::f32::consts::FRAC_PI_4;
-            let r1 = s * 0.28;
-            let r2 = s * 0.44;
-            self.draw_line(
-                cx + angle.cos() * r1,
-                cy + angle.sin() * r1,
-                cx + angle.cos() * r2,
-                cy + angle.sin() * r2,
-                rgb,
-                1.8,
-            );
-        }
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_settings(self, &ctx);
     }
 
     pub fn draw_icon_chat(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.15, oy + s * 0.18, ox + s * 0.85, oy + s * 0.18, rgb, 1.7);
-        self.draw_line(ox + s * 0.85, oy + s * 0.18, ox + s * 0.85, oy + s * 0.68, rgb, 1.7);
-        self.draw_line(ox + s * 0.85, oy + s * 0.68, ox + s * 0.38, oy + s * 0.68, rgb, 1.7);
-        self.draw_line(ox + s * 0.38, oy + s * 0.68, ox + s * 0.15, oy + s * 0.86, rgb, 1.7);
-        self.draw_line(ox + s * 0.15, oy + s * 0.86, ox + s * 0.15, oy + s * 0.18, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_message_square(self, &ctx);
     }
 
     pub fn draw_icon_terminal(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.18, oy + s * 0.28, ox + s * 0.45, oy + s * 0.50, rgb, 1.8);
-        self.draw_line(ox + s * 0.45, oy + s * 0.50, ox + s * 0.18, oy + s * 0.72, rgb, 1.8);
-        self.draw_line(ox + s * 0.52, oy + s * 0.72, ox + s * 0.82, oy + s * 0.72, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_terminal(self, &ctx);
     }
 
     pub fn draw_icon_monitor(&mut self, x: i32, y: i32, sz: i32, rgb: u32, num: Option<u32>) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.12, oy + s * 0.16, ox + s * 0.88, oy + s * 0.16, rgb, 1.7);
-        self.draw_line(ox + s * 0.88, oy + s * 0.16, ox + s * 0.88, oy + s * 0.68, rgb, 1.7);
-        self.draw_line(ox + s * 0.88, oy + s * 0.68, ox + s * 0.12, oy + s * 0.68, rgb, 1.7);
-        self.draw_line(ox + s * 0.12, oy + s * 0.68, ox + s * 0.12, oy + s * 0.16, rgb, 1.7);
-        self.draw_line(ox + s * 0.50, oy + s * 0.68, ox + s * 0.50, oy + s * 0.86, rgb, 1.7);
-        self.draw_line(ox + s * 0.30, oy + s * 0.86, ox + s * 0.70, oy + s * 0.86, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
         if let Some(n) = num {
-            self.draw_text_centered(
-                x + 2,
-                y + 1,
-                sz - 4,
-                (sz as f32 * 0.68) as i32,
-                &n.to_string(),
-                9.5,
-                true,
-                rgb,
-            );
+            crate::ui::icons::render_monitor_num(self, &ctx, n);
+        } else {
+            crate::ui::icons::render_monitor(self, &ctx);
         }
     }
 
     pub fn draw_icon_lock(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        // Body
-        self.draw_line(ox + s * 0.20, oy + s * 0.46, ox + s * 0.80, oy + s * 0.46, rgb, 1.7);
-        self.draw_line(ox + s * 0.80, oy + s * 0.46, ox + s * 0.80, oy + s * 0.86, rgb, 1.7);
-        self.draw_line(ox + s * 0.80, oy + s * 0.86, ox + s * 0.20, oy + s * 0.86, rgb, 1.7);
-        self.draw_line(ox + s * 0.20, oy + s * 0.86, ox + s * 0.20, oy + s * 0.46, rgb, 1.7);
-        // Shackle
-        self.draw_line(ox + s * 0.32, oy + s * 0.46, ox + s * 0.32, oy + s * 0.24, rgb, 1.7);
-        self.draw_line(ox + s * 0.68, oy + s * 0.46, ox + s * 0.68, oy + s * 0.24, rgb, 1.7);
-        self.draw_line(ox + s * 0.32, oy + s * 0.24, ox + s * 0.68, oy + s * 0.24, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_lock(self, &ctx);
     }
 
     pub fn draw_icon_mic(&mut self, x: i32, y: i32, sz: i32, rgb: u32, muted: bool) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.38, oy + s * 0.16, ox + s * 0.62, oy + s * 0.16, rgb, 1.7);
-        self.draw_line(ox + s * 0.38, oy + s * 0.16, ox + s * 0.38, oy + s * 0.52, rgb, 1.7);
-        self.draw_line(ox + s * 0.62, oy + s * 0.16, ox + s * 0.62, oy + s * 0.52, rgb, 1.7);
-        self.draw_line(ox + s * 0.24, oy + s * 0.48, ox + s * 0.50, oy + s * 0.68, rgb, 1.7);
-        self.draw_line(ox + s * 0.76, oy + s * 0.48, ox + s * 0.50, oy + s * 0.68, rgb, 1.7);
-        self.draw_line(ox + s * 0.50, oy + s * 0.68, ox + s * 0.50, oy + s * 0.86, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
         if muted {
-            self.draw_line(ox + s * 0.15, oy + s * 0.15, ox + s * 0.85, oy + s * 0.85, rgb, 1.8);
+            crate::ui::icons::render_mic_off(self, &ctx);
+        } else {
+            crate::ui::icons::render_mic(self, &ctx);
         }
     }
 
     pub fn draw_icon_volume(&mut self, x: i32, y: i32, sz: i32, rgb: u32, muted: bool) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.15, oy + s * 0.38, ox + s * 0.34, oy + s * 0.38, rgb, 1.7);
-        self.draw_line(ox + s * 0.34, oy + s * 0.38, ox + s * 0.56, oy + s * 0.18, rgb, 1.7);
-        self.draw_line(ox + s * 0.56, oy + s * 0.18, ox + s * 0.56, oy + s * 0.82, rgb, 1.7);
-        self.draw_line(ox + s * 0.56, oy + s * 0.82, ox + s * 0.34, oy + s * 0.62, rgb, 1.7);
-        self.draw_line(ox + s * 0.34, oy + s * 0.62, ox + s * 0.15, oy + s * 0.62, rgb, 1.7);
-        self.draw_line(ox + s * 0.15, oy + s * 0.38, ox + s * 0.15, oy + s * 0.62, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
         if muted {
-            self.draw_line(ox + s * 0.66, oy + s * 0.36, ox + s * 0.88, oy + s * 0.64, rgb, 1.8);
-            self.draw_line(ox + s * 0.88, oy + s * 0.36, ox + s * 0.66, oy + s * 0.64, rgb, 1.8);
+            crate::ui::icons::render_volume_x(self, &ctx);
         } else {
-            self.draw_line(ox + s * 0.68, oy + s * 0.34, ox + s * 0.78, oy + s * 0.50, rgb, 1.7);
-            self.draw_line(ox + s * 0.78, oy + s * 0.50, ox + s * 0.68, oy + s * 0.66, rgb, 1.7);
+            crate::ui::icons::render_volume(self, &ctx);
         }
     }
 
     pub fn draw_icon_record(&mut self, x: i32, y: i32, sz: i32, rgb: u32, active: bool) {
-        let s = sz as f32;
-        let cx = x as f32 + s * 0.5;
-        let cy = y as f32 + s * 0.5;
-        self.draw_circle(cx, cy, s * 0.36, rgb, 1.8, false);
-        self.draw_circle(cx, cy, if active { s * 0.22 } else { s * 0.14 }, rgb, 1.0, true);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_record(self, &ctx, active);
     }
 
     pub fn draw_icon_pen(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.20, oy + s * 0.80, ox + s * 0.74, oy + s * 0.26, rgb, 2.0);
-        self.draw_line(ox + s * 0.16, oy + s * 0.84, ox + s * 0.32, oy + s * 0.78, rgb, 1.6);
-        self.draw_line(ox + s * 0.16, oy + s * 0.84, ox + s * 0.22, oy + s * 0.68, rgb, 1.6);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_pen(self, &ctx);
     }
 
     pub fn draw_icon_zap(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.56, oy + s * 0.12, ox + s * 0.22, oy + s * 0.54, rgb, 1.8);
-        self.draw_line(ox + s * 0.22, oy + s * 0.54, ox + s * 0.50, oy + s * 0.54, rgb, 1.8);
-        self.draw_line(ox + s * 0.50, oy + s * 0.54, ox + s * 0.44, oy + s * 0.88, rgb, 1.8);
-        self.draw_line(ox + s * 0.44, oy + s * 0.88, ox + s * 0.78, oy + s * 0.46, rgb, 1.8);
-        self.draw_line(ox + s * 0.78, oy + s * 0.46, ox + s * 0.50, oy + s * 0.46, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_zap(self, &ctx);
     }
 
     pub fn draw_icon_more(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let cy = y as f32 + s * 0.5;
-        let ox = x as f32;
-        self.draw_circle(ox + s * 0.24, cy, 1.6, rgb, 1.0, true);
-        self.draw_circle(ox + s * 0.50, cy, 1.6, rgb, 1.0, true);
-        self.draw_circle(ox + s * 0.76, cy, 1.6, rgb, 1.0, true);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_more_horizontal(self, &ctx);
     }
 
     pub fn draw_icon_radio(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let cx = x as f32 + s * 0.5;
-        let cy = y as f32 + s * 0.5;
-        self.draw_circle(cx, cy, s * 0.16, rgb, 1.0, true);
-        self.draw_circle(cx, cy, s * 0.36, rgb, 1.5, false);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_radio(self, &ctx);
     }
 
     pub fn draw_icon_cpu(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.24, oy + s * 0.24, ox + s * 0.76, oy + s * 0.24, rgb, 1.7);
-        self.draw_line(ox + s * 0.76, oy + s * 0.24, ox + s * 0.76, oy + s * 0.76, rgb, 1.7);
-        self.draw_line(ox + s * 0.76, oy + s * 0.76, ox + s * 0.24, oy + s * 0.76, rgb, 1.7);
-        self.draw_line(ox + s * 0.24, oy + s * 0.76, ox + s * 0.24, oy + s * 0.24, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.6);
+        crate::ui::icons::render_cpu(self, &ctx);
     }
 
     pub fn draw_icon_info(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let cx = x as f32 + s * 0.5;
-        let cy = y as f32 + s * 0.5;
-        self.draw_circle(cx, cy, s * 0.38, rgb, 1.7, false);
-        self.draw_line(cx, cy - s * 0.04, cx, cy + s * 0.22, rgb, 1.8);
-        self.draw_circle(cx, cy - s * 0.18, 1.3, rgb, 1.0, true);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_info(self, &ctx);
     }
 
     pub fn draw_icon_trash(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        self.draw_line(ox + s * 0.18, oy + s * 0.26, ox + s * 0.82, oy + s * 0.26, rgb, 1.7);
-        self.draw_line(ox + s * 0.28, oy + s * 0.26, ox + s * 0.28, oy + s * 0.84, rgb, 1.7);
-        self.draw_line(ox + s * 0.72, oy + s * 0.26, ox + s * 0.72, oy + s * 0.84, rgb, 1.7);
-        self.draw_line(ox + s * 0.28, oy + s * 0.84, ox + s * 0.72, oy + s * 0.84, rgb, 1.7);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_trash(self, &ctx);
     }
 
     pub fn draw_icon_refresh(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let cx = x as f32 + s * 0.5;
-        let cy = y as f32 + s * 0.5;
-        self.draw_circle(cx, cy, s * 0.34, rgb, 1.8, false);
-        self.draw_line(cx + s * 0.12, cy - s * 0.34, cx + s * 0.36, cy - s * 0.34, rgb, 1.8);
-        self.draw_line(cx + s * 0.36, cy - s * 0.34, cx + s * 0.36, cy - s * 0.10, rgb, 1.8);
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_refresh(self, &ctx);
     }
-    pub fn draw_icon_keyboard_mouse(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        let oy = y as f32;
-        // Keyboard body
-        self.draw_rounded_box(
-            (ox + s * 0.05) as i32,
-            (oy + s * 0.28) as i32,
-            (s * 0.54) as i32,
-            (s * 0.46) as i32,
-            0x00FFFFFF,
-            rgb,
-            2,
-        );
-        // Keyboard key lines
-        self.draw_line(ox + s * 0.16, oy + s * 0.42, ox + s * 0.26, oy + s * 0.42, rgb, 1.2);
-        self.draw_line(ox + s * 0.32, oy + s * 0.42, ox + s * 0.48, oy + s * 0.42, rgb, 1.2);
-        self.draw_line(ox + s * 0.16, oy + s * 0.58, ox + s * 0.48, oy + s * 0.58, rgb, 1.2);
 
-        // Mouse body
-        self.draw_rounded_box(
-            (ox + s * 0.66) as i32,
-            (oy + s * 0.20) as i32,
-            (s * 0.28) as i32,
-            (s * 0.58) as i32,
-            0x00FFFFFF,
-            rgb,
-            3,
-        );
-        // Mouse divider
-        self.draw_line(ox + s * 0.80, oy + s * 0.20, ox + s * 0.80, oy + s * 0.42, rgb, 1.2);
+    pub fn draw_icon_clock(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_clock(self, &ctx);
+    }
+
+    pub fn draw_icon_users(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.8);
+        crate::ui::icons::render_users(self, &ctx);
+    }
+
+    pub fn draw_icon_keyboard_mouse(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let ctx = crate::ui::icons::IconContext::new(x as f32, y as f32, sz as f32, rgb, 1.7);
+        crate::ui::icons::render_keyboard_mouse(self, &ctx);
     }
 
     pub fn draw_icon_desky_logo(&mut self, x: i32, y: i32, sz: i32) {
-        let s = sz as f32;
-        let ox = x as f32;
-        // Outer Deep Emerald canvas (#143828)
-        self.draw_rounded_box(x, y, sz, sz, 0x00143828, 0x002D6A4F, (s * 0.22) as i32);
+        crate::ui::icons::render_desky_logo(self, x as f32, y as f32, sz as f32);
+    }
+}
 
-        // Display monitor (#0d1f16 with #52b788 border)
-        let margin = (s * 0.16) as i32;
-        let disp_w = (sz - margin * 2).max(8);
-        let disp_h = ((disp_w as f32 * 0.65) as i32).max(5);
-        let disp_x = x + margin;
-        let disp_y = y + margin - 1;
-        self.draw_rounded_box(disp_x, disp_y, disp_w, disp_h, 0x000D1F16, 0x0052B788, 2);
-
-        // Stand neck & base
-        let stand_cx = ox + s * 0.5;
-        let stand_top_y = disp_y as f32 + disp_h as f32;
-        let stand_h = s * 0.14;
-        let base_w = s * 0.38;
-        let base_y = stand_top_y + stand_h;
-        self.draw_line(stand_cx, stand_top_y, stand_cx, base_y, 0x002D6A4F, 1.5);
-        self.draw_line(stand_cx - base_w * 0.5, base_y, stand_cx + base_w * 0.5, base_y, 0x0052B788, 1.5);
-
-        // Central P2P Node (#74c69d) & Online Mint Dot (#4ade80)
-        let cx = disp_x as f32 + disp_w as f32 * 0.5;
-        let cy = disp_y as f32 + disp_h as f32 * 0.5;
-        self.draw_circle(cx, cy, 1.5, 0x0074C69D, 1.0, true);
-        self.draw_circle(disp_x as f32 + disp_w as f32 - 4.0, disp_y as f32 + 4.0, 1.5, 0x004ADE80, 1.0, true);
+impl crate::ui::icons::IconCanvas for PixelCanvas {
+    fn draw_line(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, color: u32, stroke_width: f32) {
+        self.draw_line(x1, y1, x2, y2, color, stroke_width);
     }
 
+    fn draw_circle(&mut self, cx: f32, cy: f32, r: f32, color: u32, stroke_width: f32) {
+        self.draw_circle(cx, cy, r, color, stroke_width, false);
+    }
+
+    fn draw_fill_circle(&mut self, cx: f32, cy: f32, r: f32, color: u32) {
+        self.draw_circle(cx, cy, r, color, 1.0, true);
+    }
+
+    fn draw_arc(&mut self, cx: f32, cy: f32, r: f32, start_deg: f32, sweep_deg: f32, color: u32, stroke_width: f32) {
+        let steps = ((r * sweep_deg.abs().to_radians()).ceil() as usize).clamp(8, 36);
+        let start_rad = start_deg.to_radians();
+        let sweep_rad = sweep_deg.to_radians();
+        let mut prev_x = cx + r * start_rad.cos();
+        let mut prev_y = cy + r * start_rad.sin();
+        for i in 1..=steps {
+            let angle = start_rad + sweep_rad * (i as f32 / steps as f32);
+            let next_x = cx + r * angle.cos();
+            let next_y = cy + r * angle.sin();
+            self.draw_line(prev_x, prev_y, next_x, next_y, color, stroke_width);
+            prev_x = next_x;
+            prev_y = next_y;
+        }
+    }
+
+    fn draw_rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, color: u32, stroke_width: f32) {
+        let r = r.min(w * 0.5).min(h * 0.5);
+        if r <= 0.5 {
+            let pts = [(x, y), (x + w, y), (x + w, y + h), (x, y + h), (x, y)];
+            self.draw_polyline(&pts, color, stroke_width);
+        } else {
+            self.draw_line(x + r, y, x + w - r, y, color, stroke_width);
+            self.draw_arc(x + w - r, y + r, r, 270.0, 90.0, color, stroke_width);
+            self.draw_line(x + w, y + r, x + w, y + h - r, color, stroke_width);
+            self.draw_arc(x + w - r, y + h - r, r, 0.0, 90.0, color, stroke_width);
+            self.draw_line(x + w - r, y + h, x + r, y + h, color, stroke_width);
+            self.draw_arc(x + r, y + h - r, r, 90.0, 90.0, color, stroke_width);
+            self.draw_line(x, y + h - r, x, y + r, color, stroke_width);
+            self.draw_arc(x + r, y + r, r, 180.0, 90.0, color, stroke_width);
+        }
+    }
+
+    fn fill_rounded_rect(&mut self, x: f32, y: f32, w: f32, h: f32, r: f32, fill_color: u32, border_color: u32, _stroke_width: f32) {
+        self.draw_rounded_box(x as i32, y as i32, w as i32, h as i32, fill_color, border_color, (r * 2.0) as i32);
+    }
+
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: u32) {
+        self.fill_rect(x as i32, y as i32, w as i32, h as i32, color);
+    }
+}
+
+impl PixelCanvas {
     /// Measures the pixel width and height of a single line of text
     pub fn measure_text(&self, text: &str, size_px: f32, bold: bool) -> (i32, i32) {
         let f_sys = fonts();

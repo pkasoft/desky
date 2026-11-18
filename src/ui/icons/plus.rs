@@ -1,25 +1,21 @@
-//! Lucide Plus Vector Icon (Official Lucide `plus.svg`)
-//!
-//! Vector paths:
-//! - `<path d="M5 12h14" />`
-//! - `<path d="M12 5v14" />`
+//! Lucide Plus Vector Icon
+use super::{IconCanvas, IconContext};
 
-use super::{
-    draw_line, draw_smooth_line, GraphicsScope, IconContext, PenScope,
-};
-use windows::Win32::Foundation::COLORREF;
-use windows::Win32::Graphics::Gdi::HDC;
+pub fn render_plus(canvas: &mut impl IconCanvas, ctx: &IconContext) {
+    ctx.draw_line(canvas, 12.0, 5.0, 12.0, 19.0);
+    ctx.draw_line(canvas, 5.0, 12.0, 19.0, 12.0);
+}
 
-pub unsafe fn draw_plus(hdc: HDC, x: i32, y: i32, size: i32, color: COLORREF, stroke_width: i32) {
-    let ctx = IconContext::new(x, y, size);
-    let sw = stroke_width as f32;
-
-    if let Some(scope) = GraphicsScope::new(hdc, color, sw) {
-        draw_smooth_line(&scope, &ctx, 5.0, 12.0, 19.0, 12.0);
-        draw_smooth_line(&scope, &ctx, 12.0, 5.0, 12.0, 19.0);
-    } else {
-        let _pen = PenScope::new(hdc, color, stroke_width);
-        draw_line(hdc, &ctx, 5.0, 12.0, 19.0, 12.0);
-        draw_line(hdc, &ctx, 12.0, 5.0, 12.0, 19.0);
-    }
+#[cfg(target_os = "windows")]
+pub unsafe fn draw_plus(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: windows::Win32::Foundation::COLORREF,
+    stroke_width: i32,
+) {
+    let mut target = super::GdiIconTarget::new(hdc, color, stroke_width as f32);
+    let ctx = IconContext::new(x as f32, y as f32, size as f32, color.0, stroke_width as f32);
+    render_plus(&mut target, &ctx);
 }

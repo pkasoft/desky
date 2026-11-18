@@ -8,7 +8,6 @@ pub mod media;
 pub use media::recorder;
 pub mod codec;
 
-#[cfg(target_os = "windows")]
 pub mod ui;
 
 #[cfg(target_os = "windows")]

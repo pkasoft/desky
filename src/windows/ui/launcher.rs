@@ -13,7 +13,7 @@ use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, RECT, SIZE, 
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
     CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetTextExtentPoint32W, InvalidateRect,
-    SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
+    SelectObject, SetBkMode, SetTextColor, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
     DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -361,7 +361,7 @@ pub fn get_card3_tab_rects(
     let tab_y = col_y + 14;
 
     let t0_text = "RECENTS".to_string();
-    let t0_w = (84.0 * font_scale) as i32;
+    let t0_w = (104.0 * font_scale) as i32;
     let t0_x = col1_x + 18;
 
     let t1_text = if contacts_count > 0 {
@@ -370,9 +370,9 @@ pub fn get_card3_tab_rects(
         "CONTACTS".to_string()
     };
     let t1_w = if contacts_count > 0 {
-        (116.0 * font_scale) as i32
+        (134.0 * font_scale) as i32
     } else {
-        (92.0 * font_scale) as i32
+        (112.0 * font_scale) as i32
     };
     let t1_x = t0_x + t0_w + 6;
 
@@ -382,9 +382,9 @@ pub fn get_card3_tab_rects(
         "LAN RADAR".to_string()
     };
     let t2_w = if peers_count > 0 {
-        (116.0 * font_scale) as i32
+        (134.0 * font_scale) as i32
     } else {
-        (96.0 * font_scale) as i32
+        (114.0 * font_scale) as i32
     };
     let t2_x = t1_x + t1_w + 6;
 
@@ -662,7 +662,10 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             lan_peers.len(),
         );
 
-        // Tag 1: RECENTS
+        let icon_sz = (13.0 * l.font_scale) as i32;
+        let icon_gap = 5;
+
+        // Tag 1: RECENTS (Clock Icon)
         let (t0_x, t0_y, t0_w, t0_h, t0_text) = t0;
         let (t1_bg, t1_border, t1_fg) = if card3_tab == 0 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
@@ -673,15 +676,22 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
         SetTextColor(mem_dc, t1_fg);
         let mut t0_utf16: Vec<u16> = t0_text.encode_utf16().collect();
+        let mut t0_calc = RECT::default();
+        let _ = DrawTextW(mem_dc, &mut t0_utf16, &mut t0_calc, DT_CALCRECT | DT_SINGLELINE);
+        let t0_txt_w = t0_calc.right - t0_calc.left;
+        let t0_content_w = icon_sz + icon_gap + t0_txt_w;
+        let t0_start_x = t0_x + (t0_w - t0_content_w).max(0) / 2;
+        let t0_icon_y = t0_y + (t0_h - icon_sz) / 2;
+        crate::ui::draw_clock(mem_dc, t0_start_x, t0_icon_y, icon_sz, t1_fg, 2);
         let mut t0_rect = RECT {
-            left: t0_x,
+            left: t0_start_x + icon_sz + icon_gap,
             top: t0_y,
             right: t0_x + t0_w,
             bottom: t0_y + t0_h,
         };
-        let _ = DrawTextW(mem_dc, &mut t0_utf16, &mut t0_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(mem_dc, &mut t0_utf16, &mut t0_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-        // Tag 2: CONTACTS
+        // Tag 2: CONTACTS (Users Icon)
         let (t1_x, t1_y, t1_w, t1_h, t1_text) = t1;
         let (tab_bg, tab_border, tab_fg) = if card3_tab == 1 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
@@ -691,15 +701,22 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         draw_rounded_box(mem_dc, t1_x, t1_y, t1_w, t1_h, tab_bg, tab_border, 6);
         SetTextColor(mem_dc, tab_fg);
         let mut t1_utf16: Vec<u16> = t1_text.encode_utf16().collect();
+        let mut t1_calc = RECT::default();
+        let _ = DrawTextW(mem_dc, &mut t1_utf16, &mut t1_calc, DT_CALCRECT | DT_SINGLELINE);
+        let t1_txt_w = t1_calc.right - t1_calc.left;
+        let t1_content_w = icon_sz + icon_gap + t1_txt_w;
+        let t1_start_x = t1_x + (t1_w - t1_content_w).max(0) / 2;
+        let t1_icon_y = t1_y + (t1_h - icon_sz) / 2;
+        crate::ui::draw_users(mem_dc, t1_start_x, t1_icon_y, icon_sz, tab_fg, 2);
         let mut t1_rect = RECT {
-            left: t1_x,
+            left: t1_start_x + icon_sz + icon_gap,
             top: t1_y,
             right: t1_x + t1_w,
             bottom: t1_y + t1_h,
         };
-        let _ = DrawTextW(mem_dc, &mut t1_utf16, &mut t1_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(mem_dc, &mut t1_utf16, &mut t1_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-        // Tag 3: LAN RADAR
+        // Tag 3: LAN RADAR (Radio/Radar Broadcast Icon)
         let (t2_x, t2_y, t2_w, t2_h, t2_text) = t2;
         let (t2_bg, t2_border, t2_fg) = if card3_tab == 2 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
@@ -709,13 +726,20 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         draw_rounded_box(mem_dc, t2_x, t2_y, t2_w, t2_h, t2_bg, t2_border, 6);
         SetTextColor(mem_dc, t2_fg);
         let mut t2_utf16: Vec<u16> = t2_text.encode_utf16().collect();
+        let mut t2_calc = RECT::default();
+        let _ = DrawTextW(mem_dc, &mut t2_utf16, &mut t2_calc, DT_CALCRECT | DT_SINGLELINE);
+        let t2_txt_w = t2_calc.right - t2_calc.left;
+        let t2_content_w = icon_sz + icon_gap + t2_txt_w;
+        let t2_start_x = t2_x + (t2_w - t2_content_w).max(0) / 2;
+        let t2_icon_y = t2_y + (t2_h - icon_sz) / 2;
+        crate::ui::draw_radio(mem_dc, t2_start_x, t2_icon_y, icon_sz, t2_fg, 2);
         let mut t2_rect = RECT {
-            left: t2_x,
+            left: t2_start_x + icon_sz + icon_gap,
             top: t2_y,
             right: t2_x + t2_w,
             bottom: t2_y + t2_h,
         };
-        let _ = DrawTextW(mem_dc, &mut t2_utf16, &mut t2_rect, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+        let _ = DrawTextW(mem_dc, &mut t2_utf16, &mut t2_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
         // When in Radar mode, show Scan button at top-right; in Address Book, show [+ Add]
         if card3_tab == 2 {
@@ -1011,12 +1035,12 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
         // 4. Card 4: SECURITY & SERVER (Bottom Right)
         draw_rounded_box(mem_dc, l.col2_x, l.col_y, l.col_w, l.col_h, PK_CARD, PK_CARD_BORDER, 12);
 
-        let tag4_w = (144.0 * l.font_scale) as i32;
+        let tag4_w = (184.0 * l.font_scale) as i32;
         let tag4_h = (22.0 * l.font_scale) as i32;
         draw_rounded_box(mem_dc, l.col2_x + 18, l.col_y + 14, tag4_w, tag4_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
         let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
         SetTextColor(mem_dc, PK_MUTED);
-        let mut tag4: Vec<u16> = "SECURITY & SERVER".encode_utf16().collect();
+        let mut tag4: Vec<u16> = "CONNECTION & ACTIVITY LOGS".encode_utf16().collect();
         let mut tag4_rect = RECT {
             left: l.col2_x + 18,
             top: l.col_y + 14,

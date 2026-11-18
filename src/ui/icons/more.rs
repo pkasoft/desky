@@ -1,32 +1,24 @@
-//! Lucide `more-horizontal` icon (three aligned dots)
-#![allow(unsafe_op_in_unsafe_fn)]
+//! Lucide More Horizontal Vector Icon
+use super::{IconCanvas, IconContext};
 
-use windows::Win32::Foundation::COLORREF;
-use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, Ellipse, GetStockObject, SelectObject, HDC, HGDIOBJ, NULL_PEN,
-};
+pub fn render_more_horizontal(canvas: &mut impl IconCanvas, ctx: &IconContext) {
+    let dot_r = ctx.dim(2.2);
+    let (cx, cy) = ctx.pt(12.0, 12.0);
+    let gap = ctx.dim(6.5);
+    canvas.draw_fill_circle(cx - gap, cy, dot_r, ctx.color);
+    canvas.draw_fill_circle(cx, cy, dot_r, ctx.color);
+    canvas.draw_fill_circle(cx + gap, cy, dot_r, ctx.color);
+}
 
-pub unsafe fn draw_more_horizontal(hdc: HDC, x: i32, y: i32, size: i32, color: COLORREF) {
-    let dot_r = (size as f32 * 0.12).max(1.5) as i32;
-    let cy = y + size / 2;
-    let cx = x + size / 2;
-    let gap = (size as f32 * 0.30) as i32;
-
-    let brush = CreateSolidBrush(color);
-    let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-    let old_pen = SelectObject(hdc, GetStockObject(NULL_PEN));
-
-    for dx in [-gap, 0, gap] {
-        let _ = Ellipse(
-            hdc,
-            cx + dx - dot_r,
-            cy - dot_r,
-            cx + dx + dot_r + 1,
-            cy + dot_r + 1,
-        );
-    }
-
-    let _ = SelectObject(hdc, old_pen);
-    let _ = SelectObject(hdc, old_brush);
-    let _ = DeleteObject(HGDIOBJ(brush.0));
+#[cfg(target_os = "windows")]
+pub unsafe fn draw_more_horizontal(
+    hdc: windows::Win32::Graphics::Gdi::HDC,
+    x: i32,
+    y: i32,
+    size: i32,
+    color: windows::Win32::Foundation::COLORREF,
+) {
+    let mut target = super::GdiIconTarget::new(hdc, color, 1.0);
+    let ctx = IconContext::new(x as f32, y as f32, size as f32, color.0, 1.0);
+    render_more_horizontal(&mut target, &ctx);
 }

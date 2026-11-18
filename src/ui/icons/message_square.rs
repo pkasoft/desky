@@ -1,55 +1,27 @@
-//! Lucide Message Square Vector Icon (Official Lucide `message-square.svg`)
-//!
-//! Vector paths:
-//! - `<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />`
+//! Lucide Message Square Vector Icon
+use super::{IconCanvas, IconContext};
 
-#![allow(unsafe_op_in_unsafe_fn)]
+pub fn render_message_square(canvas: &mut impl IconCanvas, ctx: &IconContext) {
+    ctx.draw_polyline(canvas, &[
+        (21.0, 15.0),
+        (6.0, 15.0),
+        (3.0, 18.0),
+        (3.0, 5.0),
+        (21.0, 5.0),
+        (21.0, 15.0),
+    ]);
+}
 
-use super::{
-    draw_polyline, draw_smooth_polyline, GraphicsScope, IconContext, PenScope,
-};
-use windows::Win32::Foundation::COLORREF;
-use windows::Win32::Graphics::Gdi::HDC;
-
+#[cfg(target_os = "windows")]
 pub unsafe fn draw_message_square(
-    hdc: HDC,
+    hdc: windows::Win32::Graphics::Gdi::HDC,
     x: i32,
     y: i32,
     size: i32,
-    color: COLORREF,
+    color: windows::Win32::Foundation::COLORREF,
     stroke_width: i32,
 ) {
-    let ctx = IconContext::new(x, y, size);
-    let sw = stroke_width as f32;
-
-    if let Some(scope) = GraphicsScope::new(hdc, color, sw) {
-        draw_smooth_polyline(
-            &scope,
-            &ctx,
-            &[
-                (21.0, 15.0),
-                (21.0, 5.0),
-                (3.0, 5.0),
-                (3.0, 19.0),
-                (7.0, 15.0),
-                (19.0, 15.0),
-                (21.0, 15.0),
-            ],
-        );
-    } else {
-        let _pen = PenScope::new(hdc, color, stroke_width);
-        draw_polyline(
-            hdc,
-            &ctx,
-            &[
-                (21.0, 15.0),
-                (21.0, 5.0),
-                (3.0, 5.0),
-                (3.0, 19.0),
-                (7.0, 15.0),
-                (19.0, 15.0),
-                (21.0, 15.0),
-            ],
-        );
-    }
+    let mut target = super::GdiIconTarget::new(hdc, color, stroke_width as f32);
+    let ctx = IconContext::new(x as f32, y as f32, size as f32, color.0, stroke_width as f32);
+    render_message_square(&mut target, &ctx);
 }
