@@ -18,9 +18,9 @@ use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen,
+    BeginPaint, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateRectRgn,
     CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect, InvalidateRect,
-    LineTo, MoveToEx, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+    LineTo, MoveToEx, SelectClipRgn, SelectObject, SetBkColor, SetBkMode, SetTextColor,
     UpdateWindow, DT_CENTER, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, FW_BOLD, FW_NORMAL,
     FW_SEMIBOLD, HDC, HFONT, HGDIOBJ, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
@@ -34,7 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     HWND_TOPMOST, IDC_ARROW, IDC_HAND, MINMAXINFO, SM_CXSCREEN, SM_CYSCREEN,
     SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOW,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR, WM_SIZE,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR, WM_SIZE,
     WM_TIMER, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_TOPMOST,
     WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
 };
@@ -56,6 +56,24 @@ static HWND_HOST_WIDGET: AtomicIsize = AtomicIsize::new(0);
 static HWND_CHAT_EDIT: AtomicIsize = AtomicIsize::new(0);
 static PREV_HOST_CHAT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 static HOVER_BTN: AtomicI32 = AtomicI32::new(0);
+static CHAT_SCROLL_OFFSET: AtomicI32 = AtomicI32::new(0);
+static CHAT_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scroll_chat(delta: i32) {
+    let step = 38;
+    let cur = CHAT_SCROLL_OFFSET.load(Ordering::Relaxed);
+    let max_s = CHAT_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_val = if delta > 0 {
+        (cur + step).min(max_s)
+    } else {
+        (cur - step).max(0)
+    };
+    CHAT_SCROLL_OFFSET.store(new_val, Ordering::Relaxed);
+}
+
+pub fn reset_chat_scroll() {
+    CHAT_SCROLL_OFFSET.store(0, Ordering::Relaxed);
+}
 // Hover IDs:
 // 20 = Input Sovereignty, 21 = Mic, 22 = Clipboard, 23 = File Transfer
 // 30 = Accept, 31 = Dismiss / Disconnect, 32 = Send
@@ -271,6 +289,7 @@ pub fn send_host_chat_input() {
             if !trimmed.is_empty() {
                 crate::p2p::send_chat_message(trimmed);
                 let _ = SetWindowTextW(hwnd_edit, w!(""));
+                reset_chat_scroll();
             }
         }
     }
@@ -503,6 +522,12 @@ unsafe extern "system" fn host_widget_wndproc(
                 return LRESULT(1);
             }
             DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_MOUSEWHEEL => {
+            let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
+            scroll_chat(delta);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as usize;
@@ -817,12 +842,36 @@ unsafe extern "system" fn host_widget_wndproc(
 
             // 2.3 Dynamic Real-Time Chat Stream (y: 92..h - 52)
             let msgs = crate::p2p::get_chat_messages();
-            let mut cur_y = 92;
+            let chat_top = 92;
+            let chat_bot = h - 52;
+            let avail_h = (chat_bot - chat_top).max(30);
+            let item_h = 38;
+            let total_h = msgs.len() as i32 * item_h;
 
-            for msg in msgs.iter().rev().take(6).collect::<Vec<_>>().into_iter().rev() {
-                if cur_y + 34 > h - 52 {
+            let max_scroll = (total_h - avail_h).max(0);
+            CHAT_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+            let scroll = CHAT_SCROLL_OFFSET.load(Ordering::Relaxed).min(max_scroll);
+            CHAT_SCROLL_OFFSET.store(scroll, Ordering::Relaxed);
+
+            // Clip chat messages container
+            let clip_chat = CreateRectRgn(col_left_w + 1, chat_top, w, chat_bot);
+            let _ = SelectClipRgn(hdc_mem, Some(clip_chat));
+
+            let base_y = if total_h <= avail_h {
+                chat_top
+            } else {
+                chat_top + avail_h - total_h + scroll
+            };
+
+            for (i, msg) in msgs.iter().enumerate() {
+                let cur_y = base_y + (i as i32) * item_h;
+                if cur_y + item_h < chat_top {
+                    continue;
+                }
+                if cur_y > chat_bot {
                     break;
                 }
+
                 let is_me = msg.is_me;
                 let bubble_w = ((w - col_left_w - 50) * 7 / 10).min(300);
                 let bubble_x = if is_me { w - bubble_w - 16 } else { col_left_w + 16 };
@@ -842,8 +891,22 @@ unsafe extern "system" fn host_widget_wndproc(
                 let mut body_txt: Vec<u16> = msg.text.encode_utf16().collect();
                 let mut body_rc = RECT { left: bubble_x + 8, top: cur_y + 12, right: bubble_x + bubble_w - 8, bottom: cur_y + 34 };
                 DrawTextW(hdc_mem, &mut body_txt, &mut body_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            }
 
-                cur_y += 38;
+            let _ = SelectClipRgn(hdc_mem, None);
+            let _ = DeleteObject(HGDIOBJ(clip_chat.0));
+
+            // Scrollbar indicator
+            if max_scroll > 0 {
+                let sb_w = 4;
+                let sb_x = w - 6;
+                let sb_y = chat_top;
+                let sb_h = avail_h;
+                draw_rounded_box(hdc_mem, sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+                let thumb_h = ((avail_h as f32 / total_h as f32) * sb_h as f32).clamp(20.0, sb_h as f32) as i32;
+                let thumb_travel = sb_h - thumb_h;
+                let thumb_y = sb_y + ((max_scroll - scroll) as f32 / max_scroll as f32 * thumb_travel as f32) as i32;
+                draw_rounded_box(hdc_mem, sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
             }
 
             // 2.5 Bottom Chat Input Area (Sharp 6px corners, y: h - 44..h - 14)

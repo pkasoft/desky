@@ -7,9 +7,9 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, InvalidateRect, SelectObject, SetBkMode,
-    SetTextColor, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD,
-    FW_SEMIBOLD, HDC, HGDIOBJ, TRANSPARENT,
+    CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, InvalidateRect,
+    SelectClipRgn, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE,
+    DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_SEMIBOLD, HDC, HGDIOBJ, TRANSPARENT,
 };
 
 use super::theme::{
@@ -26,6 +26,24 @@ pub const CHAT_WIDTH: i32 = 310;
 
 static CHAT_INPUT_BUFFER: OnceLock<Mutex<String>> = OnceLock::new();
 static CHAT_HOVER_STATE: AtomicI32 = AtomicI32::new(-1);
+pub static HUD_CHAT_SCROLL: AtomicI32 = AtomicI32::new(0);
+pub static HUD_CHAT_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scroll_chat_hud(delta: i32) {
+    let step = 35;
+    let cur = HUD_CHAT_SCROLL.load(Ordering::Relaxed);
+    let max_s = HUD_CHAT_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_val = if delta > 0 {
+        (cur + step).min(max_s)
+    } else {
+        (cur - step).max(0)
+    };
+    HUD_CHAT_SCROLL.store(new_val, Ordering::Relaxed);
+}
+
+pub fn reset_chat_hud_scroll() {
+    HUD_CHAT_SCROLL.store(0, Ordering::Relaxed);
+}
 
 fn input_buf() -> &'static Mutex<String> {
     CHAT_INPUT_BUFFER.get_or_init(|| Mutex::new(String::new()))
@@ -65,6 +83,7 @@ pub fn submit_chat_input() {
     if !trimmed.is_empty() {
         crate::p2p::send_chat_message(trimmed);
         clear_chat_input();
+        reset_chat_hud_scroll();
     }
 }
 
@@ -236,19 +255,17 @@ pub unsafe fn draw_chat_hud(
 
     // Messages scrollable container
     let msgs = crate::p2p::get_chat_messages();
-    let msg_area_top = panel_y + 50;
+    let msg_area_top = panel_y + 46;
     let msg_area_bot = client_h - 52;
-    let mut cur_y = msg_area_bot;
+    let avail_h = (msg_area_bot - msg_area_top).max(40);
 
     let msg_font = create_segoe_font(11, FW_SEMIBOLD);
     let time_font = create_segoe_font(9, FW_SEMIBOLD);
 
-    // Render messages from bottom to top
-    for msg in msgs.iter().rev() {
-        if cur_y < msg_area_top + 20 {
-            break;
-        }
-
+    // Precalculate heights of messages
+    let mut item_heights = Vec::with_capacity(msgs.len());
+    let mut total_h = 0;
+    for msg in msgs.iter() {
         let max_bubble_w = 210;
         let mut text_utf16: Vec<u16> = msg.text.encode_utf16().collect();
         let _ = SelectObject(hdc, HGDIOBJ(msg_font.0));
@@ -264,14 +281,49 @@ pub unsafe fn draw_chat_hud(
             &mut calc_rc,
             windows::Win32::Graphics::Gdi::DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
         );
-
-        let bubble_w = (calc_rc.right - calc_rc.left + 20).clamp(60, max_bubble_w);
         let bubble_h = (txt_h + 14).max(30);
+        let block_h = bubble_h + 20;
+        item_heights.push((bubble_h, block_h));
+        total_h += block_h;
+    }
 
-        cur_y -= bubble_h + 8;
-        if cur_y < msg_area_top {
+    let max_scroll = (total_h - avail_h).max(0);
+    HUD_CHAT_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+    let scroll = HUD_CHAT_SCROLL.load(Ordering::Relaxed).min(max_scroll);
+    HUD_CHAT_SCROLL.store(scroll, Ordering::Relaxed);
+
+    // Clip message region
+    let clip_rgn = CreateRectRgn(panel_x, msg_area_top, client_w, msg_area_bot);
+    let _ = SelectClipRgn(hdc, Some(clip_rgn));
+
+    let mut cur_y = msg_area_bot + scroll;
+
+    // Render messages from bottom to top
+    for (msg, (bubble_h, block_h)) in msgs.iter().zip(item_heights.iter()).rev() {
+        cur_y -= block_h;
+        if cur_y > msg_area_bot {
+            continue;
+        }
+        if cur_y + block_h < msg_area_top {
             break;
         }
+
+        let max_bubble_w = 210;
+        let mut text_utf16: Vec<u16> = msg.text.encode_utf16().collect();
+        let _ = SelectObject(hdc, HGDIOBJ(msg_font.0));
+        let mut calc_rc = RECT {
+            left: 0,
+            top: 0,
+            right: max_bubble_w - 16,
+            bottom: 0,
+        };
+        let _ = DrawTextW(
+            hdc,
+            &mut text_utf16,
+            &mut calc_rc,
+            windows::Win32::Graphics::Gdi::DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX,
+        );
+        let bubble_w = (calc_rc.right - calc_rc.left + 20).clamp(60, max_bubble_w);
 
         let bubble_x = if msg.is_me {
             client_w - bubble_w - 14
@@ -285,7 +337,7 @@ pub unsafe fn draw_chat_hud(
             (PK_INPUT_BG, PK_CARD_BORDER, PK_TEXT)
         };
 
-        draw_rounded_box(hdc, bubble_x, cur_y, bubble_w, bubble_h, fill_c, border_c, 6);
+        draw_rounded_box(hdc, bubble_x, cur_y, bubble_w, *bubble_h, fill_c, border_c, 6);
 
         let _ = SelectObject(hdc, HGDIOBJ(msg_font.0));
         SetTextColor(hdc, text_c);
@@ -318,7 +370,22 @@ pub unsafe fn draw_chat_hud(
             &mut time_rc,
             DT_SINGLELINE | if msg.is_me { windows::Win32::Graphics::Gdi::DT_RIGHT } else { windows::Win32::Graphics::Gdi::DT_LEFT } | DT_NOPREFIX,
         );
-        cur_y -= 8;
+    }
+
+    let _ = SelectClipRgn(hdc, None);
+    let _ = DeleteObject(HGDIOBJ(clip_rgn.0));
+
+    // Scrollbar indicator
+    if max_scroll > 0 {
+        let sb_w = 4;
+        let sb_x = client_w - 6;
+        let sb_y = msg_area_top;
+        let sb_h = avail_h;
+        draw_rounded_box(hdc, sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+        let thumb_h = ((avail_h as f32 / total_h as f32) * sb_h as f32).clamp(20.0, sb_h as f32) as i32;
+        let thumb_travel = sb_h - thumb_h;
+        let thumb_y = sb_y + ((max_scroll - scroll) as f32 / max_scroll as f32 * thumb_travel as f32) as i32;
+        draw_rounded_box(hdc, sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
     }
 
     if msgs.is_empty() {

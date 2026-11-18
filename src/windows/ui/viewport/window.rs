@@ -40,7 +40,7 @@ use super::quick_actions::{
 };
 use super::renderer::{REMOTE_ORIG_H, REMOTE_ORIG_W, VIEWPORT_RUNNING};
 use super::settings_modal::{
-    close_settings_modal, handle_settings_click, CAPTURE_CURSOR, DISPLAY_MODE, SHOW_SETTINGS_MODAL, TARGET_FPS,
+    close_settings_modal, handle_settings_click, reset_settings_scroll, scroll_settings, CAPTURE_CURSOR, DISPLAY_MODE, SHOW_SETTINGS_MODAL, TARGET_FPS,
 };
 use super::tabs::{
     close_session_tab, detach_tab, get_session_tabs, switch_session_tab, ACTIVE_REMOTE_MONITOR, ACTIVE_TAB_INDEX,
@@ -67,11 +67,15 @@ pub static mut VIEWPORT_BRUSH: HBRUSH = HBRUSH(std::ptr::null_mut());
 pub unsafe fn execute_toolbar_action(hwnd: HWND, hit: i32) {
     if hit == 9011 {
         super::settings_modal::SETTINGS_CATEGORY.store(2, Ordering::Relaxed);
+        reset_settings_scroll();
         SHOW_SETTINGS_MODAL.store(true, Ordering::Relaxed);
         sync_edit_target_visibility();
         let _ = InvalidateRect(Some(hwnd), None, false);
     } else if hit == 9006 {
-        SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+        let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+        if !prev {
+            reset_settings_scroll();
+        }
         sync_edit_target_visibility();
         let _ = InvalidateRect(Some(hwnd), None, false);
     } else if hit == 9007 {
@@ -929,7 +933,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             DefWindowProcW(hwnd, msg, wparam, lparam)
         }
         WM_MOUSEWHEEL => {
-            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) || is_quick_actions_open() || is_overflow_menu_open() {
+            if is_quick_actions_open() || is_overflow_menu_open() {
                 return LRESULT(0);
             }
             let delta = ((wparam.0 >> 16) & 0xffff) as i16 as i32;
@@ -937,6 +941,12 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let screen_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
             let mut pt = POINT { x: screen_x, y: screen_y };
             let _ = ScreenToClient(hwnd, &mut pt);
+
+            if SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
+                scroll_settings(delta);
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
 
             if pt.y < TOOLBAR_HEIGHT {
                 scroll_tabs(delta);
@@ -954,6 +964,8 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 let client_w = rect.right - rect.left;
                 let client_h = rect.bottom - rect.top;
                 if super::chat_hud::is_mouse_over_chat_hud(pt.x, pt.y, client_w, client_h, TOOLBAR_HEIGHT) {
+                    super::chat_hud::scroll_chat_hud(delta);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 }
             }
@@ -1038,6 +1050,9 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 }
             } else if wparam.0 == 0x09 {
                 let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
+                if !prev {
+                    reset_settings_scroll();
+                }
                 sync_edit_target_visibility();
                 info!("Full-Screen Settings Page toggled: {}", !prev);
             } else if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {

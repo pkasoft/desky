@@ -11,9 +11,10 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU8, Ordering};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, InvalidateRect, SelectObject, SetBkMode,
-    SetTextColor, DT_CENTER, DT_LEFT, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC, HGDIOBJ, TRANSPARENT,
+    CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, InvalidateRect,
+    SelectClipRgn, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_LEFT, DT_NOPREFIX,
+    DT_RIGHT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HDC,
+    HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     LoadCursorW, MessageBoxW, SetCursor, IDC_ARROW, IDC_HAND, MB_ICONERROR, MB_ICONINFORMATION,
@@ -41,6 +42,26 @@ pub static SETTINGS_CATEGORY: AtomicU8 = AtomicU8::new(0);
 
 // Hover element tracker for interactive styling
 pub static SETTINGS_HOVER_ID: AtomicI32 = AtomicI32::new(-1);
+
+// Vertical scroll state for category settings cards
+pub static SETTINGS_SCROLL_Y: AtomicI32 = AtomicI32::new(0);
+pub static SETTINGS_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scroll_settings(delta: i32) {
+    let step = 45;
+    let cur = SETTINGS_SCROLL_Y.load(Ordering::Relaxed);
+    let max_s = SETTINGS_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_scroll = if delta > 0 {
+        (cur - step).max(0)
+    } else {
+        (cur + step).min(max_s)
+    };
+    SETTINGS_SCROLL_Y.store(new_scroll, Ordering::Relaxed);
+}
+
+pub fn reset_settings_scroll() {
+    SETTINGS_SCROLL_Y.store(0, Ordering::Relaxed);
+}
 
 // Display mode: 0 = Auto Fit, 1 = Fill Window, 2 = 1:1 Original resolution
 pub static DISPLAY_MODE: AtomicU8 = AtomicU8::new(0);
@@ -277,8 +298,31 @@ pub unsafe fn draw_fullscreen_settings_view(
         DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
     );
 
-    // Content Cards Container start Y
-    let body_y = header_y + 60;
+    // Content Cards Container geometry & vertical scrolling
+    let content_top = header_y + 56;
+    let content_bot = client_h - pad_y;
+    let avail_h = (content_bot - content_top).max(50);
+
+    let cat_content_h = match active_cat {
+        0 => 330,
+        1 => 600,
+        2 => 320,
+        3 => 270,
+        4 => 260,
+        5 => 380,
+        _ => 470,
+    };
+
+    let max_scroll = (cat_content_h - avail_h).max(0);
+    SETTINGS_MAX_SCROLL.store(max_scroll, Ordering::Relaxed);
+    let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);
+    SETTINGS_SCROLL_Y.store(scroll_y, Ordering::Relaxed);
+
+    let body_y = content_top - scroll_y;
+
+    // Apply viewport clipping to prevent cards from bleeding over header or bottom
+    let clip_rgn = CreateRectRgn(content_x - 4, content_top, content_x + content_w + 10, content_bot);
+    let _ = SelectClipRgn(hdc, Some(clip_rgn));
 
     // Render active category views
     match active_cat {
@@ -307,6 +351,23 @@ pub unsafe fn draw_fullscreen_settings_view(
             hdc, content_x, body_y, content_w, orig_w, orig_h, hover_id, font_title, font_sub,
             font_btn, font_mono,
         ),
+    }
+
+    // Restore clipping
+    let _ = SelectClipRgn(hdc, None);
+    let _ = DeleteObject(HGDIOBJ(clip_rgn.0));
+
+    // Render subtle scrollbar thumb when content overflows
+    if max_scroll > 0 {
+        let sb_w = 4;
+        let sb_x = content_x + content_w - sb_w;
+        let sb_y = content_top;
+        let sb_h = avail_h;
+        draw_rounded_box(hdc, sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+        let thumb_h = ((avail_h as f32 / cat_content_h as f32) * sb_h as f32).clamp(24.0, sb_h as f32) as i32;
+        let thumb_travel = sb_h - thumb_h;
+        let thumb_y = sb_y + ((scroll_y as f32 / max_scroll as f32) * thumb_travel as f32) as i32;
+        draw_rounded_box(hdc, sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
     }
 
     // GDI Cleanup
@@ -1497,7 +1558,7 @@ unsafe fn draw_segment_pills(
 pub fn handle_settings_mousemove(
     hwnd: HWND,
     client_w: i32,
-    _client_h: i32,
+    client_h: i32,
     client_x: i32,
     client_y: i32,
     top_y: i32,
@@ -1511,7 +1572,24 @@ pub fn handle_settings_mousemove(
     let content_x = sidebar_x + sidebar_w + 20;
     let content_w = (client_w - content_x - pad_x).max(360);
     let header_y = sidebar_y + 2;
-    let body_y = header_y + 60;
+
+    let content_top = header_y + 56;
+    let content_bot = client_h - pad_y;
+    let avail_h = (content_bot - content_top).max(50);
+
+    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
+    let cat_content_h = match active_cat {
+        0 => 330,
+        1 => 600,
+        2 => 320,
+        3 => 270,
+        4 => 260,
+        5 => 380,
+        _ => 470,
+    };
+    let max_scroll = (cat_content_h - avail_h).max(0);
+    let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);
+    let body_y = content_top - scroll_y;
 
     let mut new_hover = -1;
 
@@ -1540,10 +1618,8 @@ pub fn handle_settings_mousemove(
         }
     }
 
-    let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
-
-    // 3. Content controls based on active category
-    if new_hover == -1 {
+    // 3. Content controls based on active category (only if inside visible scroll area)
+    if new_hover == -1 && client_y >= content_top && client_y <= content_bot {
         match active_cat {
             0 => {
                 let btn_w = 260;
@@ -1723,6 +1799,7 @@ pub fn handle_settings_mousemove(
 // =========================================================================
 pub fn close_settings_modal(hwnd: HWND) {
     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
+    reset_settings_scroll();
     crate::windows::ui::launcher::sync_edit_target_visibility();
     unsafe {
         let _ = InvalidateRect(Some(hwnd), None, false);
@@ -1732,7 +1809,7 @@ pub fn close_settings_modal(hwnd: HWND) {
 pub fn handle_settings_click(
     hwnd: HWND,
     client_w: i32,
-    _client_h: i32,
+    client_h: i32,
     client_x: i32,
     client_y: i32,
     top_y: i32,
@@ -1746,7 +1823,6 @@ pub fn handle_settings_click(
     let content_x = sidebar_x + sidebar_w + 20;
     let content_w = (client_w - content_x - pad_x).max(360);
     let header_y = sidebar_y + 2;
-    let body_y = header_y + 60;
 
     // 1. Close Button [ × Close ]
     let close_w = 96;
@@ -1770,6 +1846,7 @@ pub fn handle_settings_click(
         let iw = sidebar_w - 16;
         if client_x >= ix && client_x <= ix + iw && client_y >= iy && client_y <= iy + item_h {
             SETTINGS_CATEGORY.store(i as u8, Ordering::Relaxed);
+            reset_settings_scroll();
             unsafe {
                 let _ = InvalidateRect(Some(hwnd), None, false);
             }
@@ -1777,7 +1854,28 @@ pub fn handle_settings_click(
         }
     }
 
+    let content_top = header_y + 56;
+    let content_bot = client_h - pad_y;
+    let avail_h = (content_bot - content_top).max(50);
+
     let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
+    let cat_content_h = match active_cat {
+        0 => 330,
+        1 => 600,
+        2 => 320,
+        3 => 270,
+        4 => 260,
+        5 => 380,
+        _ => 470,
+    };
+    let max_scroll = (cat_content_h - avail_h).max(0);
+    let scroll_y = SETTINGS_SCROLL_Y.load(Ordering::Relaxed).min(max_scroll);
+    let body_y = content_top - scroll_y;
+
+    // Category controls are clipped between content_top and content_bot
+    if client_y < content_top || client_y > content_bot {
+        return false;
+    }
 
     // 3. Category-Specific Actions
     match active_cat {
