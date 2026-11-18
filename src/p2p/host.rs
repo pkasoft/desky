@@ -952,6 +952,9 @@ impl P2PManager {
                                     info!("Client {} disconnected from host stream.", from_addr);
                                 }
                                 PKT_CLIPBOARD => {
+                                    if !crate::p2p::is_host_clipboard_allowed() {
+                                        continue;
+                                    }
                                     if slice.len() > 5 {
                                         if let Ok(text) = std::str::from_utf8(&slice[5..]) {
                                             let hash = crate::p2p::state::compute_clipboard_hash(text);
@@ -962,6 +965,9 @@ impl P2PManager {
                                     }
                                 }
                                 PKT_FILE_START => {
+                                    if !crate::p2p::is_host_file_transfer_allowed() {
+                                        continue;
+                                    }
                                     if let Ok(mut map) = clients_recv.lock() {
                                         for sub in map.values_mut() {
                                             if (sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server)

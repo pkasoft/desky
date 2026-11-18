@@ -603,6 +603,68 @@ impl PixelCanvas {
         self.draw_line(cx + s * 0.12, cy - s * 0.34, cx + s * 0.36, cy - s * 0.34, rgb, 1.8);
         self.draw_line(cx + s * 0.36, cy - s * 0.34, cx + s * 0.36, cy - s * 0.10, rgb, 1.8);
     }
+    pub fn draw_icon_keyboard_mouse(&mut self, x: i32, y: i32, sz: i32, rgb: u32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        let oy = y as f32;
+        // Keyboard body
+        self.draw_rounded_box(
+            (ox + s * 0.05) as i32,
+            (oy + s * 0.28) as i32,
+            (s * 0.54) as i32,
+            (s * 0.46) as i32,
+            0x00FFFFFF,
+            rgb,
+            2,
+        );
+        // Keyboard key lines
+        self.draw_line(ox + s * 0.16, oy + s * 0.42, ox + s * 0.26, oy + s * 0.42, rgb, 1.2);
+        self.draw_line(ox + s * 0.32, oy + s * 0.42, ox + s * 0.48, oy + s * 0.42, rgb, 1.2);
+        self.draw_line(ox + s * 0.16, oy + s * 0.58, ox + s * 0.48, oy + s * 0.58, rgb, 1.2);
+
+        // Mouse body
+        self.draw_rounded_box(
+            (ox + s * 0.66) as i32,
+            (oy + s * 0.20) as i32,
+            (s * 0.28) as i32,
+            (s * 0.58) as i32,
+            0x00FFFFFF,
+            rgb,
+            3,
+        );
+        // Mouse divider
+        self.draw_line(ox + s * 0.80, oy + s * 0.20, ox + s * 0.80, oy + s * 0.42, rgb, 1.2);
+    }
+
+    pub fn draw_icon_desky_logo(&mut self, x: i32, y: i32, sz: i32) {
+        let s = sz as f32;
+        let ox = x as f32;
+        // Outer Deep Emerald canvas (#143828)
+        self.draw_rounded_box(x, y, sz, sz, 0x00143828, 0x002D6A4F, (s * 0.22) as i32);
+
+        // Display monitor (#0d1f16 with #52b788 border)
+        let margin = (s * 0.16) as i32;
+        let disp_w = (sz - margin * 2).max(8);
+        let disp_h = ((disp_w as f32 * 0.65) as i32).max(5);
+        let disp_x = x + margin;
+        let disp_y = y + margin - 1;
+        self.draw_rounded_box(disp_x, disp_y, disp_w, disp_h, 0x000D1F16, 0x0052B788, 2);
+
+        // Stand neck & base
+        let stand_cx = ox + s * 0.5;
+        let stand_top_y = disp_y as f32 + disp_h as f32;
+        let stand_h = s * 0.14;
+        let base_w = s * 0.38;
+        let base_y = stand_top_y + stand_h;
+        self.draw_line(stand_cx, stand_top_y, stand_cx, base_y, 0x002D6A4F, 1.5);
+        self.draw_line(stand_cx - base_w * 0.5, base_y, stand_cx + base_w * 0.5, base_y, 0x0052B788, 1.5);
+
+        // Central P2P Node (#74c69d) & Online Mint Dot (#4ade80)
+        let cx = disp_x as f32 + disp_w as f32 * 0.5;
+        let cy = disp_y as f32 + disp_h as f32 * 0.5;
+        self.draw_circle(cx, cy, 1.5, 0x0074C69D, 1.0, true);
+        self.draw_circle(disp_x as f32 + disp_w as f32 - 4.0, disp_y as f32 + 4.0, 1.5, 0x004ADE80, 1.0, true);
+    }
 
     /// Measures the pixel width and height of a single line of text
     pub fn measure_text(&self, text: &str, size_px: f32, bold: bool) -> (i32, i32) {

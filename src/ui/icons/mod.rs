@@ -33,6 +33,8 @@ pub mod alert_triangle;
 pub mod message_square;
 pub mod more;
 pub mod chevron;
+pub mod keyboard_mouse;
+pub mod desky_logo;
 
 pub use arrow_right::draw_arrow_right;
 pub use alert_triangle::draw_alert_triangle;
@@ -64,6 +66,8 @@ pub use x::draw_x;
 pub use pen::draw_pen;
 pub use record::draw_record;
 pub use zap::draw_zap;
+pub use keyboard_mouse::draw_keyboard_mouse;
+pub use desky_logo::draw_desky_logo;
 
 use std::sync::Once;
 use windows::Win32::Foundation::{COLORREF, POINT};

@@ -8,5 +8,5 @@ pub use icons::{
     draw_copy, draw_cpu, draw_file, draw_folder, draw_home, draw_info, draw_lock, draw_mic,
     draw_mic_off, draw_monitor, draw_monitor_num, draw_more_horizontal, draw_pen, draw_plus,
     draw_radio, draw_record, draw_refresh, draw_search, draw_server, draw_settings, draw_terminal,
-    draw_trash, draw_volume, draw_volume_x, draw_wifi, draw_x, draw_zap, draw_message_square,
+    draw_trash, draw_volume, draw_volume_x, draw_wifi, draw_x, draw_zap, draw_message_square, draw_keyboard_mouse, draw_desky_logo,
 };
