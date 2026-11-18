@@ -1,8 +1,9 @@
 //! Host Session Window & Approval Controller (Win32)
 //!
 //! Provides the host workstation user with a dedicated, unified session manager:
-//! - Standalone topmost window that immediately surfaces when an incoming connection request arrives.
-//! - Clear requester profile identification, connection status, and permission indicators.
+//! - Standalone topmost window that surfaces when an incoming connection request arrives.
+//! - Clear requester profile identification, connection status, and interactive permissions.
+//! - Smooth native Win32 window movement via WM_NCHITTEST; preserves position across updates.
 //! - Single persistent window lifecycle: upon clicking [Accept], the window seamlessly transitions
 //!   into the active session controller with live duration ticker, in-session chat, and [Disconnect].
 //! - Remote Input Sovereignty: instant toggle between remote mouse/keyboard control and View-Only mode.
@@ -22,16 +23,16 @@ use windows::Win32::Graphics::Gdi::{
     NULL_BRUSH, PAINTSTRUCT, PS_SOLID, SRCCOPY, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture};
+use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetParent, GetSystemMetrics,
-    GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW,
+    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsWindow, LoadCursorW,
     PostMessageW, RegisterClassExW, SendMessageW, SetCursor, SetForegroundWindow,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, GWLP_WNDPROC, HMENU, HTCAPTION,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, GWLP_WNDPROC, HMENU,
     HWND_TOPMOST, IDC_ARROW, IDC_HAND, SM_CXSCREEN, SM_CYSCREEN,
-    SWP_SHOWWINDOW, SW_MINIMIZE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CHAR, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLOREDIT, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MOUSEMOVE,
-    WM_NCLBUTTONDOWN, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_MINIMIZE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WM_CHAR, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_KEYDOWN, WM_LBUTTONDOWN,
+    WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WM_SETCURSOR, WM_TIMER, WNDCLASSEXW, WS_BORDER, WS_CHILD,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
@@ -40,8 +41,8 @@ use super::theme::{
     PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT, PK_INPUT_BG, PK_MUTED, PK_RED, PK_TEXT,
 };
 
-pub const HOST_WINDOW_W: i32 = 380;
-pub const HOST_WINDOW_H: i32 = 524;
+pub const HOST_WINDOW_W: i32 = 400;
+pub const HOST_WINDOW_H: i32 = 556;
 
 const ID_EDIT_HOST_CHAT: usize = 9981;
 const ID_TIMER_WIDGET_TICK: usize = 4001;
@@ -156,33 +157,34 @@ pub fn spawn_host_widget() {
         return;
     }
 
-    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
-    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
-    let x = (screen_w - HOST_WINDOW_W) / 2;
-    let y = (screen_h - HOST_WINDOW_H) / 2;
-
     let existing = HWND_HOST_WIDGET.load(Ordering::Relaxed);
     if existing != 0 {
         let hwnd = HWND(existing as *mut _);
         if unsafe { IsWindow(Some(hwnd)).as_bool() } {
             unsafe {
                 let _ = ShowWindow(hwnd, SW_SHOW);
+                // Keep the window exactly wherever the user dragged it! Do NOT reset position!
                 let _ = SetWindowPos(
                     hwnd,
                     Some(HWND_TOPMOST),
-                    x,
-                    y,
-                    HOST_WINDOW_W,
-                    HOST_WINDOW_H,
-                    SWP_SHOWWINDOW,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
                 );
-                let _ = SetForegroundWindow(hwnd);
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 let _ = UpdateWindow(hwnd);
             }
             return;
         }
     }
+
+    // Initial creation: center on primary screen
+    let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+    let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+    let x = (screen_w - HOST_WINDOW_W) / 2;
+    let y = (screen_h - HOST_WINDOW_H) / 2;
 
     unsafe {
         let h_module = GetModuleHandleW(None).unwrap_or_default();
@@ -288,6 +290,23 @@ unsafe extern "system" fn host_widget_wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     match msg {
+        WM_NCHITTEST => {
+            let pt_x = (lparam.0 & 0xffff) as i16 as i32;
+            let pt_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+            let mut rc = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut rc);
+            let client_x = pt_x - rc.left;
+            let client_y = pt_y - rc.top;
+
+            // Header Bar (y <= 38): Top-right buttons (minimize, close) handle clicks as client area
+            if client_y >= 0 && client_y <= 38 {
+                if client_x >= rc.right - rc.left - 74 {
+                    return LRESULT(1); // HTCLIENT
+                }
+                return LRESULT(2); // HTCAPTION -> Smooth native Win32 window dragging anywhere on titlebar!
+            }
+            LRESULT(1) // HTCLIENT for body
+        }
         WM_CREATE => {
             let h_module = GetModuleHandleW(None).unwrap_or_default();
             let h_instance: HINSTANCE = h_module.into();
@@ -300,8 +319,8 @@ unsafe extern "system" fn host_widget_wndproc(
                     WS_CHILD.0 | WS_BORDER.0 | WS_TABSTOP.0 | 0x0080 | WS_VISIBLE.0, // ES_AUTOHSCROLL | WS_VISIBLE
                 ),
                 14,
-                476,
-                284,
+                508,
+                300,
                 32,
                 Some(hwnd),
                 Some(HMENU(ID_EDIT_HOST_CHAT as *mut _)),
@@ -366,13 +385,13 @@ unsafe extern "system" fn host_widget_wndproc(
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
             let is_pending = is_approval_active();
 
-            // 1. Header controls (y <= 34)
-            if client_y <= 34 {
-                if client_x >= 318 && client_x <= 342 {
+            // 1. Header Buttons (y <= 38)
+            if client_y <= 38 {
+                if client_x >= 334 && client_x <= 362 {
                     // Minimize
                     let _ = ShowWindow(hwnd, SW_MINIMIZE);
                     return LRESULT(0);
-                } else if client_x >= 346 && client_x <= 372 {
+                } else if client_x >= 364 && client_x <= 394 {
                     // Close / Dismiss / End Session
                     if is_pending {
                         crate::p2p::respond_to_pending_approval(false);
@@ -382,28 +401,19 @@ unsafe extern "system" fn host_widget_wndproc(
                     close_host_widget();
                     return LRESULT(0);
                 }
-                // Header drag
-                let _ = ReleaseCapture();
-                let _ = SendMessageW(
-                    hwnd,
-                    WM_NCLBUTTONDOWN,
-                    Some(WPARAM(HTCAPTION as usize)),
-                    Some(LPARAM(0)),
-                );
-                return LRESULT(0);
             }
 
-            // 2. Permission Toggles (y: 134..172)
-            if client_y >= 134 && client_y <= 172 {
-                // Mouse & Keyboard (Remote Input Sovereignty): x: 102..186
-                if client_x >= 102 && client_x <= 186 {
+            // 2. Interactive Permission Toggles (y: 168..212)
+            if client_y >= 168 && client_y <= 212 {
+                // Mouse & Keyboard (Remote Input Sovereignty): x: 108..198
+                if client_x >= 108 && client_x <= 198 {
                     let allowed = crate::p2p::toggle_host_remote_input();
                     tracing::info!("Host remote input sovereignty toggled: allowed={}", allowed);
                     let _ = InvalidateRect(Some(hwnd), None, false);
                     return LRESULT(0);
                 }
-                // Mic toggle: x: 190..270
-                if client_x >= 190 && client_x <= 270 {
+                // Mic toggle: x: 204..288
+                if client_x >= 204 && client_x <= 288 {
                     let is_on = crate::windows::audio::toggle_host_mic();
                     tracing::info!("Host microphone toggled: {}", is_on);
                     let _ = InvalidateRect(Some(hwnd), None, false);
@@ -411,24 +421,28 @@ unsafe extern "system" fn host_widget_wndproc(
                 }
             }
 
-            // 3. Primary Action Buttons (y: 178..224)
-            if client_y >= 178 && client_y <= 224 {
+            // 3. Primary Action Buttons (y: 226..270)
+            if client_y >= 226 && client_y <= 270 {
                 if is_pending {
-                    // [ Accept ] Button (x: 14..186)
-                    if client_x >= 14 && client_x <= 186 {
+                    // [ Accept ] Button (x: 14..194)
+                    if client_x >= 14 && client_x <= 194 {
                         crate::p2p::respond_to_pending_approval(true);
                         let _ = InvalidateRect(Some(hwnd), None, false);
+                        let edit_raw = HWND_CHAT_EDIT.load(Ordering::Relaxed);
+                        if edit_raw != 0 {
+                            let _ = SetFocus(Some(HWND(edit_raw as *mut _)));
+                        }
                         return LRESULT(0);
                     }
-                    // [ Dismiss ] Button (x: 194..366)
-                    if client_x >= 194 && client_x <= 366 {
+                    // [ Dismiss ] Button (x: 206..386)
+                    if client_x >= 206 && client_x <= 386 {
                         crate::p2p::respond_to_pending_approval(false);
                         close_host_widget();
                         return LRESULT(0);
                     }
                 } else {
-                    // [ Disconnect Session ] Button (x: 14..366)
-                    if client_x >= 14 && client_x <= 366 {
+                    // [ Disconnect Session ] Button (x: 14..386)
+                    if client_x >= 14 && client_x <= 386 {
                         crate::p2p::disconnect_host_session();
                         close_host_widget();
                         return LRESULT(0);
@@ -436,8 +450,8 @@ unsafe extern "system" fn host_widget_wndproc(
                 }
             }
 
-            // 4. Send Message Button (x: 304..366, y: 476..508)
-            if client_x >= 304 && client_x <= 366 && client_y >= 476 && client_y <= 508 {
+            // 4. Send Message Button (x: 322..386, y: 508..540)
+            if client_x >= 322 && client_x <= 386 && client_y >= 508 && client_y <= 540 {
                 send_host_chat_input();
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return LRESULT(0);
@@ -450,37 +464,37 @@ unsafe extern "system" fn host_widget_wndproc(
             let client_y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
             let is_pending = is_approval_active();
 
-            let hover = if client_y <= 34 {
-                if client_x >= 318 && client_x <= 342 {
+            let hover = if client_y <= 38 {
+                if client_x >= 334 && client_x <= 362 {
                     10 // Minimize
-                } else if client_x >= 346 && client_x <= 372 {
+                } else if client_x >= 364 && client_x <= 394 {
                     11 // Header Close
                 } else {
                     0
                 }
-            } else if client_y >= 134 && client_y <= 172 {
-                if client_x >= 102 && client_x <= 186 {
+            } else if client_y >= 168 && client_y <= 212 {
+                if client_x >= 108 && client_x <= 198 {
                     5 // Input Sovereignty toggle
-                } else if client_x >= 190 && client_x <= 270 {
+                } else if client_x >= 204 && client_x <= 288 {
                     1 // Mic toggle
                 } else {
                     0
                 }
-            } else if client_y >= 178 && client_y <= 224 {
+            } else if client_y >= 226 && client_y <= 270 {
                 if is_pending {
-                    if client_x >= 14 && client_x <= 186 {
+                    if client_x >= 14 && client_x <= 194 {
                         20 // Accept
-                    } else if client_x >= 194 && client_x <= 366 {
+                    } else if client_x >= 206 && client_x <= 386 {
                         21 // Dismiss
                     } else {
                         0
                     }
-                } else if client_x >= 14 && client_x <= 366 {
+                } else if client_x >= 14 && client_x <= 386 {
                     3 // Disconnect Session
                 } else {
                     0
                 }
-            } else if client_x >= 304 && client_x <= 366 && client_y >= 476 && client_y <= 508 {
+            } else if client_x >= 322 && client_x <= 386 && client_y >= 508 && client_y <= 540 {
                 4 // Send Button
             } else {
                 0
@@ -521,7 +535,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let pine_header_bg = COLORREF(0x001B4332); // Signature Dark Pine Header
             let pine_mint_fg = COLORREF(0x00B7E4C7);   // Soft emerald mint text
 
-            // Background & Border
+            // Main Card Background & Rounded Border
             let bg_brush = CreateSolidBrush(PK_CARD);
             FillRect(hdc_mem, &rc, bg_brush);
             let _ = DeleteObject(HGDIOBJ(bg_brush.0));
@@ -534,53 +548,59 @@ unsafe extern "system" fn host_widget_wndproc(
             let _ = SelectObject(hdc_mem, old_pen);
             let _ = DeleteObject(HGDIOBJ(border_pen.0));
 
-            // 1. Header Bar (0..34)
-            let header_rc = RECT { left: 0, top: 0, right: w, bottom: 34 };
+            // 1. Header Bar (0..38)
+            let header_rc = RECT { left: 0, top: 0, right: w, bottom: 38 };
             let h_brush = CreateSolidBrush(pine_header_bg);
             FillRect(hdc_mem, &header_rc, h_brush);
             let _ = DeleteObject(HGDIOBJ(h_brush.0));
 
             SetBkMode(hdc_mem, TRANSPARENT);
-            let font_title = create_segoe_font(11, FW_BOLD);
+            let font_title = create_segoe_font(12, FW_BOLD);
             let old_font = SelectObject(hdc_mem, HGDIOBJ(font_title.0));
             SetTextColor(hdc_mem, COLORREF(0x00FFFFFF));
 
             let mut title_txt: Vec<u16> = "DESKY".encode_utf16().collect();
-            let mut title_rc = RECT { left: 14, top: 0, right: 62, bottom: 34 };
+            let mut title_rc = RECT { left: 16, top: 0, right: 68, bottom: 38 };
             DrawTextW(hdc_mem, &mut title_txt, &mut title_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
             let font_sub = create_segoe_font(11, FW_NORMAL);
             let _ = SelectObject(hdc_mem, HGDIOBJ(font_sub.0));
             SetTextColor(hdc_mem, pine_mint_fg);
-            let sub_title = if is_pending { " | Connection Request" } else { " | Active Session" };
+            let sub_title = if is_pending { " | Connection Request" } else { " | Remote Session" };
             let mut sub_txt: Vec<u16> = sub_title.encode_utf16().collect();
-            let mut sub_rc = RECT { left: 62, top: 0, right: 310, bottom: 34 };
+            let mut sub_rc = RECT { left: 68, top: 0, right: 320, bottom: 38 };
             DrawTextW(hdc_mem, &mut sub_txt, &mut sub_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
             // Minimize Button (—)
             let m_bg = if hover == 10 { COLORREF(0x00325C47) } else { pine_header_bg };
-            draw_rounded_box(hdc_mem, 318, 6, 24, 22, m_bg, COLORREF(0x004F6A2D), 4);
+            draw_rounded_box(hdc_mem, 334, 7, 26, 24, m_bg, COLORREF(0x004F6A2D), 4);
             let m_pen = CreatePen(PS_SOLID, 2, COLORREF(0x00FFFFFF));
             let old_mp = SelectObject(hdc_mem, HGDIOBJ(m_pen.0));
-            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc_mem, 323, 17, None);
-            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc_mem, 337, 17);
+            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc_mem, 340, 19, None);
+            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc_mem, 354, 19);
             let _ = SelectObject(hdc_mem, old_mp);
             let _ = DeleteObject(HGDIOBJ(m_pen.0));
 
             // Header Close Button (✕)
             let c_bg = if hover == 11 { PK_RED } else { pine_header_bg };
-            draw_rounded_box(hdc_mem, 346, 6, 24, 22, c_bg, if hover == 11 { PK_RED } else { COLORREF(0x004F6A2D) }, 4);
-            crate::ui::draw_x(hdc_mem, 352, 11, 12, COLORREF(0x00FFFFFF), 2);
+            draw_rounded_box(hdc_mem, 364, 7, 26, 24, c_bg, if hover == 11 { PK_RED } else { COLORREF(0x004F6A2D) }, 4);
+            crate::ui::draw_x(hdc_mem, 371, 13, 12, COLORREF(0x00FFFFFF), 2);
 
-            // Divider below header
+            // Divider line below header
             let div_pen = CreatePen(PS_SOLID, 1, PK_CARD_BORDER);
             let old_dp = SelectObject(hdc_mem, HGDIOBJ(div_pen.0));
-            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc_mem, 0, 34, None);
-            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc_mem, w, 34);
+            let _ = windows::Win32::Graphics::Gdi::MoveToEx(hdc_mem, 0, 38, None);
+            let _ = windows::Win32::Graphics::Gdi::LineTo(hdc_mem, w, 38);
             let _ = SelectObject(hdc_mem, old_dp);
             let _ = DeleteObject(HGDIOBJ(div_pen.0));
 
-            // 2. Identity & Avatar Area (36..130)
+            // 2. Identity Card Box (46..144)
+            let card_x = 14;
+            let card_y = 48;
+            let card_w = 372;
+            let card_h = 96;
+            draw_rounded_box(hdc_mem, card_x, card_y, card_w, card_h, PK_CARD, PK_CARD_BORDER, 8);
+
             let session_info = crate::p2p::get_active_host_session_info();
             let pending_info = crate::p2p::get_pending_approval();
 
@@ -593,53 +613,63 @@ unsafe extern "system" fn host_widget_wndproc(
             };
             let client_id = crate::p2p::state::format_id_display(&raw_id);
 
-            // Circular Avatar at (170..210, 42..82)
-            let dot_pen = CreatePen(PS_SOLID, 1, PK_GREEN);
-            let dot_brush = CreateSolidBrush(PK_GREEN_TINT);
-            let old_p = SelectObject(hdc_mem, HGDIOBJ(dot_pen.0));
-            let old_b = SelectObject(hdc_mem, HGDIOBJ(dot_brush.0));
-            let _ = windows::Win32::Graphics::Gdi::Ellipse(hdc_mem, 170, 42, 210, 82);
-            let _ = SelectObject(hdc_mem, old_p);
-            let _ = SelectObject(hdc_mem, old_b);
-            let _ = DeleteObject(HGDIOBJ(dot_pen.0));
-            let _ = DeleteObject(HGDIOBJ(dot_brush.0));
-            crate::ui::draw_monitor(hdc_mem, 179, 51, 22, PK_GREEN_DARK, 2);
+            // Circular Avatar at (28..78, 62..112)
+            let av_pen = CreatePen(PS_SOLID, 1, PK_GREEN);
+            let av_brush = CreateSolidBrush(PK_GREEN_TINT);
+            let old_ap = SelectObject(hdc_mem, HGDIOBJ(av_pen.0));
+            let old_ab = SelectObject(hdc_mem, HGDIOBJ(av_brush.0));
+            let _ = windows::Win32::Graphics::Gdi::Ellipse(hdc_mem, 28, 64, 80, 116);
+            let _ = SelectObject(hdc_mem, old_ap);
+            let _ = SelectObject(hdc_mem, old_ab);
+            let _ = DeleteObject(HGDIOBJ(av_pen.0));
+            let _ = DeleteObject(HGDIOBJ(av_brush.0));
+            crate::ui::draw_monitor(hdc_mem, 42, 78, 24, PK_GREEN_DARK, 2);
 
-            // Remote ID in bold
-            let font_id = create_segoe_font(16, FW_BOLD);
+            // Remote ID Text in large bold 17pt font
+            let font_id = create_segoe_font(17, FW_BOLD);
             let _ = SelectObject(hdc_mem, HGDIOBJ(font_id.0));
             SetTextColor(hdc_mem, PK_TEXT);
             let mut id_txt: Vec<u16> = client_id.encode_utf16().collect();
-            let mut id_rc = RECT { left: 14, top: 88, right: w - 14, bottom: 110 };
-            DrawTextW(hdc_mem, &mut id_txt, &mut id_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+            let mut id_rc = RECT { left: 94, top: 64, right: card_x + card_w - 14, bottom: 90 };
+            DrawTextW(hdc_mem, &mut id_txt, &mut id_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
 
-            // Status prompt line
+            // Status Badge / Prompt Subtitle
             let font_status = create_segoe_font(10, FW_SEMIBOLD);
             let _ = SelectObject(hdc_mem, HGDIOBJ(font_status.0));
             if is_pending {
                 SetTextColor(hdc_mem, PK_MUTED);
                 let mut p_txt: Vec<u16> = "would like to view and control your desktop".encode_utf16().collect();
-                let mut p_rc = RECT { left: 14, top: 110, right: w - 14, bottom: 130 };
-                DrawTextW(hdc_mem, &mut p_txt, &mut p_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+                let mut p_rc = RECT { left: 94, top: 92, right: card_x + card_w - 14, bottom: 114 };
+                DrawTextW(hdc_mem, &mut p_txt, &mut p_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             } else {
-                let status_msg = format!("● Session Active • ⏱ {}", format_duration(elapsed_secs));
+                let status_pill_w = 176;
+                draw_rounded_box(hdc_mem, 94, 92, status_pill_w, 24, PK_GREEN_TINT, PK_GREEN, 5);
+                let status_msg = format!("● Active • ⏱ {}", format_duration(elapsed_secs));
                 SetTextColor(hdc_mem, PK_GREEN_DARK);
                 let mut p_txt: Vec<u16> = status_msg.encode_utf16().collect();
-                let mut p_rc = RECT { left: 14, top: 110, right: w - 14, bottom: 130 };
+                let mut p_rc = RECT { left: 94, top: 92, right: 94 + status_pill_w, bottom: 116 };
                 DrawTextW(hdc_mem, &mut p_txt, &mut p_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
             }
 
-            // 3. Permissions Strip (134..172)
-            draw_rounded_box(hdc_mem, 14, 134, 352, 38, PK_INPUT_BG, PK_CARD_BORDER, 6);
+            // 3. Permissions Section (150..214)
+            let font_sec = create_segoe_font(8, FW_BOLD);
+            let _ = SelectObject(hdc_mem, HGDIOBJ(font_sec.0));
+            SetTextColor(hdc_mem, PK_MUTED);
+            let mut perm_lbl: Vec<u16> = "PERMISSIONS & ACCESS".encode_utf16().collect();
+            let mut perm_rc = RECT { left: 16, top: 150, right: w - 16, bottom: 166 };
+            DrawTextW(hdc_mem, &mut perm_lbl, &mut perm_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+
+            // Permissions Container
+            draw_rounded_box(hdc_mem, 14, 168, 372, 44, PK_INPUT_BG, PK_CARD_BORDER, 6);
             let pill_font = create_segoe_font(10, FW_SEMIBOLD);
             let _ = SelectObject(hdc_mem, HGDIOBJ(pill_font.0));
 
             // 3.1 Screen (Always Active)
-            draw_rounded_box(hdc_mem, 18, 139, 80, 28, PK_GREEN_TINT, PK_GREEN, 5);
-            crate::ui::draw_monitor(hdc_mem, 23, 146, 14, PK_GREEN_DARK, 2);
+            draw_rounded_box(hdc_mem, 18, 173, 84, 34, PK_GREEN_TINT, PK_GREEN, 5);
+            crate::ui::draw_monitor(hdc_mem, 24, 182, 16, PK_GREEN_DARK, 2);
             SetTextColor(hdc_mem, PK_GREEN_DARK);
             let mut p1: Vec<u16> = "Screen".encode_utf16().collect();
-            let mut p1_rc = RECT { left: 39, top: 139, right: 96, bottom: 167 };
+            let mut p1_rc = RECT { left: 42, top: 173, right: 100, bottom: 207 };
             DrawTextW(hdc_mem, &mut p1, &mut p1_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
             // 3.2 Mouse & Keyboard Control (Input Sovereignty Toggle)
@@ -649,15 +679,15 @@ unsafe extern "system" fn host_widget_wndproc(
             } else {
                 (COLORREF(0x00E0E0FF), PK_RED, PK_RED, "View-Only")
             };
-            draw_rounded_box(hdc_mem, 102, 139, 84, 28, in_bg, in_border, 5);
+            draw_rounded_box(hdc_mem, 108, 173, 90, 34, in_bg, in_border, 5);
             if is_input_allowed {
-                crate::ui::draw_check(hdc_mem, 106, 146, 14, in_fg, 2);
+                crate::ui::draw_check(hdc_mem, 114, 182, 16, in_fg, 2);
             } else {
-                crate::ui::draw_lock(hdc_mem, 106, 146, 14, in_fg, 2);
+                crate::ui::draw_lock(hdc_mem, 114, 182, 16, in_fg, 2);
             }
             SetTextColor(hdc_mem, in_fg);
             let mut p2: Vec<u16> = in_label.encode_utf16().collect();
-            let mut p2_rc = RECT { left: 122, top: 139, right: 184, bottom: 167 };
+            let mut p2_rc = RECT { left: 132, top: 173, right: 196, bottom: 207 };
             DrawTextW(hdc_mem, &mut p2, &mut p2_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
             // 3.3 Mic (Toggleable)
@@ -669,82 +699,80 @@ unsafe extern "system" fn host_widget_wndproc(
             } else {
                 (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED, "Mic: OFF")
             };
-            draw_rounded_box(hdc_mem, 190, 139, 80, 28, m_bg, m_border, 5);
+            draw_rounded_box(hdc_mem, 204, 173, 84, 34, m_bg, m_border, 5);
             if is_mic {
-                crate::ui::draw_mic(hdc_mem, 194, 146, 14, m_fg, 2);
+                crate::ui::draw_mic(hdc_mem, 210, 182, 16, m_fg, 2);
             } else {
-                crate::ui::draw_mic_off(hdc_mem, 194, 146, 14, m_fg, 2);
+                crate::ui::draw_mic_off(hdc_mem, 210, 182, 16, m_fg, 2);
             }
             SetTextColor(hdc_mem, m_fg);
             let mut p3: Vec<u16> = m_label.encode_utf16().collect();
-            let mut p3_rc = RECT { left: 210, top: 139, right: 268, bottom: 167 };
+            let mut p3_rc = RECT { left: 228, top: 173, right: 286, bottom: 207 };
             DrawTextW(hdc_mem, &mut p3, &mut p3_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
             // 3.4 Clipboard (Always active)
-            draw_rounded_box(hdc_mem, 274, 139, 88, 28, PK_GREEN_TINT, PK_GREEN, 5);
-            crate::ui::draw_copy(hdc_mem, 278, 146, 14, PK_GREEN_DARK, 2);
+            draw_rounded_box(hdc_mem, 294, 173, 86, 34, PK_GREEN_TINT, PK_GREEN, 5);
+            crate::ui::draw_copy(hdc_mem, 298, 182, 16, PK_GREEN_DARK, 2);
             SetTextColor(hdc_mem, PK_GREEN_DARK);
             let mut p4: Vec<u16> = "Clipboard".encode_utf16().collect();
-            let mut p4_rc = RECT { left: 294, top: 139, right: 360, bottom: 167 };
+            let mut p4_rc = RECT { left: 316, top: 173, right: 378, bottom: 207 };
             DrawTextW(hdc_mem, &mut p4, &mut p4_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-            // 4. Primary Action Area (178..224)
-            let font_action = create_segoe_font(12, FW_BOLD);
+            // 4. Primary Action Area (226..272)
+            let font_action = create_segoe_font(13, FW_BOLD);
             let _ = SelectObject(hdc_mem, HGDIOBJ(font_action.0));
             SetTextColor(hdc_mem, COLORREF(0x00FFFFFF));
 
             if is_pending {
-                // Two Large Action Buttons: [ Accept ] & [ Dismiss ]
+                // Two Large Primary Action Buttons: [ Accept ] & [ Dismiss ]
                 let acc_x = 14;
-                let btn_w = 172;
+                let btn_w = 180;
                 let btn_h = 44;
-                let btn_y = 178;
-                let dis_x = 194;
+                let btn_y = 226;
+                let dis_x = 206;
 
                 // [ Accept ] Button
                 let acc_bg = if hover == 20 { PK_GREEN_DARK } else { PK_GREEN };
                 draw_rounded_box(hdc_mem, acc_x, btn_y, btn_w, btn_h, acc_bg, acc_bg, 8);
-                crate::ui::draw_check(hdc_mem, acc_x + 42, btn_y + 14, 16, COLORREF(0x00FFFFFF), 2);
+                crate::ui::draw_check(hdc_mem, acc_x + 46, btn_y + 14, 18, COLORREF(0x00FFFFFF), 2);
                 let mut acc_txt: Vec<u16> = "Accept".encode_utf16().collect();
-                let mut acc_rc = RECT { left: acc_x + 62, top: btn_y, right: acc_x + btn_w, bottom: btn_y + btn_h };
+                let mut acc_rc = RECT { left: acc_x + 68, top: btn_y, right: acc_x + btn_w, bottom: btn_y + btn_h };
                 DrawTextW(hdc_mem, &mut acc_txt, &mut acc_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
                 // [ Dismiss ] Button
                 let dis_bg = if hover == 21 { COLORREF(0x00B83A3A) } else { PK_RED };
                 draw_rounded_box(hdc_mem, dis_x, btn_y, btn_w, btn_h, dis_bg, dis_bg, 8);
-                crate::ui::draw_x(hdc_mem, dis_x + 42, btn_y + 14, 16, COLORREF(0x00FFFFFF), 2);
+                crate::ui::draw_x(hdc_mem, dis_x + 46, btn_y + 14, 18, COLORREF(0x00FFFFFF), 2);
                 let mut dis_txt: Vec<u16> = "Dismiss".encode_utf16().collect();
-                let mut dis_rc = RECT { left: dis_x + 62, top: btn_y, right: dis_x + btn_w, bottom: btn_y + btn_h };
+                let mut dis_rc = RECT { left: dis_x + 68, top: btn_y, right: dis_x + btn_w, bottom: btn_y + btn_h };
                 DrawTextW(hdc_mem, &mut dis_txt, &mut dis_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
             } else {
                 // Single Full-Width [ Disconnect Session ] Button
                 let disc_x = 14;
-                let disc_y = 178;
-                let disc_w = 352;
-                let disc_h = 42;
+                let disc_y = 226;
+                let disc_w = 372;
+                let disc_h = 44;
                 let disc_bg = if hover == 3 { COLORREF(0x00B83A3A) } else { PK_RED };
 
                 draw_rounded_box(hdc_mem, disc_x, disc_y, disc_w, disc_h, disc_bg, disc_bg, 8);
-                crate::ui::draw_x(hdc_mem, disc_x + 94, disc_y + 13, 16, COLORREF(0x00FFFFFF), 2);
+                crate::ui::draw_x(hdc_mem, disc_x + 102, disc_y + 13, 18, COLORREF(0x00FFFFFF), 2);
                 let mut disc_txt: Vec<u16> = "Disconnect Session".encode_utf16().collect();
-                let mut disc_rc = RECT { left: disc_x + 116, top: disc_y, right: disc_x + disc_w - 60, bottom: disc_y + disc_h };
+                let mut disc_rc = RECT { left: disc_x + 128, top: disc_y, right: disc_x + disc_w - 60, bottom: disc_y + disc_h };
                 DrawTextW(hdc_mem, &mut disc_txt, &mut disc_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
             }
 
-            // 5. In-Session Chat Area (230..516)
-            let font_chat_label = create_segoe_font(9, FW_BOLD);
-            let _ = SelectObject(hdc_mem, HGDIOBJ(font_chat_label.0));
+            // 5. In-Session Chat Area (280..544)
+            let _ = SelectObject(hdc_mem, HGDIOBJ(font_sec.0));
             SetTextColor(hdc_mem, PK_MUTED);
             let mut cl_txt: Vec<u16> = "IN-SESSION CHAT".encode_utf16().collect();
-            let mut cl_rc = RECT { left: 16, top: 230, right: w - 16, bottom: 244 };
+            let mut cl_rc = RECT { left: 16, top: 280, right: w - 16, bottom: 296 };
             DrawTextW(hdc_mem, &mut cl_txt, &mut cl_rc, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-            let _ = DeleteObject(HGDIOBJ(font_chat_label.0));
 
             // Chat Message Box Background
             let chat_box_x = 14;
-            let chat_box_y = 246;
-            let chat_box_w = 352;
-            let chat_box_h = 222;
+            let chat_box_y = 298;
+            let chat_box_w = 372;
+            let chat_box_h = 200;
             draw_rounded_box(hdc_mem, chat_box_x, chat_box_y, chat_box_w, chat_box_h, PK_INPUT_BG, PK_CARD_BORDER, 6);
 
             let msgs = crate::p2p::get_chat_messages();
@@ -756,7 +784,7 @@ unsafe extern "system" fn host_widget_wndproc(
 
             if msgs.is_empty() {
                 let mut wide_empty: Vec<u16> = "No messages yet. Send a message to the technician below.".encode_utf16().collect();
-                let mut empty_rc = RECT { left: chat_box_x + 12, top: chat_box_y + 85, right: chat_box_x + chat_box_w - 12, bottom: chat_box_y + 115 };
+                let mut empty_rc = RECT { left: chat_box_x + 12, top: chat_box_y + 75, right: chat_box_x + chat_box_w - 12, bottom: chat_box_y + 105 };
                 let _ = SelectObject(hdc_mem, HGDIOBJ(font_msg.0));
                 SetTextColor(hdc_mem, PK_MUTED);
                 DrawTextW(hdc_mem, &mut wide_empty, &mut empty_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
@@ -764,7 +792,7 @@ unsafe extern "system" fn host_widget_wndproc(
                 for m in &msgs[start_idx..] {
                     if m.is_me {
                         // Host speech bubble (aligned right)
-                        let bubble_w = 214;
+                        let bubble_w = 224;
                         let bubble_x = chat_box_x + chat_box_w - bubble_w - 8;
                         draw_rounded_box(hdc_mem, bubble_x, line_y, bubble_w, 34, PK_GREEN_TINT, PK_GREEN, 6);
 
@@ -782,7 +810,7 @@ unsafe extern "system" fn host_widget_wndproc(
                         DrawTextW(hdc_mem, &mut wide_txt, &mut txt_rc, DT_LEFT | DT_SINGLELINE | windows::Win32::Graphics::Gdi::DT_END_ELLIPSIS);
                     } else {
                         // Technician speech bubble (aligned left)
-                        let bubble_w = 214;
+                        let bubble_w = 224;
                         let bubble_x = chat_box_x + 8;
                         draw_rounded_box(hdc_mem, bubble_x, line_y, bubble_w, 34, PK_CARD, PK_CARD_BORDER, 6);
 
@@ -799,16 +827,16 @@ unsafe extern "system" fn host_widget_wndproc(
                         let mut txt_rc = RECT { left: bubble_x + 8, top: line_y + 17, right: bubble_x + bubble_w - 8, bottom: line_y + 31 };
                         DrawTextW(hdc_mem, &mut wide_txt, &mut txt_rc, DT_LEFT | DT_SINGLELINE | windows::Win32::Graphics::Gdi::DT_END_ELLIPSIS);
                     }
-                    line_y += 40;
+                    line_y += 38;
                 }
             }
             let _ = DeleteObject(HGDIOBJ(font_msg.0));
             let _ = DeleteObject(HGDIOBJ(font_msg_bold.0));
 
-            // Send Button (x: 304, y: 476, w: 62, h: 32)
-            let send_btn_x = 304;
-            let send_btn_y = 476;
-            let send_btn_w = 62;
+            // Send Button (x: 322, y: 508, w: 64, h: 32)
+            let send_btn_x = 322;
+            let send_btn_y = 508;
+            let send_btn_w = 64;
             let send_btn_h = 32;
             let (s_bg, s_border, s_fg) = if hover == 4 {
                 (PK_GREEN_DARK, PK_GREEN_DARK, COLORREF(0x00FFFFFF))
@@ -829,6 +857,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let _ = DeleteObject(HGDIOBJ(font_sub.0));
             let _ = DeleteObject(HGDIOBJ(font_id.0));
             let _ = DeleteObject(HGDIOBJ(font_status.0));
+            let _ = DeleteObject(HGDIOBJ(font_sec.0));
             let _ = DeleteObject(HGDIOBJ(pill_font.0));
             let _ = DeleteObject(HGDIOBJ(font_action.0));
 
