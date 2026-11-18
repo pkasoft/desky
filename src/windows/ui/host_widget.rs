@@ -671,7 +671,66 @@ unsafe extern "system" fn host_widget_wndproc(
             draw_perm_btn(hdc_mem, b3_x, file_allowed, hover == 23);
             crate::ui::draw_folder(hdc_mem, b3_x + 15, btn_y + 10, 20, if file_allowed { PK_GREEN } else { PK_MUTED }, 2);
 
-            // 1.6 Bottom Action Area (Sharp 6px corners)
+            // 1.6 Interactive Tooltip / Option Description Badge
+            let tip_x = 16;
+            let tip_y = 198;
+            let tip_w = 224;
+            let tip_h = 44;
+
+            let (tip_title, tip_status, tip_active) = match hover {
+                20 => (
+                    "Mouse & Keyboard",
+                    if input_allowed { "Remote control allowed" } else { "Remote control blocked" },
+                    input_allowed,
+                ),
+                21 => (
+                    "Voice Intercom",
+                    if mic_allowed { "Host microphone active" } else { "Microphone muted" },
+                    mic_allowed,
+                ),
+                22 => (
+                    "Clipboard Sync",
+                    if clip_allowed { "Bidirectional sync enabled" } else { "Clipboard sync disabled" },
+                    clip_allowed,
+                ),
+                23 => (
+                    "File Transfer",
+                    if file_allowed { "Remote transfer allowed" } else { "File transfer blocked" },
+                    file_allowed,
+                ),
+                _ => (
+                    "Host Permissions",
+                    "Click icons to toggle access",
+                    true,
+                ),
+            };
+
+            let tip_bg = if hover >= 20 && hover <= 23 {
+                if tip_active { PK_GREEN_TINT } else { PK_CARD }
+            } else {
+                PK_INPUT_BG
+            };
+            let tip_border = if hover >= 20 && hover <= 23 {
+                if tip_active { PK_GREEN } else { PK_CARD_BORDER }
+            } else {
+                PK_CARD_BORDER
+            };
+
+            draw_rounded_box(hdc_mem, tip_x, tip_y, tip_w, tip_h, tip_bg, tip_border, 6);
+
+            let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_evt_hdr.0));
+            SetTextColor(hdc_mem, if hover >= 20 && hover <= 23 && tip_active { PK_GREEN_DARK } else { PK_TEXT });
+            let mut tt_title_txt: Vec<u16> = tip_title.encode_utf16().collect();
+            let mut tt_title_rc = RECT { left: tip_x + 10, top: tip_y + 5, right: tip_x + tip_w - 10, bottom: tip_y + 22 };
+            DrawTextW(hdc_mem, &mut tt_title_txt, &mut tt_title_rc, DT_LEFT | DT_SINGLELINE);
+
+            let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_desc.0));
+            SetTextColor(hdc_mem, PK_MUTED);
+            let mut tt_stat_txt: Vec<u16> = tip_status.encode_utf16().collect();
+            let mut tt_stat_rc = RECT { left: tip_x + 10, top: tip_y + 23, right: tip_x + tip_w - 10, bottom: tip_y + 40 };
+            DrawTextW(hdc_mem, &mut tt_stat_txt, &mut tt_stat_rc, DT_LEFT | DT_SINGLELINE);
+
+            // 1.7 Bottom Action Area (Sharp 6px corners)
             let act_y = h - 50;
             let act_h = 38;
             let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_action.0));
