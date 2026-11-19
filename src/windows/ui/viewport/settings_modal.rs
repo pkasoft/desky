@@ -133,7 +133,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     // ==========================================
     // 2. LEFT SIDEBAR NAVIGATION
     // ==========================================
-    draw_rounded_box(hdc, sidebar_x, sidebar_y, sidebar_w, sidebar_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, sidebar_x, sidebar_y, sidebar_w, sidebar_h, PK_CARD, PK_CARD_BORDER, 8);
 
     // Sidebar Section Header: "DESKY SETTINGS"
     let _ = SelectObject(hdc, HGDIOBJ(font_badge.0));
@@ -170,7 +170,7 @@ pub unsafe fn draw_fullscreen_settings_view(
             (PK_CARD, PK_CARD, PK_MUTED)
         };
 
-        draw_rounded_box(hdc, ix, iy, iw, item_h, bg, border, 8);
+        draw_rounded_box(hdc, ix, iy, iw, item_h, bg, border, 6);
 
         // Active left accent indicator bar
         if is_active {
@@ -277,9 +277,9 @@ pub unsafe fn draw_fullscreen_settings_view(
     let close_y = header_y;
     let is_close_hover = hover_id == 9099;
     let (c_bg, c_border, c_fg) = if is_close_hover {
-        (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        (PK_BTN_HOVER, PK_GREEN, PK_GREEN_DARK)
     } else {
-        (PK_CARD, PK_CARD_BORDER, PK_MUTED)
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
     draw_rounded_box(hdc, close_x, close_y, close_w, close_h, c_bg, c_border, 6);
     let _ = SelectObject(hdc, HGDIOBJ(font_btn.0));
@@ -399,7 +399,7 @@ unsafe fn draw_category_general(
 
     // 1. Hero Card: Windows Integration & Desktop Shortcut
     let hero_h = 148;
-    draw_rounded_box(hdc, cx, cy, cw, hero_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, cy, cw, hero_h, PK_CARD, PK_CARD_BORDER, 8);
 
     // Title & Status Badge
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
@@ -528,7 +528,7 @@ unsafe fn draw_category_general(
     // 2. Card: Client Identity & Relay Matchmaker
     let card2_y = cy + hero_h + 16;
     let card2_h = 148;
-    draw_rounded_box(hdc, cx, card2_y, cw, card2_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, card2_y, cw, card2_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -822,7 +822,7 @@ unsafe fn draw_category_codecs(
     // 2. Hardware Engine Diagnostics Card
     let c1_y = c0_y + card_h + gap;
     let c1_h = 168;
-    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -1008,7 +1008,7 @@ unsafe fn draw_category_security(
 
     // 1. Unattended Access Password
     let c0_y = cy;
-    draw_rounded_box(hdc, cx, c0_y, cw, card_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, c0_y, cw, card_h, PK_CARD, PK_CARD_BORDER, 8);
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
     let mut h_txt: Vec<u16> = "Unattended Access (Preset Password)".encode_utf16().collect();
@@ -1074,7 +1074,7 @@ unsafe fn draw_category_security(
     // 2. Encryption Card
     let c1_y = c0_y + card_h + gap;
     let c1_h = 96;
-    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, c1_y, cw, c1_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -1183,7 +1183,7 @@ unsafe fn draw_category_recording(
     // 3. Save Directory Card
     let c2_y = c1_y + card_h + gap;
     let c2_h = 92;
-    draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -1265,7 +1265,7 @@ unsafe fn draw_category_about(
 ) {
     let c0_y = cy;
     let c0_h = 176;
-    draw_rounded_box(hdc, cx, c0_y, cw, c0_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, c0_y, cw, c0_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -1393,7 +1393,7 @@ unsafe fn draw_category_about(
     // 3. About pkasoft Desky Card
     let c2_y = c1_y + c1_h + 14;
     let c2_h = 138;
-    draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -1468,7 +1468,7 @@ unsafe fn draw_card_frame(
     f_title: windows::Win32::Graphics::Gdi::HFONT,
     f_sub: windows::Win32::Graphics::Gdi::HFONT,
 ) {
-    draw_rounded_box(hdc, x, y, w, h, PK_CARD, PK_CARD_BORDER, 10);
+    draw_rounded_box(hdc, x, y, w, h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
@@ -1527,7 +1527,7 @@ unsafe fn draw_segment_pills(
         let is_hover = current_hover_id == hover_base_id + (i as i32);
 
         let (bg, border, fg) = if is_selected {
-            (PK_GREEN, PK_GREEN, COLORREF(0x00FFFFFF))
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
         } else if is_hover {
             (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {

@@ -184,12 +184,12 @@ pub fn draw_fullscreen_settings_view(
     let close_x = content_x + content_w - close_w;
     let close_y = header_y;
     let is_close_hover = hover_id == 9099;
-    let (c_bg, c_fg) = if is_close_hover {
-        (PK_BTN_HOVER, PK_TEXT)
+    let (c_bg, c_bd, c_fg) = if is_close_hover {
+        (PK_BTN_HOVER, PK_GREEN, PK_GREEN_DARK)
     } else {
-        (PK_CARD, PK_MUTED)
+        (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
-    canvas.draw_rounded_box(close_x, close_y, close_w, close_h, c_bg, PK_CARD_BORDER, 6);
+    canvas.draw_rounded_box(close_x, close_y, close_w, close_h, c_bg, c_bd, 6);
     canvas.draw_text_centered(close_x, close_y, close_w, close_h, "× Close", 13.5, true, c_fg);
 
     let content_top = header_y + 56;
