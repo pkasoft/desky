@@ -64,8 +64,8 @@ pub fn save_recent_session(target_id: &str) {
     super::address_book::update_last_connected(&display);
     ident.recent_sessions.retain(|id| id != &display && id != &digits);
     ident.recent_sessions.insert(0, display);
-    if ident.recent_sessions.len() > 8 {
-        ident.recent_sessions.truncate(8);
+    if ident.recent_sessions.len() > 12 {
+        ident.recent_sessions.truncate(12);
     }
     if let Ok(bytes) = serde_json::to_string_pretty(&ident) {
         let _ = fs::write(&path, bytes);

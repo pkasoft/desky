@@ -798,7 +798,8 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             } else {
                 let item_h = (44.0 * l.font_scale) as i32;
                 let item_w = l.col_w - 36;
-                for (idx, peer) in lan_peers.iter().take(2).enumerate() {
+                let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
+                for (idx, peer) in lan_peers.iter().take(max_items).enumerate() {
                     let item_x = l.col1_x + 18;
                     let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
 
@@ -885,7 +886,8 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             } else {
                 let item_h = (44.0 * l.font_scale) as i32;
                 let item_w = l.col_w - 36;
-                for (idx, entry) in contacts.iter().take(2).enumerate() {
+                let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
+                for (idx, entry) in contacts.iter().take(max_items).enumerate() {
                     let item_x = l.col1_x + 18;
                     let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
 
@@ -978,7 +980,8 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             } else {
                 let item_h = (36.0 * l.font_scale) as i32;
                 let item_w = l.col_w - 36;
-                for (idx, session) in recent_sessions.iter().take(2).enumerate() {
+                let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
+                for (idx, session) in recent_sessions.iter().take(max_items).enumerate() {
                     let item_x = l.col1_x + 18;
                     let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
 
@@ -1208,7 +1211,8 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         let lan_peers = crate::p2p::get_lan_peers();
         let item_h = (44.0 * l.font_scale) as i32;
         let item_w = l.col_w - 36;
-        for (idx, peer) in lan_peers.iter().take(2).enumerate() {
+        let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
+        for (idx, peer) in lan_peers.iter().take(max_items).enumerate() {
             let item_x = l.col1_x + 18;
             let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
 
@@ -1239,7 +1243,8 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         let contacts = crate::identity::load_address_book();
         let item_h = (44.0 * l.font_scale) as i32;
         let item_w = l.col_w - 36;
-        for (idx, entry) in contacts.iter().take(2).enumerate() {
+        let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
+        for (idx, entry) in contacts.iter().take(max_items).enumerate() {
             let item_x = l.col1_x + 18;
             let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
 
@@ -1275,7 +1280,8 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         let recents = crate::identity::get_recent_sessions();
         let item_h = (36.0 * l.font_scale) as i32;
         let item_w = l.col_w - 36;
-        for (idx, session) in recents.iter().take(2).enumerate() {
+        let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
+        for (idx, session) in recents.iter().take(max_items).enumerate() {
             let item_x = l.col1_x + 18;
             let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
 

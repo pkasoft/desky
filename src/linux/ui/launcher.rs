@@ -678,7 +678,7 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
             );
         } else {
             let item_h = (48.0 * l.font_scale) as i32;
-            for (idx, peer) in lan_peers.iter().take(3).enumerate() {
+            for (idx, peer) in lan_peers.iter().take(12).enumerate() {
                 let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
                 if iy + item_h > l.col_y + l.col_h - 10 {
                     break;
@@ -758,7 +758,7 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
             );
         } else {
             let item_h = (48.0 * l.font_scale) as i32;
-            for (idx, entry) in contacts.iter().take(3).enumerate() {
+            for (idx, entry) in contacts.iter().take(12).enumerate() {
                 let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
                 if iy + item_h > l.col_y + l.col_h - 10 {
                     break;
@@ -833,7 +833,7 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
             );
         } else {
             let item_h = (38.0 * l.font_scale) as i32;
-            for (idx, session) in recent_sessions.iter().take(3).enumerate() {
+            for (idx, session) in recent_sessions.iter().take(12).enumerate() {
                 let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
                 if iy + item_h > l.col_y + l.col_h - 10 {
                     break;
@@ -1078,7 +1078,7 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     let item_w = l.col_w - 36;
     if c3_tab == 2 {
         let item_h = (48.0 * l.font_scale) as i32;
-        for (idx, peer) in lan_peers.iter().take(3).enumerate() {
+        for (idx, peer) in lan_peers.iter().take(12).enumerate() {
             let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
             if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
                 set_remote_id_raw(&peer.id);
@@ -1090,7 +1090,7 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
         }
     } else if c3_tab == 1 {
         let item_h = (48.0 * l.font_scale) as i32;
-        for (idx, entry) in contacts.iter().take(3).enumerate() {
+        for (idx, entry) in contacts.iter().take(12).enumerate() {
             let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
             if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
                 if x >= item_x + item_w - 28 {
@@ -1108,7 +1108,7 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     } else {
         let recents = crate::identity::get_recent_sessions();
         let item_h = (38.0 * l.font_scale) as i32;
-        for (idx, sess) in recents.iter().take(3).enumerate() {
+        for (idx, sess) in recents.iter().take(12).enumerate() {
             let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
             if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
                 set_remote_id_raw(sess);
