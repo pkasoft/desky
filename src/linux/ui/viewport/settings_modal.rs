@@ -447,6 +447,34 @@ pub fn draw_fullscreen_settings_view(
                 canvas.draw_rounded_box(bx, by, qw, 40, bg, bd, 6);
                 canvas.draw_text_centered(bx, by, qw, 40, label, 12.5, active, fg);
             }
+
+            // 4. Stream Buffer & Memory Cache
+            let row4_y = row3_y + 122;
+            canvas.draw_rounded_box(content_x, row4_y, content_w, 108, PK_CARD, PK_CARD_BORDER, 8);
+            canvas.draw_text(
+                content_x + 18,
+                row4_y + 14,
+                "Stream Buffer & Memory Cache",
+                15.0,
+                true,
+                PK_TEXT,
+                Some(content_w - 36),
+            );
+            let buf_tier = crate::p2p::get_client_buffer_tier();
+            let buf_opts = ["128 MB (Light)", "256 MB (Standard)", "512 MB (High)", "1024 MB (Max)"];
+            let bw = (content_w - 36 - 24) / 4;
+            for (idx, label) in buf_opts.iter().enumerate() {
+                let bx = content_x + 18 + (idx as i32) * (bw + 8);
+                let by = row4_y + 48;
+                let active = buf_tier == idx;
+                let (bg, bd, fg) = if active {
+                    (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+                } else {
+                    (PK_INPUT_BG, PK_CARD_BORDER, PK_TEXT)
+                };
+                canvas.draw_rounded_box(bx, by, bw, 40, bg, bd, 6);
+                canvas.draw_text_centered(bx, by, bw, 40, label, 12.5, active, fg);
+            }
         }
         2 => {
             // Hardware Codecs Category
@@ -662,6 +690,34 @@ pub fn draw_fullscreen_settings_view(
                 PK_TEXT,
                 Some(content_w - 36),
             );
+
+            // 2. Network Tunneling & Routing Mode Card
+            let r_y = body_y + 190;
+            canvas.draw_rounded_box(content_x, r_y, content_w, 108, PK_CARD, PK_CARD_BORDER, 8);
+            canvas.draw_text(
+                content_x + 18,
+                r_y + 14,
+                "Network Tunneling & Routing Mode",
+                15.0,
+                true,
+                PK_TEXT,
+                Some(content_w - 36),
+            );
+            let r_mode = crate::p2p::get_routing_mode();
+            let r_opts = ["Smart P2P (Auto)", "Direct Server Tunnel", "Serverless (LAN / IP)"];
+            let rw = (content_w - 36 - 16) / 3;
+            for (idx, label) in r_opts.iter().enumerate() {
+                let bx = content_x + 18 + (idx as i32) * (rw + 8);
+                let by = r_y + 48;
+                let active = (r_mode as usize) == idx;
+                let (bg, bd, fg) = if active {
+                    (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+                } else {
+                    (PK_INPUT_BG, PK_CARD_BORDER, PK_TEXT)
+                };
+                canvas.draw_rounded_box(bx, by, rw, 40, bg, bd, 6);
+                canvas.draw_text_centered(bx, by, rw, 40, label, 12.5, active, fg);
+            }
         }
     }
 
@@ -825,6 +881,21 @@ pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, client
                 }
             }
         }
+
+        // Stream Buffer & Memory Cache
+        let row4_y = row3_y + 122;
+        let by4 = row4_y + 48;
+        let bw = (content_w - 36 - 24) / 4;
+        if client_y >= by4 && client_y <= by4 + 40 {
+            for idx in 0..4 {
+                let bx = content_x + 18 + (idx as i32) * (bw + 8);
+                if client_x >= bx && client_x <= bx + bw {
+                    crate::p2p::set_client_buffer_tier(idx);
+                    request_main_redraw();
+                    return true;
+                }
+            }
+        }
     } else if active_cat == 2 {
         // Codec selection
         let cw = (content_w - 36 - 24) / 4;
@@ -834,6 +905,20 @@ pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, client
                 let bx = content_x + 18 + (idx as i32) * (cw + 8);
                 if client_x >= bx && client_x <= bx + cw {
                     crate::p2p::set_client_codec_pref(idx as u8);
+                    request_main_redraw();
+                    return true;
+                }
+            }
+        }
+    } else if active_cat == 6 {
+        let r_y = body_y + 190;
+        let by = r_y + 48;
+        let rw = (content_w - 36 - 16) / 3;
+        if client_y >= by && client_y <= by + 40 {
+            for idx in 0..3 {
+                let bx = content_x + 18 + (idx as i32) * (rw + 8);
+                if client_x >= bx && client_x <= bx + rw {
+                    crate::p2p::set_routing_mode(idx as u8);
                     request_main_redraw();
                     return true;
                 }

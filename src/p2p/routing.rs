@@ -8,13 +8,11 @@ use std::sync::atomic::{AtomicU8, Ordering};
 pub static ROUTING_MODE: AtomicU8 = AtomicU8::new(0);
 
 /// Get the active routing mode (0 = Smart P2P, 1 = Server Tunnel, 2 = Serverless)
-#[allow(dead_code)]
 pub fn get_routing_mode() -> u8 {
     ROUTING_MODE.load(Ordering::Relaxed)
 }
 
 /// Set the active routing mode (0..=2)
-#[allow(dead_code)]
 pub fn set_routing_mode(mode: u8) {
     ROUTING_MODE.store(mode.min(2), Ordering::Relaxed);
 }
