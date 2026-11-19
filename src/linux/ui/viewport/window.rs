@@ -377,6 +377,15 @@ fn dispatch_mouse_button(win_w: u16, win_h: u16, button: u8, mx: i16, my: i16, i
 
         let active_tab = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
         if active_tab == 0 {
+            let l = crate::linux::ui::launcher::get_responsive_layout(client_w, client_h);
+            if client_x >= l.col1_x
+                && client_x <= l.col1_x + l.col_w
+                && client_y >= l.col_y
+                && client_y <= l.col_y + l.col_h
+            {
+                crate::linux::ui::launcher::scroll_card3(wheel_delta);
+                NEEDS_REDRAW.store(true, Ordering::Relaxed);
+            }
             return;
         }
 

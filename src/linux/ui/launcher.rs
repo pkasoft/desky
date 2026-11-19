@@ -5,7 +5,7 @@
 //! using anti-aliased TrueType fonts (`PixelCanvas`).
 
 use anyhow::Result;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tracing::info;
@@ -31,6 +31,20 @@ pub static BRING_TO_FRONT: AtomicBool = AtomicBool::new(false);
 static POPUP_ACTIVE: AtomicBool = AtomicBool::new(false);
 static STATUS_LOGS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 pub static BOTTOM_CARD3_TAB: AtomicU8 = AtomicU8::new(0); // 0 = Recents, 1 = Contacts, 2 = LAN Radar
+pub static CARD3_SCROLL_Y: AtomicI32 = AtomicI32::new(0);
+pub static CARD3_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+
+pub fn scroll_card3(delta: i32) {
+    let step = 36;
+    let cur = CARD3_SCROLL_Y.load(Ordering::Relaxed);
+    let max_s = CARD3_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_scroll = if delta > 0 {
+        (cur - step).max(0)
+    } else {
+        (cur + step).min(max_s)
+    };
+    CARD3_SCROLL_Y.store(new_scroll, Ordering::Relaxed);
+}
 static LAN_SCAN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 fn status_logs() -> &'static Mutex<Vec<String>> {
@@ -647,8 +661,34 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
         canvas.draw_text_centered(add_x, t0_y, add_w, t0_h, "+ Add", f_badge, true, PK_GREEN_DARK);
     }
 
+    let list_top = l.col_y + 48;
+    let list_bot = l.col_y + l.col_h - 10;
+    let avail_h = (list_bot - list_top).max(40);
+    let recent_sessions_list = if c3_tab == 0 {
+        crate::identity::get_recent_sessions()
+    } else {
+        Vec::new()
+    };
+    let (list_count, list_item_h) = if c3_tab == 2 {
+        (lan_peers.len(), (48.0 * l.font_scale) as i32)
+    } else if c3_tab == 1 {
+        (contacts.len(), (48.0 * l.font_scale) as i32)
+    } else {
+        (recent_sessions_list.len(), (38.0 * l.font_scale) as i32)
+    };
+    let total_h = if list_count > 0 {
+        (list_count as i32 * (list_item_h + 8) - 8).max(0)
+    } else {
+        0
+    };
+    let card3_max_scroll = (total_h - avail_h).max(0);
+    CARD3_MAX_SCROLL.store(card3_max_scroll, Ordering::Relaxed);
+    let card3_scroll_y = CARD3_SCROLL_Y.load(Ordering::Relaxed).min(card3_max_scroll);
+    CARD3_SCROLL_Y.store(card3_scroll_y, Ordering::Relaxed);
+
     let item_x = l.col1_x + 18;
-    let item_w = l.col_w - 36;
+    let item_w = if card3_max_scroll > 0 { l.col_w - 44 } else { l.col_w - 36 };
+    canvas.set_clip_rect(Some((l.col1_x + 10, list_top, l.col1_x + l.col_w - 10, list_bot)));
 
     if c3_tab == 2 {
         if lan_peers.is_empty() {
@@ -678,11 +718,8 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
             );
         } else {
             let item_h = (48.0 * l.font_scale) as i32;
-            for (idx, peer) in lan_peers.iter().take(12).enumerate() {
-                let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
-                if iy + item_h > l.col_y + l.col_h - 10 {
-                    break;
-                }
+            for (idx, peer) in lan_peers.iter().enumerate() {
+                let iy = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
                 canvas.draw_rounded_box(item_x, iy, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
                 let pill_w = 74;
@@ -758,11 +795,8 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
             );
         } else {
             let item_h = (48.0 * l.font_scale) as i32;
-            for (idx, entry) in contacts.iter().take(12).enumerate() {
-                let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
-                if iy + item_h > l.col_y + l.col_h - 10 {
-                    break;
-                }
+            for (idx, entry) in contacts.iter().enumerate() {
+                let iy = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
                 canvas.draw_rounded_box(item_x, iy, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
                 let pill_w = 68;
@@ -833,11 +867,8 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
             );
         } else {
             let item_h = (38.0 * l.font_scale) as i32;
-            for (idx, session) in recent_sessions.iter().take(12).enumerate() {
-                let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
-                if iy + item_h > l.col_y + l.col_h - 10 {
-                    break;
-                }
+            for (idx, session) in recent_sessions.iter().enumerate() {
+                let iy = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
                 canvas.draw_rounded_box(item_x, iy, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
                 let pill_w = 74;
@@ -870,6 +901,20 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
                 );
             }
         }
+    }
+
+    canvas.set_clip_rect(None);
+
+    if card3_max_scroll > 0 {
+        let sb_w = 4;
+        let sb_x = l.col1_x + l.col_w - 14;
+        let sb_y = list_top;
+        let sb_h = avail_h;
+        canvas.draw_rounded_box(sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+        let thumb_h = ((avail_h as f32 / total_h as f32) * sb_h as f32).clamp(24.0, sb_h as f32) as i32;
+        let thumb_travel = sb_h - thumb_h;
+        let thumb_y = sb_y + ((card3_scroll_y as f32 / card3_max_scroll as f32) * thumb_travel as f32) as i32;
+        canvas.draw_rounded_box(sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
     }
 
     // 5. Card 4: SECURITY & SERVER LOGS (Bottom Right)
@@ -1042,14 +1087,17 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     if y >= t0_y && y <= t0_y + t0_h {
         if x >= t0_x && x <= t0_x + t0_w {
             BOTTOM_CARD3_TAB.store(0, Ordering::Relaxed);
+            CARD3_SCROLL_Y.store(0, Ordering::Relaxed);
             return true;
         }
         if x >= t1_x && x <= t1_x + t1_w {
             BOTTOM_CARD3_TAB.store(1, Ordering::Relaxed);
+            CARD3_SCROLL_Y.store(0, Ordering::Relaxed);
             return true;
         }
         if x >= t2_x && x <= t2_x + t2_w {
             BOTTOM_CARD3_TAB.store(2, Ordering::Relaxed);
+            CARD3_SCROLL_Y.store(0, Ordering::Relaxed);
             trigger_lan_radar_scan();
             return true;
         }
@@ -1074,12 +1122,17 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     }
 
     // 5. Card 3 List Item clicks
+    let list_top = l.col_y + 48;
+    let list_bot = l.col_y + l.col_h - 10;
+    if y >= list_top && y <= list_bot {
+    let card3_scroll_y = CARD3_SCROLL_Y.load(Ordering::Relaxed);
+    let has_sb = CARD3_MAX_SCROLL.load(Ordering::Relaxed) > 0;
     let item_x = l.col1_x + 18;
-    let item_w = l.col_w - 36;
+    let item_w = if has_sb { l.col_w - 44 } else { l.col_w - 36 };
     if c3_tab == 2 {
         let item_h = (48.0 * l.font_scale) as i32;
-        for (idx, peer) in lan_peers.iter().take(12).enumerate() {
-            let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+        for (idx, peer) in lan_peers.iter().enumerate() {
+            let iy = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
             if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
                 set_remote_id_raw(&peer.id);
                 if x >= item_x + item_w - 84 {
@@ -1090,8 +1143,8 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
         }
     } else if c3_tab == 1 {
         let item_h = (48.0 * l.font_scale) as i32;
-        for (idx, entry) in contacts.iter().take(12).enumerate() {
-            let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+        for (idx, entry) in contacts.iter().enumerate() {
+            let iy = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
             if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
                 if x >= item_x + item_w - 28 {
                     crate::identity::delete_contact(&entry.id);
@@ -1108,8 +1161,8 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
     } else {
         let recents = crate::identity::get_recent_sessions();
         let item_h = (38.0 * l.font_scale) as i32;
-        for (idx, sess) in recents.iter().take(12).enumerate() {
-            let iy = l.col_y + 48 + (idx as i32 * (item_h + 8));
+        for (idx, sess) in recents.iter().enumerate() {
+            let iy = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
             if x >= item_x && x <= item_x + item_w && y >= iy && y <= iy + item_h {
                 set_remote_id_raw(sess);
                 if x >= item_x + item_w - 84 {
@@ -1118,6 +1171,7 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
                 return true;
             }
         }
+    }
     }
 
     false

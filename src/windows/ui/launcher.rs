@@ -5,16 +5,17 @@
 
 #![allow(unsafe_op_in_unsafe_fn)]
 use anyhow::Result;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU8, Ordering};
 use std::time::Duration;
 use tracing::info;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetTextExtentPoint32W, InvalidateRect,
-    SelectObject, SetBkMode, SetTextColor, DT_CALCRECT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER,
-    DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, TRANSPARENT,
+    CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetTextExtentPoint32W,
+    InvalidateRect, SelectClipRgn, SelectObject, SetBkMode, SetTextColor, DT_CALCRECT, DT_CENTER,
+    DT_LEFT, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_BOLD, FW_NORMAL, FW_SEMIBOLD, HBRUSH,
+    HDC, HGDIOBJ, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -54,7 +55,21 @@ static CURRENT_EDIT_FONT: AtomicIsize = AtomicIsize::new(0);
 pub static LOCAL_DESKY_ID: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 pub static BOTTOM_TAB_RADAR: AtomicBool = AtomicBool::new(false);
 pub static BOTTOM_CARD3_TAB: AtomicU8 = AtomicU8::new(0); // 0 = Recent Sessions, 1 = Address Book, 2 = LAN Radar
+pub static CARD3_SCROLL_Y: AtomicI32 = AtomicI32::new(0);
+pub static CARD3_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
 static STATUS_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub fn scroll_card3(delta: i32) {
+    let step = 36;
+    let cur = CARD3_SCROLL_Y.load(Ordering::Relaxed);
+    let max_s = CARD3_MAX_SCROLL.load(Ordering::Relaxed);
+    let new_scroll = if delta > 0 {
+        (cur - step).max(0)
+    } else {
+        (cur + step).min(max_s)
+    };
+    CARD3_SCROLL_Y.store(new_scroll, Ordering::Relaxed);
+}
 
 pub fn request_main_redraw() {
     unsafe {
@@ -761,6 +776,29 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             let _ = DrawTextW(mem_dc, &mut add_txt, &mut add_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
         }
 
+        let list_top = l.col_y + 46;
+        let list_bot = l.col_y + l.col_h - 10;
+        let avail_h = (list_bot - list_top).max(40);
+        let (list_count, list_item_h) = if card3_tab == 2 {
+            (lan_peers.len(), (44.0 * l.font_scale) as i32)
+        } else if card3_tab == 1 {
+            (contacts.len(), (44.0 * l.font_scale) as i32)
+        } else {
+            (crate::identity::get_recent_sessions().len(), (36.0 * l.font_scale) as i32)
+        };
+        let total_h = if list_count > 0 {
+            (list_count as i32 * (list_item_h + 8) - 8).max(0)
+        } else {
+            0
+        };
+        let card3_max_scroll = (total_h - avail_h).max(0);
+        CARD3_MAX_SCROLL.store(card3_max_scroll, Ordering::Relaxed);
+        let card3_scroll_y = CARD3_SCROLL_Y.load(Ordering::Relaxed).min(card3_max_scroll);
+        CARD3_SCROLL_Y.store(card3_scroll_y, Ordering::Relaxed);
+
+        let card3_clip = CreateRectRgn(l.col1_x + 10, list_top, l.col1_x + l.col_w - 10, list_bot);
+        let _ = SelectClipRgn(mem_dc, Some(card3_clip));
+
         if card3_tab == 2 {
             // Render LAN Radar View
             if lan_peers.is_empty() {
@@ -797,11 +835,10 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
             } else {
                 let item_h = (44.0 * l.font_scale) as i32;
-                let item_w = l.col_w - 36;
-                let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
-                for (idx, peer) in lan_peers.iter().take(max_items).enumerate() {
+                let item_w = if card3_max_scroll > 0 { l.col_w - 44 } else { l.col_w - 36 };
+                for (idx, peer) in lan_peers.iter().enumerate() {
                     let item_x = l.col1_x + 18;
-                    let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+                    let item_y = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
 
                     draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
@@ -885,11 +922,10 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
             } else {
                 let item_h = (44.0 * l.font_scale) as i32;
-                let item_w = l.col_w - 36;
-                let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
-                for (idx, entry) in contacts.iter().take(max_items).enumerate() {
+                let item_w = if card3_max_scroll > 0 { l.col_w - 44 } else { l.col_w - 36 };
+                for (idx, entry) in contacts.iter().enumerate() {
                     let item_x = l.col1_x + 18;
-                    let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+                    let item_y = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
 
                     draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
@@ -979,11 +1015,10 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 let _ = DrawTextW(mem_dc, &mut empty_msg2, &mut empty_rc2, DT_WORDBREAK);
             } else {
                 let item_h = (36.0 * l.font_scale) as i32;
-                let item_w = l.col_w - 36;
-                let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
-                for (idx, session) in recent_sessions.iter().take(max_items).enumerate() {
+                let item_w = if card3_max_scroll > 0 { l.col_w - 44 } else { l.col_w - 36 };
+                for (idx, session) in recent_sessions.iter().enumerate() {
                     let item_x = l.col1_x + 18;
-                    let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+                    let item_y = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
 
                     draw_rounded_box(mem_dc, item_x, item_y, item_w, item_h, PK_INPUT_BG, PK_CARD_BORDER, 8);
 
@@ -1016,6 +1051,21 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                     let _ = DrawTextW(mem_dc, &mut c_txt, &mut c_rc, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
                 }
             }
+        }
+
+        let _ = SelectClipRgn(mem_dc, None);
+        let _ = DeleteObject(HGDIOBJ(card3_clip.0));
+
+        if card3_max_scroll > 0 {
+            let sb_w = 4;
+            let sb_x = l.col1_x + l.col_w - 14;
+            let sb_y = list_top;
+            let sb_h = avail_h;
+            draw_rounded_box(mem_dc, sb_x, sb_y, sb_w, sb_h, PK_INPUT_BG, PK_CARD_BORDER, 2);
+            let thumb_h = ((avail_h as f32 / total_h as f32) * sb_h as f32).clamp(24.0, sb_h as f32) as i32;
+            let thumb_travel = sb_h - thumb_h;
+            let thumb_y = sb_y + ((card3_scroll_y as f32 / card3_max_scroll as f32) * thumb_travel as f32) as i32;
+            draw_rounded_box(mem_dc, sb_x, thumb_y, sb_w, thumb_h, PK_MUTED, PK_MUTED, 2);
         }
 
         // 4. Card 4: SECURITY & SERVER (Bottom Right)
@@ -1155,18 +1205,21 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
         if x >= t0_x && x <= t0_x + t0_w {
             BOTTOM_CARD3_TAB.store(0, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
+            CARD3_SCROLL_Y.store(0, Ordering::Relaxed);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
         if x >= t1_x && x <= t1_x + t1_w {
             BOTTOM_CARD3_TAB.store(1, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(false, Ordering::Relaxed);
+            CARD3_SCROLL_Y.store(0, Ordering::Relaxed);
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
         }
         if x >= t2_x && x <= t2_x + t2_w {
             BOTTOM_CARD3_TAB.store(2, Ordering::Relaxed);
             BOTTOM_TAB_RADAR.store(true, Ordering::Relaxed);
+            CARD3_SCROLL_Y.store(0, Ordering::Relaxed);
             trigger_lan_radar_scan();
             let _ = InvalidateRect(Some(hwnd), None, false);
             return true;
@@ -1207,14 +1260,18 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
     }
 
     // 5. Card 3 Content: LAN Radar peers, Address Book, or Recent Sessions
-    if card3_tab == 2 {
-        let lan_peers = crate::p2p::get_lan_peers();
-        let item_h = (44.0 * l.font_scale) as i32;
-        let item_w = l.col_w - 36;
-        let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
-        for (idx, peer) in lan_peers.iter().take(max_items).enumerate() {
-            let item_x = l.col1_x + 18;
-            let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+    let list_top = l.col_y + 46;
+    let list_bot = l.col_y + l.col_h - 10;
+    if y >= list_top && y <= list_bot {
+        let card3_scroll_y = CARD3_SCROLL_Y.load(Ordering::Relaxed);
+        let has_sb = CARD3_MAX_SCROLL.load(Ordering::Relaxed) > 0;
+        let item_w = if has_sb { l.col_w - 44 } else { l.col_w - 36 };
+        if card3_tab == 2 {
+            let lan_peers = crate::p2p::get_lan_peers();
+            let item_h = (44.0 * l.font_scale) as i32;
+            for (idx, peer) in lan_peers.iter().enumerate() {
+                let item_x = l.col1_x + 18;
+                let item_y = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
 
             if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
                 let wide_id: Vec<u16> = peer.id.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1242,11 +1299,9 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
     } else if card3_tab == 1 {
         let contacts = crate::identity::load_address_book();
         let item_h = (44.0 * l.font_scale) as i32;
-        let item_w = l.col_w - 36;
-        let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
-        for (idx, entry) in contacts.iter().take(max_items).enumerate() {
+        for (idx, entry) in contacts.iter().enumerate() {
             let item_x = l.col1_x + 18;
-            let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+            let item_y = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
 
             if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
                 let wide_id: Vec<u16> = entry.id.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1279,11 +1334,9 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
     } else {
         let recents = crate::identity::get_recent_sessions();
         let item_h = (36.0 * l.font_scale) as i32;
-        let item_w = l.col_w - 36;
-        let max_items = ((l.col_h - 54) / (item_h + 8)).max(1) as usize;
-        for (idx, session) in recents.iter().take(max_items).enumerate() {
+        for (idx, session) in recents.iter().enumerate() {
             let item_x = l.col1_x + 18;
-            let item_y = l.col_y + 46 + (idx as i32 * (item_h + 8));
+            let item_y = list_top - card3_scroll_y + (idx as i32 * (item_h + 8));
 
             if x >= item_x && x <= item_x + item_w && y >= item_y && y <= item_y + item_h {
                 let wide_id: Vec<u16> = session.encode_utf16().chain(std::iter::once(0)).collect();
@@ -1307,6 +1360,7 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
                 return true;
             }
         }
+    }
     }
 
     false

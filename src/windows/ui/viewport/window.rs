@@ -960,6 +960,13 @@ pub unsafe extern "system" fn viewport_wnd_proc(
 
             let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
             if active == 0 {
+                let mut rect = RECT::default();
+                let _ = GetClientRect(hwnd, &mut rect);
+                let l = get_responsive_layout(rect.right - rect.left, rect.bottom - rect.top);
+                if pt.x >= l.col1_x && pt.x <= l.col1_x + l.col_w && pt.y >= l.col_y && pt.y <= l.col_y + l.col_h {
+                    crate::windows::ui::launcher::scroll_card3(delta);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
                 return LRESULT(0);
             }
             if active > 0 && crate::p2p::is_chat_open() {
