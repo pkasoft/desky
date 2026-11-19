@@ -19,7 +19,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, LoadCursorW, PostQuitMessage,
-    SetCursor, SetForegroundWindow,
+    SetCursor,
     IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE,
     WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND,
     WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,

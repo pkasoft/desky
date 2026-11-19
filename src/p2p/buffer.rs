@@ -27,6 +27,7 @@ pub fn set_client_buffer_size_mb(mb: u32) {
 }
 
 /// Get the segment index (0..=3) corresponding to the active buffer preset.
+#[allow(dead_code)]
 pub fn get_client_buffer_tier() -> usize {
     match get_client_buffer_size_mb() {
         128 => 0,
@@ -38,6 +39,7 @@ pub fn get_client_buffer_tier() -> usize {
 }
 
 /// Set the stream buffer preset by segment index (0..=3).
+#[allow(dead_code)]
 pub fn set_client_buffer_tier(idx: usize) {
     let mb = match idx {
         0 => 128,
