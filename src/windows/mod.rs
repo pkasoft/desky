@@ -23,6 +23,7 @@ pub mod server_2012;
 pub mod server_2016_2019;
 pub mod server_2022;
 pub mod system;
+pub mod tray;
 pub mod ui;
 pub mod win10_11;
 pub mod win7_8;

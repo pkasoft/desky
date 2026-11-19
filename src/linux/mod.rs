@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod codec;
 pub mod input;
 pub mod system;
+pub mod tray;
 pub mod ui;
 
 pub use capture::capture_screen_frame;

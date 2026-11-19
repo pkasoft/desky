@@ -197,7 +197,7 @@ pub fn draw_fullscreen_settings_view(
     let avail_h = (content_bot - content_top).max(50);
 
     let cat_content_h = match active_cat {
-        0 => 380,
+        0 => 430,
         1 => 650,
         2 => 360,
         3 => 320,
@@ -289,6 +289,57 @@ pub fn draw_fullscreen_settings_view(
                 PK_MUTED,
                 Some(content_w - 36),
             );
+
+            // 3. System Tray & Startup Behavior Card
+            let tray_y = id_y + 134;
+            canvas.draw_rounded_box(content_x, tray_y, content_w, 136, PK_CARD, PK_CARD_BORDER, 8);
+            canvas.draw_text(
+                content_x + 18,
+                tray_y + 16,
+                "System Tray & Startup Behavior",
+                15.0,
+                true,
+                PK_TEXT,
+                Some(content_w - 36),
+            );
+
+            let autostart_on = crate::linux::system::is_autostart_enabled();
+            let prefs = crate::identity::load_preferences();
+            let t_btn_w = 112;
+            let t_btn_h = 30;
+            let t_btn_x = content_x + content_w - t_btn_w - 18;
+            let tray_rows = [
+                ("Start automatically on boot (Background Tray)", autostart_on),
+                ("Close main window to System Tray (Keep P2P online)", prefs.close_to_tray),
+            ];
+            for (idx, (label, enabled)) in tray_rows.iter().enumerate() {
+                let ry = tray_y + 52 + (idx as i32) * 40;
+                canvas.draw_text(
+                    content_x + 18,
+                    ry + 7,
+                    label,
+                    13.0,
+                    false,
+                    PK_TEXT,
+                    Some(t_btn_x - content_x - 28),
+                );
+                let (bg, bd, fg) = if *enabled {
+                    (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+                } else {
+                    (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+                };
+                canvas.draw_rounded_box(t_btn_x, ry, t_btn_w, t_btn_h, bg, bd, 6);
+                canvas.draw_text_centered(
+                    t_btn_x,
+                    ry,
+                    t_btn_w,
+                    t_btn_h,
+                    if *enabled { "✓ Enabled" } else { "Disabled" },
+                    12.5,
+                    *enabled,
+                    fg,
+                );
+            }
         }
         1 => {
             // Display & Stream Category
@@ -678,7 +729,7 @@ pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, client
     let avail_h = (content_bot - content_top).max(50);
     let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
     let cat_content_h = match active_cat {
-        0 => 380,
+        0 => 430,
         1 => 650,
         2 => 360,
         3 => 320,
@@ -693,7 +744,33 @@ pub fn handle_settings_click(client_x: i32, client_y: i32, client_w: i32, client
     if client_y < content_top || client_y > content_bot {
         return false;
     }
-    if active_cat == 1 {
+    if active_cat == 0 {
+        let tray_y = body_y + 144 + 134;
+        let t_btn_w = 112;
+        let t_btn_h = 30;
+        let t_btn_x = content_x + content_w - t_btn_w - 18;
+        if client_x >= t_btn_x && client_x <= t_btn_x + t_btn_w {
+            let ry0 = tray_y + 52;
+            let ry1 = tray_y + 92;
+            if client_y >= ry0 && client_y <= ry0 + t_btn_h {
+                let next = !crate::linux::system::is_autostart_enabled();
+                if crate::linux::system::set_autostart_enabled(next).is_ok() {
+                    let mut prefs = crate::identity::load_preferences();
+                    prefs.start_on_boot = next;
+                    crate::identity::save_preferences(&prefs);
+                }
+                request_main_redraw();
+                return true;
+            }
+            if client_y >= ry1 && client_y <= ry1 + t_btn_h {
+                let mut prefs = crate::identity::load_preferences();
+                prefs.close_to_tray = !prefs.close_to_tray;
+                crate::identity::save_preferences(&prefs);
+                request_main_redraw();
+                return true;
+            }
+        }
+    } else if active_cat == 1 {
         // Scaling modes
         let btn_w = (content_w - 36 - 16) / 3;
         let by1 = body_y + 48;

@@ -50,3 +50,43 @@ pub fn get_machine_id() -> String {
         0xDEADBEEFu32
     )
 }
+
+fn get_autostart_desktop_path() -> Option<PathBuf> {
+    let config_dir = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg)
+    } else if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".config")
+    } else {
+        return None;
+    };
+    Some(config_dir.join("autostart").join("desky.desktop"))
+}
+
+pub fn is_autostart_enabled() -> bool {
+    if let Some(path) = get_autostart_desktop_path() {
+        return path.exists();
+    }
+    false
+}
+
+pub fn set_autostart_enabled(enabled: bool) -> anyhow::Result<()> {
+    let Some(path) = get_autostart_desktop_path() else {
+        anyhow::bail!("Could not resolve user config directory for autostart");
+    };
+    if enabled {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let exe = std::env::current_exe()?;
+        let desktop_entry = format!(
+            "[Desktop Entry]\nType=Application\nName=Desky\nComment=Desky Remote Desktop (Background Tray)\nExec=\"{}\" --tray\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+            exe.to_string_lossy()
+        );
+        fs::write(&path, desktop_entry)?;
+        tracing::info!("Enabled Linux XDG Autostart (Background Tray): {:?}", path);
+    } else if path.exists() {
+        fs::remove_file(&path)?;
+        tracing::info!("Disabled Linux XDG Autostart: {:?}", path);
+    }
+    Ok(())
+}

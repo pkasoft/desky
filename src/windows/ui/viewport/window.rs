@@ -18,13 +18,13 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, GetClientRect, GetCursorPos, IsIconic, LoadCursorW, PostQuitMessage,
-    SetCursor, SetForegroundWindow, ShowWindow,
-    IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, SW_RESTORE, WM_CHAR, WM_CLIPBOARDUPDATE, WM_COMMAND,
-    WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND, WM_GETMINMAXINFO,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE,
-    WM_TIMER,
+    DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, LoadCursorW, PostQuitMessage,
+    SetCursor, SetForegroundWindow,
+    IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE,
+    WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_TIMER,
 };
 
 use super::input_injector::{
@@ -253,7 +253,14 @@ pub unsafe extern "system" fn viewport_wnd_proc(
         }
         WM_COMMAND => {
             let code = (wparam.0 & 0xffff) as usize;
-            if code == ID_EDIT_TARGET_CODE {
+            if code == crate::windows::tray::ID_TRAY_OPEN {
+                crate::windows::tray::show_main_window(hwnd);
+                return LRESULT(0);
+            } else if code == crate::windows::tray::ID_TRAY_QUIT {
+                crate::windows::tray::remove_tray_icon(hwnd);
+                let _ = DestroyWindow(hwnd);
+                return LRESULT(0);
+            } else if code == ID_EDIT_TARGET_CODE {
                 let notif = ((wparam.0 >> 16) & 0xffff) as u16;
                 if notif == 0x0300 {
                     // EN_CHANGE
@@ -274,10 +281,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
         }
         WM_APP_BRING_FRONT => {
             sync_edit_target_visibility();
-            if IsIconic(hwnd).as_bool() {
-                let _ = ShowWindow(hwnd, SW_RESTORE);
-            }
-            let _ = SetForegroundWindow(hwnd);
+            crate::windows::tray::show_main_window(hwnd);
             let _ = InvalidateRect(Some(hwnd), None, false);
             LRESULT(0)
         }
@@ -1130,7 +1134,30 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             let _ = EndPaint(hwnd, &ps);
             LRESULT(0)
         }
+        crate::windows::tray::WM_TRAYICON => {
+            let event = (lparam.0 & 0xffff) as u32;
+            match event {
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
+                    crate::windows::tray::show_main_window(hwnd);
+                }
+                WM_RBUTTONUP => {
+                    crate::windows::tray::show_tray_context_menu(hwnd);
+                }
+                _ => {}
+            }
+            LRESULT(0)
+        }
+        WM_CLOSE => {
+            if crate::identity::load_preferences().close_to_tray {
+                crate::windows::tray::hide_main_window(hwnd);
+                LRESULT(0)
+            } else {
+                crate::windows::tray::remove_tray_icon(hwnd);
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
         WM_DESTROY => {
+            crate::windows::tray::remove_tray_icon(hwnd);
             VIEWPORT_RUNNING.store(false, Ordering::SeqCst);
             let _ = RemoveClipboardFormatListener(hwnd);
             PostQuitMessage(0);

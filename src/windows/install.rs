@@ -15,8 +15,9 @@ use windows::Win32::System::Com::{
     IPersistFile,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-    HKEY_LOCAL_MACHINE, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
+    RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD,
+    REG_OPTION_NON_VOLATILE, REG_SZ,
 };
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
@@ -240,9 +241,10 @@ pub fn uninstall_from_system() {
         let _ = std::fs::remove_file(user_start);
     }
 
-    // 3. Unregister from Windows Add/Remove Programs
+    // 3. Unregister from Windows Add/Remove Programs & Autostart
     unregister_uninstall(false);
     unregister_uninstall(true);
+    let _ = set_autostart_enabled(false);
 
     info!("Desky shortcuts and registry registration uninstalled.");
 
@@ -252,4 +254,59 @@ pub fn uninstall_from_system() {
         let title = to_wide("Desky Uninstallation");
         let _ = MessageBoxW(None, PCWSTR(msg.as_ptr()), PCWSTR(title.as_ptr()), MB_OK | MB_ICONINFORMATION);
     }
+}
+
+pub fn is_autostart_enabled() -> bool {
+    let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let val_name = to_wide("Desky");
+    let mut hkey = HKEY::default();
+    unsafe {
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), None, KEY_READ, &mut hkey).is_ok() {
+            let mut size: u32 = 0;
+            let exists = RegQueryValueExW(
+                hkey,
+                PCWSTR(val_name.as_ptr()),
+                None,
+                None,
+                None,
+                Some(&mut size),
+            )
+            .is_ok();
+            let _ = RegCloseKey(hkey);
+            return exists && size > 0;
+        }
+    }
+    false
+}
+
+pub fn set_autostart_enabled(enabled: bool) -> anyhow::Result<()> {
+    let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    let val_name = to_wide("Desky");
+    let mut hkey = HKEY::default();
+    unsafe {
+        if enabled {
+            let exe = std::env::current_exe()?;
+            let cmd = format!("\"{}\" --tray", exe.to_string_lossy());
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                PCWSTR(subkey.as_ptr()),
+                None,
+                PCWSTR::null(),
+                REG_OPTION_NON_VOLATILE,
+                KEY_WRITE,
+                None,
+                &mut hkey,
+                None,
+            )
+            .ok()?;
+            set_reg_sz(hkey, "Desky", &cmd);
+            let _ = RegCloseKey(hkey);
+            info!("Enabled Windows Startup (Background Tray): {}", cmd);
+        } else if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), None, KEY_WRITE, &mut hkey).is_ok() {
+            let _ = RegDeleteValueW(hkey, PCWSTR(val_name.as_ptr()));
+            let _ = RegCloseKey(hkey);
+            info!("Disabled Windows Startup (Background Tray)");
+        }
+    }
+    Ok(())
 }

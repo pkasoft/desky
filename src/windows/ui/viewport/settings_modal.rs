@@ -304,7 +304,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     let avail_h = (content_bot - content_top).max(50);
 
     let cat_content_h = match active_cat {
-        0 => 380,
+        0 => 480,
         1 => 650,
         2 => 360,
         3 => 320,
@@ -600,6 +600,81 @@ unsafe fn draw_category_general(
             &mut vw,
             &mut v_rc,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+        );
+    }
+
+    // 3. Card: System Tray & Startup Behavior
+    let card3_y = card2_y + card2_h + 16;
+    let card3_h = 136;
+    draw_rounded_box(hdc, cx, card3_y, cw, card3_h, PK_CARD, PK_CARD_BORDER, 8);
+
+    let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
+    SetTextColor(hdc, PK_TEXT);
+    let mut tray_head: Vec<u16> = "System Tray & Startup Behavior".encode_utf16().collect();
+    let mut tray_head_rc = RECT {
+        left: cx + 18,
+        top: card3_y + 16,
+        right: cx + cw - 18,
+        bottom: card3_y + 38,
+    };
+    let _ = DrawTextW(
+        hdc,
+        &mut tray_head,
+        &mut tray_head_rc,
+        DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+    );
+
+    let autostart_on = crate::windows::install::is_autostart_enabled();
+    let prefs = crate::identity::load_preferences();
+    let tray_rows = [
+        ("Start automatically on boot (Background Tray)", autostart_on, 203),
+        ("Close main window to System Tray (Keep P2P online)", prefs.close_to_tray, 204),
+    ];
+
+    let t_btn_w = 112;
+    let t_btn_h = 30;
+    let t_btn_x = cx + cw - t_btn_w - 18;
+    for (idx, (label, enabled, hid)) in tray_rows.iter().enumerate() {
+        let ry = card3_y + 52 + (idx as i32) * 40;
+        let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
+        SetTextColor(hdc, PK_TEXT);
+        let mut lw: Vec<u16> = label.encode_utf16().collect();
+        let mut l_rc = RECT {
+            left: cx + 18,
+            top: ry,
+            right: t_btn_x - 12,
+            bottom: ry + t_btn_h,
+        };
+        let _ = DrawTextW(
+            hdc,
+            &mut lw,
+            &mut l_rc,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
+        );
+
+        let is_hov = hover_id == *hid;
+        let (bg, border, fg) = if *enabled {
+            (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if is_hov {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
+        } else {
+            (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
+        };
+        draw_rounded_box(hdc, t_btn_x, ry, t_btn_w, t_btn_h, bg, border, 6);
+        let _ = SelectObject(hdc, HGDIOBJ(f_btn.0));
+        SetTextColor(hdc, fg);
+        let mut bw: Vec<u16> = (if *enabled { "✓ Enabled" } else { "Disabled" }).encode_utf16().collect();
+        let mut b_rc = RECT {
+            left: t_btn_x,
+            top: ry,
+            right: t_btn_x + t_btn_w,
+            bottom: ry + t_btn_h,
+        };
+        let _ = DrawTextW(
+            hdc,
+            &mut bw,
+            &mut b_rc,
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX,
         );
     }
 }
@@ -1579,7 +1654,7 @@ pub fn handle_settings_mousemove(
 
     let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
     let cat_content_h = match active_cat {
-        0 => 380,
+        0 => 480,
         1 => 650,
         2 => 360,
         3 => 320,
@@ -1641,6 +1716,21 @@ pub fn handle_settings_mousemove(
                     && client_y <= btn_y + btn_h
                 {
                     new_hover = 202;
+                }
+                // Card 3: System Tray & Startup toggles (y = body_y + 328 + 52 / + 92)
+                let t_btn_w = 112;
+                let t_btn_h = 30;
+                let t_btn_x = content_x + content_w - t_btn_w - 18;
+                let card3_y = body_y + 328;
+                for idx in 0..2 {
+                    let ry = card3_y + 52 + idx * 40;
+                    if client_x >= t_btn_x
+                        && client_x <= t_btn_x + t_btn_w
+                        && client_y >= ry
+                        && client_y <= ry + t_btn_h
+                    {
+                        new_hover = 203 + idx;
+                    }
                 }
             }
             1 => {
@@ -1860,7 +1950,7 @@ pub fn handle_settings_click(
 
     let active_cat = SETTINGS_CATEGORY.load(Ordering::Relaxed).min(6);
     let cat_content_h = match active_cat {
-        0 => 380,
+        0 => 480,
         1 => 650,
         2 => 360,
         3 => 320,
@@ -1956,6 +2046,52 @@ pub fn handle_settings_click(
                 && client_y <= btn_y + btn_h
             {
                 crate::windows::install::uninstall_from_system();
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
+
+            // Card 3: System Tray & Startup toggles
+            let t_btn_w = 112;
+            let t_btn_h = 30;
+            let t_btn_x = content_x + content_w - t_btn_w - 18;
+            let card3_y = body_y + 328;
+
+            // Toggle 1: Start on Boot (Background Tray)
+            let ry0 = card3_y + 52;
+            if client_x >= t_btn_x
+                && client_x <= t_btn_x + t_btn_w
+                && client_y >= ry0
+                && client_y <= ry0 + t_btn_h
+            {
+                let next = !crate::windows::install::is_autostart_enabled();
+                if crate::windows::install::set_autostart_enabled(next).is_ok() {
+                    let mut prefs = crate::identity::load_preferences();
+                    prefs.start_on_boot = next;
+                    crate::identity::save_preferences(&prefs);
+                    crate::windows::ui::launcher::append_status_log(if next {
+                        "[✓] Enabled automatic startup in System Tray"
+                    } else {
+                        "Disabled automatic startup on boot"
+                    });
+                }
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
+
+            // Toggle 2: Close main window to System Tray
+            let ry1 = card3_y + 92;
+            if client_x >= t_btn_x
+                && client_x <= t_btn_x + t_btn_w
+                && client_y >= ry1
+                && client_y <= ry1 + t_btn_h
+            {
+                let mut prefs = crate::identity::load_preferences();
+                prefs.close_to_tray = !prefs.close_to_tray;
+                crate::identity::save_preferences(&prefs);
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }

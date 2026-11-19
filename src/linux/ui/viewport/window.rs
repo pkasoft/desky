@@ -213,8 +213,14 @@ pub fn run_viewport_x11_window() -> Result<()> {
         &[wm_delete_window],
     )?;
 
-    conn.map_window(win_id)?;
-    let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
+    let mut tray = crate::linux::tray::LinuxTray::try_create(&conn, screen_num, screen);
+    let start_in_tray = crate::identity::is_started_in_tray();
+    if !start_in_tray {
+        conn.map_window(win_id)?;
+        let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
+    } else {
+        info!("Desky started silently in background System Tray (--tray)");
+    }
     conn.flush()?;
 
     info!(
@@ -233,15 +239,22 @@ pub fn run_viewport_x11_window() -> Result<()> {
 
     while RUNNING.load(Ordering::Relaxed) {
         if BRING_TO_FRONT.swap(false, Ordering::Relaxed) {
+            let _ = conn.map_window(win_id);
             let _ = conn.configure_window(
                 win_id,
                 &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE),
             );
             let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
             let _ = conn.flush();
+            NEEDS_REDRAW.store(true, Ordering::Relaxed);
         }
 
         while let Some(event) = conn.poll_for_event()? {
+            if let Some(ref mut t) = tray {
+                if t.handle_event(&conn, screen, &event) {
+                    continue;
+                }
+            }
             match event {
                 x11rb::protocol::Event::Expose(ex) => {
                     if ex.count == 0 {
@@ -278,9 +291,15 @@ pub fn run_viewport_x11_window() -> Result<()> {
                 }
                 x11rb::protocol::Event::ClientMessage(cm) => {
                     if cm.data.as_data32()[0] == wm_delete_window {
-                        info!("WM_DELETE_WINDOW received, closing Desky window.");
-                        RUNNING.store(false, Ordering::Relaxed);
-                        break;
+                        if crate::identity::load_preferences().close_to_tray {
+                            info!("WM_DELETE_WINDOW received, hiding Desky window to system tray.");
+                            let _ = conn.unmap_window(win_id);
+                            let _ = conn.flush();
+                        } else {
+                            info!("WM_DELETE_WINDOW received, closing Desky window.");
+                            RUNNING.store(false, Ordering::SeqCst);
+                            break;
+                        }
                     }
                 }
                 x11rb::protocol::Event::DestroyNotify(_) => {

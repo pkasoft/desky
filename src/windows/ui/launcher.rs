@@ -165,6 +165,14 @@ pub fn set_assigned_desky_id(id: &str) {
     if let Ok(mut guard) = LOCAL_DESKY_ID.lock() {
         *guard = id.to_string();
     }
+    unsafe {
+        if !HWND_MAIN_WINDOW.0.is_null() {
+            crate::windows::tray::update_tray_tooltip(
+                HWND_MAIN_WINDOW,
+                &format!("Desky - ID: {}", id),
+            );
+        }
+    }
     append_status_log(&format!("Online | ID: {}", id));
     request_main_redraw();
 }
@@ -432,11 +440,18 @@ impl NativeWin32App {
             // Initialize Session Tabs with Tab 0 permanently as [ Home ]
             super::viewport::init_session_tabs();
 
+            let start_in_tray = crate::identity::is_started_in_tray();
+            let win_style = if start_in_tray {
+                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN
+            } else {
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN
+            };
+
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 viewport_class_name,
                 w!("Desky | pkasoft.com"),
-                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_CLIPCHILDREN,
+                win_style,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 1024,
@@ -447,6 +462,12 @@ impl NativeWin32App {
                 None,
             )?;
             HWND_MAIN_WINDOW = hwnd;
+
+            // Register native Win32 System Tray icon
+            crate::windows::tray::add_tray_icon(hwnd);
+            if start_in_tray {
+                info!("Desky started silently in background System Tray (--tray)");
+            }
 
             // Light theme titlebar
             let dark_mode: i32 = 0;

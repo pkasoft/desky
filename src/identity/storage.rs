@@ -75,3 +75,51 @@ pub fn save_recent_session(target_id: &str) {
 pub fn get_recent_sessions() -> Vec<String> {
     load_or_create_identity().recent_sessions
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppPreferences {
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+    #[serde(default)]
+    pub start_on_boot: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for AppPreferences {
+    fn default() -> Self {
+        Self {
+            close_to_tray: true,
+            start_on_boot: false,
+        }
+    }
+}
+
+fn get_preferences_path() -> PathBuf {
+    crate::platform::get_identity_dir().join("preferences.json")
+}
+
+pub fn load_preferences() -> AppPreferences {
+    let path = get_preferences_path();
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(prefs) = serde_json::from_str::<AppPreferences>(&content) {
+                return prefs;
+            }
+        }
+    }
+    AppPreferences::default()
+}
+
+pub fn save_preferences(prefs: &AppPreferences) {
+    let path = get_preferences_path();
+    if let Ok(bytes) = serde_json::to_string_pretty(prefs) {
+        let _ = fs::write(&path, bytes);
+    }
+}
+
+pub fn is_started_in_tray() -> bool {
+    std::env::args().any(|a| a == "--tray" || a == "--minimized" || a == "--background")
+}
