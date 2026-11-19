@@ -228,48 +228,25 @@ pub fn get_card3_tab_rects(
     col1_x: i32,
     col_y: i32,
     font_scale: f32,
-    contacts_count: usize,
-    peers_count: usize,
+    _contacts_count: usize,
+    _peers_count: usize,
 ) -> (
     (i32, i32, i32, i32, String),
     (i32, i32, i32, i32, String),
     (i32, i32, i32, i32, String),
 ) {
     let tab_h = (25.0 * font_scale) as i32;
+    let tab_w = (34.0 * font_scale) as i32;
     let tab_y = col_y + 14;
 
-    let t0_text = "RECENTS".to_string();
-    let t0_w = (104.0 * font_scale) as i32;
     let t0_x = col1_x + 18;
-
-    let t1_text = if contacts_count > 0 {
-        format!("CONTACTS ({})", contacts_count)
-    } else {
-        "CONTACTS".to_string()
-    };
-    let t1_w = if contacts_count > 0 {
-        (134.0 * font_scale) as i32
-    } else {
-        (112.0 * font_scale) as i32
-    };
-    let t1_x = t0_x + t0_w + 6;
-
-    let t2_text = if peers_count > 0 {
-        format!("LAN RADAR ({})", peers_count)
-    } else {
-        "LAN RADAR".to_string()
-    };
-    let t2_w = if peers_count > 0 {
-        (134.0 * font_scale) as i32
-    } else {
-        (114.0 * font_scale) as i32
-    };
-    let t2_x = t1_x + t1_w + 6;
+    let t1_x = t0_x + tab_w + 6;
+    let t2_x = t1_x + tab_w + 6;
 
     (
-        (t0_x, tab_y, t0_w, tab_h, t0_text),
-        (t1_x, tab_y, t1_w, tab_h, t1_text),
-        (t2_x, tab_y, t2_w, tab_h, t2_text),
+        (t0_x, tab_y, tab_w, tab_h, "Recents".to_string()),
+        (t1_x, tab_y, tab_w, tab_h, "Contacts".to_string()),
+        (t2_x, tab_y, tab_w, tab_h, "LAN Radar".to_string()),
     )
 }
 
@@ -604,44 +581,43 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
         lan_peers.len(),
     );
 
-    let icon_sz = (13.0 * l.font_scale) as i32;
-    let icon_gap = 5;
+    let icon_sz = (15.0 * l.font_scale) as i32;
 
-    // Tab 0: RECENTS (Clock Icon)
-    let (t0_x, t0_y, t0_w, t0_h, t0_text) = t0;
+    // Tab 0: RECENTS (Clock Icon Only)
+    let (t0_x, t0_y, t0_w, t0_h, _) = t0;
     let (bg0, bd0, fg0) = if c3_tab == 0 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
         (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
     canvas.draw_rounded_box(t0_x, t0_y, t0_w, t0_h, bg0, bd0, 6);
+    let icon_x0 = t0_x + (t0_w - icon_sz) / 2;
     let icon_y0 = t0_y + (t0_h - icon_sz) / 2;
-    canvas.draw_icon_clock(t0_x + 9, icon_y0, icon_sz, fg0);
-    canvas.draw_text_vcenter(t0_x + 9 + icon_sz + icon_gap, t0_y, t0_w - (9 + icon_sz + icon_gap), t0_h, &t0_text, f_badge, true, fg0);
+    canvas.draw_icon_clock(icon_x0, icon_y0, icon_sz, fg0);
 
-    // Tab 1: CONTACTS (Users Icon)
-    let (t1_x, t1_y, t1_w, t1_h, t1_text) = t1;
+    // Tab 1: CONTACTS (Users Icon Only)
+    let (t1_x, t1_y, t1_w, t1_h, _) = t1;
     let (bg1, bd1, fg1) = if c3_tab == 1 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
         (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
     canvas.draw_rounded_box(t1_x, t1_y, t1_w, t1_h, bg1, bd1, 6);
+    let icon_x1 = t1_x + (t1_w - icon_sz) / 2;
     let icon_y1 = t1_y + (t1_h - icon_sz) / 2;
-    canvas.draw_icon_users(t1_x + 9, icon_y1, icon_sz, fg1);
-    canvas.draw_text_vcenter(t1_x + 9 + icon_sz + icon_gap, t1_y, t1_w - (9 + icon_sz + icon_gap), t1_h, &t1_text, f_badge, true, fg1);
+    canvas.draw_icon_users(icon_x1, icon_y1, icon_sz, fg1);
 
-    // Tab 2: LAN RADAR (Radio/Radar Broadcast Icon)
-    let (t2_x, t2_y, t2_w, t2_h, t2_text) = t2;
+    // Tab 2: LAN RADAR (Radio Icon Only)
+    let (t2_x, t2_y, t2_w, t2_h, _) = t2;
     let (bg2, bd2, fg2) = if c3_tab == 2 {
         (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
     } else {
         (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
     };
     canvas.draw_rounded_box(t2_x, t2_y, t2_w, t2_h, bg2, bd2, 6);
+    let icon_x2 = t2_x + (t2_w - icon_sz) / 2;
     let icon_y2 = t2_y + (t2_h - icon_sz) / 2;
-    canvas.draw_icon_radio(t2_x + 9, icon_y2, icon_sz, fg2);
-    canvas.draw_text_vcenter(t2_x + 9 + icon_sz + icon_gap, t2_y, t2_w - (9 + icon_sz + icon_gap), t2_h, &t2_text, f_badge, true, fg2);
+    canvas.draw_icon_radio(icon_x2, icon_y2, icon_sz, fg2);
 
     // Right action button in Card 3 header (+ Add or Scan)
     if c3_tab == 2 {

@@ -350,48 +350,25 @@ pub fn get_card3_tab_rects(
     col1_x: i32,
     col_y: i32,
     font_scale: f32,
-    contacts_count: usize,
-    peers_count: usize,
+    _contacts_count: usize,
+    _peers_count: usize,
 ) -> (
     (i32, i32, i32, i32, String),
     (i32, i32, i32, i32, String),
     (i32, i32, i32, i32, String),
 ) {
-    let tab_h = (24.0 * font_scale) as i32;
+    let tab_h = (25.0 * font_scale) as i32;
+    let tab_w = (34.0 * font_scale) as i32;
     let tab_y = col_y + 14;
 
-    let t0_text = "RECENTS".to_string();
-    let t0_w = (104.0 * font_scale) as i32;
     let t0_x = col1_x + 18;
-
-    let t1_text = if contacts_count > 0 {
-        format!("CONTACTS ({})", contacts_count)
-    } else {
-        "CONTACTS".to_string()
-    };
-    let t1_w = if contacts_count > 0 {
-        (134.0 * font_scale) as i32
-    } else {
-        (112.0 * font_scale) as i32
-    };
-    let t1_x = t0_x + t0_w + 6;
-
-    let t2_text = if peers_count > 0 {
-        format!("LAN RADAR ({})", peers_count)
-    } else {
-        "LAN RADAR".to_string()
-    };
-    let t2_w = if peers_count > 0 {
-        (134.0 * font_scale) as i32
-    } else {
-        (114.0 * font_scale) as i32
-    };
-    let t2_x = t1_x + t1_w + 6;
+    let t1_x = t0_x + tab_w + 6;
+    let t2_x = t1_x + tab_w + 6;
 
     (
-        (t0_x, tab_y, t0_w, tab_h, t0_text),
-        (t1_x, tab_y, t1_w, tab_h, t1_text),
-        (t2_x, tab_y, t2_w, tab_h, t2_text),
+        (t0_x, tab_y, tab_w, tab_h, "Recents".to_string()),
+        (t1_x, tab_y, tab_w, tab_h, "Contacts".to_string()),
+        (t2_x, tab_y, tab_w, tab_h, "LAN Radar".to_string()),
     )
 }
 
@@ -662,84 +639,69 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
             lan_peers.len(),
         );
 
-        let icon_sz = (13.0 * l.font_scale) as i32;
-        let icon_gap = 5;
+        let icon_sz = (15.0 * l.font_scale) as i32;
 
-        // Tag 1: RECENTS (Clock Icon)
-        let (t0_x, t0_y, t0_w, t0_h, t0_text) = t0;
-        let (t1_bg, t1_border, t1_fg) = if card3_tab == 0 {
+        // Tag 1: RECENTS (Clock Icon Only)
+        let (t0_x, t0_y, t0_w, t0_h, _) = t0;
+        let (t0_bg, t0_border, t0_fg) = if card3_tab == 0 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if hover == 10 {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(mem_dc, t0_x, t0_y, t0_w, t0_h, t1_bg, t1_border, 6);
-        let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
-        SetTextColor(mem_dc, t1_fg);
-        let mut t0_utf16: Vec<u16> = t0_text.encode_utf16().collect();
-        let mut t0_calc = RECT::default();
-        let _ = DrawTextW(mem_dc, &mut t0_utf16, &mut t0_calc, DT_CALCRECT | DT_SINGLELINE);
-        let t0_txt_w = t0_calc.right - t0_calc.left;
-        let t0_content_w = icon_sz + icon_gap + t0_txt_w;
-        let t0_start_x = t0_x + (t0_w - t0_content_w).max(0) / 2;
+        draw_rounded_box(mem_dc, t0_x, t0_y, t0_w, t0_h, t0_bg, t0_border, 6);
+        let t0_icon_x = t0_x + (t0_w - icon_sz) / 2;
         let t0_icon_y = t0_y + (t0_h - icon_sz) / 2;
-        crate::ui::draw_clock(mem_dc, t0_start_x, t0_icon_y, icon_sz, t1_fg, 2);
-        let mut t0_rect = RECT {
-            left: t0_start_x + icon_sz + icon_gap,
-            top: t0_y,
-            right: t0_x + t0_w,
-            bottom: t0_y + t0_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut t0_utf16, &mut t0_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        crate::ui::draw_clock(mem_dc, t0_icon_x, t0_icon_y, icon_sz, t0_fg, 2);
 
-        // Tag 2: CONTACTS (Users Icon)
-        let (t1_x, t1_y, t1_w, t1_h, t1_text) = t1;
-        let (tab_bg, tab_border, tab_fg) = if card3_tab == 1 {
+        // Tag 2: CONTACTS (Users Icon Only)
+        let (t1_x, t1_y, t1_w, t1_h, _) = t1;
+        let (t1_bg, t1_border, t1_fg) = if card3_tab == 1 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if hover == 11 {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
-        draw_rounded_box(mem_dc, t1_x, t1_y, t1_w, t1_h, tab_bg, tab_border, 6);
-        SetTextColor(mem_dc, tab_fg);
-        let mut t1_utf16: Vec<u16> = t1_text.encode_utf16().collect();
-        let mut t1_calc = RECT::default();
-        let _ = DrawTextW(mem_dc, &mut t1_utf16, &mut t1_calc, DT_CALCRECT | DT_SINGLELINE);
-        let t1_txt_w = t1_calc.right - t1_calc.left;
-        let t1_content_w = icon_sz + icon_gap + t1_txt_w;
-        let t1_start_x = t1_x + (t1_w - t1_content_w).max(0) / 2;
+        draw_rounded_box(mem_dc, t1_x, t1_y, t1_w, t1_h, t1_bg, t1_border, 6);
+        let t1_icon_x = t1_x + (t1_w - icon_sz) / 2;
         let t1_icon_y = t1_y + (t1_h - icon_sz) / 2;
-        crate::ui::draw_users(mem_dc, t1_start_x, t1_icon_y, icon_sz, tab_fg, 2);
-        let mut t1_rect = RECT {
-            left: t1_start_x + icon_sz + icon_gap,
-            top: t1_y,
-            right: t1_x + t1_w,
-            bottom: t1_y + t1_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut t1_utf16, &mut t1_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        crate::ui::draw_users(mem_dc, t1_icon_x, t1_icon_y, icon_sz, t1_fg, 2);
 
-        // Tag 3: LAN RADAR (Radio/Radar Broadcast Icon)
-        let (t2_x, t2_y, t2_w, t2_h, t2_text) = t2;
+        // Tag 3: LAN RADAR (Radio/Radar Broadcast Icon Only)
+        let (t2_x, t2_y, t2_w, t2_h, _) = t2;
         let (t2_bg, t2_border, t2_fg) = if card3_tab == 2 {
             (PK_GREEN_TINT, PK_GREEN, PK_GREEN_DARK)
+        } else if hover == 12 {
+            (PK_BTN_HOVER, PK_CARD_BORDER, PK_TEXT)
         } else {
             (PK_INPUT_BG, PK_CARD_BORDER, PK_MUTED)
         };
         draw_rounded_box(mem_dc, t2_x, t2_y, t2_w, t2_h, t2_bg, t2_border, 6);
-        SetTextColor(mem_dc, t2_fg);
-        let mut t2_utf16: Vec<u16> = t2_text.encode_utf16().collect();
-        let mut t2_calc = RECT::default();
-        let _ = DrawTextW(mem_dc, &mut t2_utf16, &mut t2_calc, DT_CALCRECT | DT_SINGLELINE);
-        let t2_txt_w = t2_calc.right - t2_calc.left;
-        let t2_content_w = icon_sz + icon_gap + t2_txt_w;
-        let t2_start_x = t2_x + (t2_w - t2_content_w).max(0) / 2;
+        let t2_icon_x = t2_x + (t2_w - icon_sz) / 2;
         let t2_icon_y = t2_y + (t2_h - icon_sz) / 2;
-        crate::ui::draw_radio(mem_dc, t2_start_x, t2_icon_y, icon_sz, t2_fg, 2);
-        let mut t2_rect = RECT {
-            left: t2_start_x + icon_sz + icon_gap,
-            top: t2_y,
-            right: t2_x + t2_w,
-            bottom: t2_y + t2_h,
-        };
-        let _ = DrawTextW(mem_dc, &mut t2_utf16, &mut t2_rect, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        crate::ui::draw_radio(mem_dc, t2_icon_x, t2_icon_y, icon_sz, t2_fg, 2);
+
+        // Tooltip hint on hover
+        if hover >= 10 && hover <= 12 {
+            let (tip_x, tip_label) = match hover {
+                10 => (t0_x, "Recents".to_string()),
+                11 => (t1_x, if contacts.len() > 0 { format!("Contacts ({})", contacts.len()) } else { "Contacts".to_string() }),
+                _ => (t2_x, if lan_peers.len() > 0 { format!("LAN Radar ({})", lan_peers.len()) } else { "LAN Radar".to_string() }),
+            };
+            let _ = SelectObject(mem_dc, HGDIOBJ(font_badge.0));
+            let mut tip_utf16: Vec<u16> = tip_label.encode_utf16().collect();
+            let mut tip_calc = RECT::default();
+            let _ = DrawTextW(mem_dc, &mut tip_utf16, &mut tip_calc, DT_CALCRECT | DT_SINGLELINE);
+            let tip_w = tip_calc.right - tip_calc.left + 16;
+            let tip_h = (22.0 * l.font_scale) as i32;
+            let tip_y = t0_y - tip_h - 4;
+            draw_rounded_box(mem_dc, tip_x, tip_y, tip_w, tip_h, PK_TEXT, PK_TEXT, 5);
+            SetTextColor(mem_dc, COLORREF(0x00FFFFFF));
+            let mut tip_rc = RECT { left: tip_x, top: tip_y, right: tip_x + tip_w, bottom: tip_y + tip_h };
+            let _ = DrawTextW(mem_dc, &mut tip_utf16, &mut tip_rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        }
 
         // When in Radar mode, show Scan button at top-right; in Address Book, show [+ Add]
         if card3_tab == 2 {
@@ -1386,6 +1348,11 @@ pub unsafe fn handle_homepage_connect(hwnd: HWND) {
 /// Tracks hover state for Homepage buttons and changes cursor
 pub unsafe fn handle_homepage_mousemove(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
     let l = get_responsive_layout(w, h);
+    let (t0, t1, t2) = get_card3_tab_rects(l.col1_x, l.col_y, l.font_scale, 0, 0);
+    let (t0_x, t0_y, t0_w, t0_h, _) = t0;
+    let (t1_x, _, t1_w, _, _) = t1;
+    let (t2_x, _, t2_w, _, _) = t2;
+
     let new_hover = if x >= l.copy_btn_x
         && x <= l.copy_btn_x + l.copy_btn_w
         && y >= l.copy_btn_y
@@ -1398,6 +1365,16 @@ pub unsafe fn handle_homepage_mousemove(hwnd: HWND, x: i32, y: i32, w: i32, h: i
         && y <= l.conn_btn_y + l.conn_btn_h
     {
         2
+    } else if y >= t0_y && y <= t0_y + t0_h {
+        if x >= t0_x && x <= t0_x + t0_w {
+            10
+        } else if x >= t1_x && x <= t1_x + t1_w {
+            11
+        } else if x >= t2_x && x <= t2_x + t2_w {
+            12
+        } else {
+            0
+        }
     } else {
         0
     };
