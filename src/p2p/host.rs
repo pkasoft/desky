@@ -10,7 +10,9 @@ use crate::p2p::state::{
     PKT_FILE_NACK,
 };
 use crate::codec::VideoEncoder;
-use crate::protocol::{InputEvent, SignalMsg};
+use crate::protocol::{
+    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME, PKT_KEYFRAME_REQ,
+};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,6 +21,21 @@ use tokio::net::UdpSocket;
 use tracing::{error, info, warn};
 
 
+
+/// Fast sampled 64-bit FNV-1a frame hash to detect completely static/idle screens in <0.1ms
+#[inline]
+fn fast_frame_hash(bgra: &[u8], w: u32, h: u32) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325 ^ ((w as u64) << 32) ^ (h as u64);
+    let step = (bgra.len() / 512).max(16);
+    let mut i = 0;
+    while i + 4 <= bgra.len() {
+        let v = u32::from_le_bytes([bgra[i], bgra[i + 1], bgra[i + 2], bgra[i + 3]]) as u64;
+        hash ^= v;
+        hash = hash.wrapping_mul(0x100000001b3);
+        i += step;
+    }
+    hash
+}
 
 pub struct P2PManager {
     machine_id: String,
@@ -135,6 +152,13 @@ impl P2PManager {
                     let _ = socket.send_to(&bytes, target_server).await;
                 }
 
+                crate::p2p::tcp_fallback::spawn_tcp_fallback_monitor(
+                    target_server,
+                    machine_id.clone(),
+                    cached_id.clone(),
+                    Arc::clone(&running),
+                );
+
                 let active_clients = Arc::clone(host_subscribers_store());
 
                 let current_id = Arc::new(tokio::sync::RwLock::new(
@@ -175,17 +199,27 @@ impl P2PManager {
                     });
                 }
 
+                let session_cipher_store: Arc<std::sync::Mutex<Option<Arc<crate::p2p::crypto::SessionCipher>>>> =
+                    Arc::new(std::sync::Mutex::new(None));
+                let session_cipher_recv = Arc::clone(&session_cipher_store);
+                let force_kf_flag = Arc::new(AtomicBool::new(false));
+                let force_kf_recv = Arc::clone(&force_kf_flag);
+
                 // Dedicated Host Screen Capture & Direct P2P / Relay Streamer OS Thread
                 {
                     let clients_stream = Arc::clone(&active_clients);
                     let running_stream = Arc::clone(&running);
                     let target_server_stream = target_server;
                     let std_sock_stream_capture = Arc::clone(&std_sock_stream);
+                    let session_cipher_cap = Arc::clone(&session_cipher_store);
+                    let force_kf_cap = Arc::clone(&force_kf_flag);
 
                     std::thread::spawn(move || {
                         let mut frame_id: u32 = 1;
                         let mut mjpeg_encoder = crate::codec::mjpeg::MjpegEncoder::new(76, true);
                         let mut last_encoded_len: usize = 0;
+                        let mut last_frame_hash: u64 = 0;
+                        let mut last_sent_frame_time = Instant::now() - Duration::from_secs(2);
                         let mut h264_encoder: Option<crate::platform::codec::PlatformH264Encoder> = None;
                         let mut h264_w: u32 = 0;
                         let mut h264_h: u32 = 0;
@@ -364,10 +398,24 @@ impl P2PManager {
                                     }
                                 }
 
+                                let frame_hash = fast_frame_hash(&bgra, cap_w, cap_h);
+                                let kf_requested = force_kf_cap.swap(false, Ordering::Relaxed);
+                                let is_idle_keepalive = last_sent_frame_time.elapsed() >= Duration::from_millis(900);
+                                if !kf_requested && !is_idle_keepalive && frame_hash == last_frame_hash {
+                                    let target_frame_time = Duration::from_micros(1_000_000 / max_fps.max(1) as u64);
+                                    let elapsed = loop_start.elapsed();
+                                    if elapsed < target_frame_time {
+                                        std::thread::sleep(target_frame_time - elapsed);
+                                    }
+                                    continue;
+                                }
+                                last_frame_hash = frame_hash;
+                                last_sent_frame_time = Instant::now();
+
                                 let mut encoded_data = Vec::new();
                                 let mut encoded_pkt_type = PKT_FRAME_CHUNK;
 
-                                let force_keyframe = frame_id % (max_fps * 2).max(30) == 1;
+                                let force_keyframe = kf_requested || frame_id % (max_fps * 2).max(30) == 1;
 
                                 // Responsive dynamic target bitrate based on subscriber quality preferences & resolution:
                                 let pixel_count = (cap_w * cap_h) as u64;
@@ -491,18 +539,25 @@ impl P2PManager {
                                                 false
                                             };
 
+                                            let active_cipher = session_cipher_cap.lock().ok().and_then(|g| g.clone());
+                                            let wire_pkt = if let Some(ref cipher) = active_cipher {
+                                                cipher.encrypt_dsky_packet(&pkt).unwrap_or(pkt)
+                                            } else {
+                                                pkt
+                                            };
+
                                             for sub in &subscribers {
                                                 if sub.addr != target_server_stream {
-                                                    send_chunk_retry(&std_sock_stream_capture, &pkt, sub.addr);
+                                                    send_chunk_retry(&std_sock_stream_capture, &wire_pkt, sub.addr);
                                                 }
                                                 if let Some(l_addr) = sub.lan_addr {
                                                     if l_addr != sub.addr {
-                                                        send_chunk_retry(&std_sock_stream_capture, &pkt, l_addr);
+                                                        send_chunk_retry(&std_sock_stream_capture, &wire_pkt, l_addr);
                                                     }
                                                 }
                                                 if !sub.is_direct && !sub.relay_id.is_empty() {
                                                     let relay_pkt =
-                                                        wrap_relay_packet(&sub.relay_id, &pkt);
+                                                        wrap_relay_packet(&sub.relay_id, &wire_pkt);
                                                     let _ = std_sock_stream_capture
                                                         .send_to(&relay_pkt, target_server_stream);
                                                 }
@@ -638,6 +693,7 @@ impl P2PManager {
                     let local_port = socket_recv.local_addr().ok().map(|a| a.port()).unwrap_or(0);
                     let host_lan_bytes = encode_lan_endpoint_port(local_port, target_server);
                     let mut last_incoming_punch: Option<(SocketAddr, Instant)> = None;
+                    let auth_limiter = crate::p2p::crypto::AuthRateLimiter::new();
                     let mut buf = vec![0u8; 8192];
 
                     loop {
@@ -648,7 +704,26 @@ impl P2PManager {
                                 continue;
                             }
                         };
-                        let slice = &buf[..len];
+                        let raw_slice = &buf[..len];
+                        let decrypted_holder: Vec<u8>;
+                        let slice: &[u8] = if raw_slice.len() >= 13
+                            && &raw_slice[0..4] == MAGIC_DSKY
+                            && raw_slice[4] == PKT_ENCRYPTED_FRAME
+                        {
+                            let cipher_opt = session_cipher_recv.lock().ok().and_then(|g| g.clone());
+                            if let Some(cipher) = cipher_opt {
+                                if let Some(plain) = cipher.decrypt_dsky_packet(raw_slice) {
+                                    decrypted_holder = plain;
+                                    &decrypted_holder
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            raw_slice
+                        };
 
                         if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
                             let pkt_type = slice[4];
@@ -1098,9 +1173,14 @@ impl P2PManager {
                                     }
                                 }
                                 PKT_UNATTENDED_AUTH => {
+                                    if auth_limiter.is_locked_out(from_addr.ip()) {
+                                        warn!("🔒 [HOST] Rate-limited unattended auth attempt from {}", from_addr);
+                                        continue;
+                                    }
                                     if slice.len() > 5 {
                                         if let Ok(hash_str) = std::str::from_utf8(&slice[5..]) {
                                             if crate::identity::verify_auth_hash(hash_str) {
+                                                auth_limiter.clear(from_addr.ip());
                                                 info!("🔓 [HOST] Client authenticated successfully via Unattended Password!");
                                                 let mut maybe_sub = None;
                                                 if let Ok(mut map) = clients_recv.lock() {
@@ -1137,10 +1217,31 @@ impl P2PManager {
                                                 }
                                                 crate::platform::ui::request_main_redraw();
                                             } else {
+                                                auth_limiter.record_failure(from_addr.ip());
                                                 warn!("🔒 [HOST] Invalid unattended password hash attempt from {}", from_addr);
                                             }
                                         }
                                     }
+                                }
+                                PKT_E2EE_HELLO => {
+                                    if slice.len() >= 37 {
+                                        let mut peer_pub = [0u8; 32];
+                                        peer_pub.copy_from_slice(&slice[5..37]);
+                                        let kp = crate::p2p::crypto::E2eeKeypair::generate();
+                                        let cipher = std::sync::Arc::new(kp.derive_session_cipher(&peer_pub, false));
+                                        if let Ok(mut g) = session_cipher_recv.lock() {
+                                            *g = Some(cipher);
+                                        }
+                                        let mut ack = Vec::with_capacity(37);
+                                        ack.extend_from_slice(MAGIC_DSKY);
+                                        ack.push(PKT_E2EE_ACK);
+                                        ack.extend_from_slice(&kp.public_bytes());
+                                        let _ = socket_recv.send_to(&ack, from_addr).await;
+                                        info!("🔐 [HOST E2EE] X25519 + ChaCha20-Poly1305 session established with {}", from_addr);
+                                    }
+                                }
+                                PKT_KEYFRAME_REQ => {
+                                    force_kf_recv.store(true, Ordering::Relaxed);
                                 }
                                 PKT_CHAT_MESSAGE => {
                                     if slice.len() > 5 {

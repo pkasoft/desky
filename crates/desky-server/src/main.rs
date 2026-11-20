@@ -242,6 +242,7 @@ async fn main() -> Result<()> {
 
     // Parse CLI arguments and environment variables
     let mut port = 21116u16;
+    let mut tcp_port = 21118u16;
     let mut web_port = 21117u16;
     let mut admin_token: Option<String> = None;
 
@@ -252,6 +253,12 @@ async fn main() -> Result<()> {
             "--port" | "-p" if i + 1 < args.len() => {
                 if let Ok(p) = args[i + 1].parse::<u16>() {
                     port = p;
+                }
+                i += 1;
+            }
+            "--tcp-port" if i + 1 < args.len() => {
+                if let Ok(p) = args[i + 1].parse::<u16>() {
+                    tcp_port = p;
                 }
                 i += 1;
             }
@@ -316,6 +323,89 @@ async fn main() -> Result<()> {
     let hosts: Arc<RwLock<HashMap<String, HostEntry>>> = Arc::new(RwLock::new(HashMap::new()));
     let client_sessions: Arc<RwLock<HashMap<String, SocketAddr>>> =
         Arc::new(RwLock::new(HashMap::new()));
+
+    // Spawn TCP Fallback Signaling Listener (port 21118 by default, or proxy behind TLS 443)
+    if tcp_port > 0 {
+        let tcp_bind = format!("0.0.0.0:{}", tcp_port);
+        if let Ok(listener) = tokio::net::TcpListener::bind(&tcp_bind).await {
+            info!(" TCP Fallback Listener active on: {}", tcp_bind);
+            let db_tcp = Arc::clone(&db);
+            let hosts_tcp = Arc::clone(&hosts);
+            let stats_tcp = Arc::clone(&stats);
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                loop {
+                    let Ok((mut stream, peer_addr)) = listener.accept().await else {
+                        continue;
+                    };
+                    let db_c = Arc::clone(&db_tcp);
+                    let hosts_c = Arc::clone(&hosts_tcp);
+                    let stats_c = Arc::clone(&stats_tcp);
+                    tokio::spawn(async move {
+                        let mut len_buf = [0u8; 4];
+                        loop {
+                            if stream.read_exact(&mut len_buf).await.is_err() {
+                                break;
+                            }
+                            let len = u32::from_be_bytes(len_buf) as usize;
+                            if len == 0 || len > 4 * 1024 * 1024 {
+                                break;
+                            }
+                            let mut payload = vec![0u8; len];
+                            if stream.read_exact(&mut payload).await.is_err() {
+                                break;
+                            }
+                            if let Ok(msg) = serde_json::from_slice::<SignalMsg>(&payload) {
+                                let reply = match msg {
+                                    SignalMsg::RegisterHost { machine_id, cached_id } => {
+                                        stats_c.total_registrations.fetch_add(1, Ordering::Relaxed);
+                                        if let Ok(desky_id) = db_c.get_or_create_peer_id(
+                                            &machine_id,
+                                            cached_id.as_deref(),
+                                            &peer_addr.ip().to_string(),
+                                            peer_addr.port(),
+                                        ) {
+                                            hosts_c.write().await.insert(
+                                                desky_id.clone(),
+                                                HostEntry { addr: peer_addr, last_seen: Instant::now() },
+                                            );
+                                            Some(SignalMsg::RegisterAck {
+                                                desky_id: format_id(&desky_id),
+                                                your_public_addr: peer_addr.to_string(),
+                                            })
+                                        } else {
+                                            None
+                                        }
+                                    }
+                                    SignalMsg::Heartbeat { desky_id } => {
+                                        stats_c.total_heartbeats.fetch_add(1, Ordering::Relaxed);
+                                        let norm_id = normalize_id(&desky_id);
+                                        db_c.touch_peer(&norm_id, &peer_addr.ip().to_string(), peer_addr.port());
+                                        if let Some(entry) = hosts_c.write().await.get_mut(&norm_id) {
+                                            entry.last_seen = Instant::now();
+                                        }
+                                        Some(SignalMsg::HeartbeatAck)
+                                    }
+                                    _ => None,
+                                };
+                                if let Some(ack) = reply {
+                                    if let Ok(out) = serde_json::to_vec(&ack) {
+                                        let l = (out.len() as u32).to_be_bytes();
+                                        if stream.write_all(&l).await.is_err()
+                                            || stream.write_all(&out).await.is_err()
+                                            || stream.flush().await.is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+        }
+    }
 
     // Launch Commercial Web Management Dashboard & Metrics API
     if web_port > 0 {

@@ -17,7 +17,9 @@ use crate::p2p::state::{
     write_clipboard_text, compute_clipboard_hash, LAST_SYNCED_CLIPBOARD_HASH,
     SESSION_BITRATE_KBPS, SESSION_RTT_MS,
 };
-use crate::protocol::{InputEvent, SignalMsg};
+use crate::protocol::{
+    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME, PKT_KEYFRAME_REQ,
+};
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -326,6 +328,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
             let mut abr_frames_completed: u32 = 0;
             let mut abr_frames_dropped: u32 = 0;
             let mut abr_tier: i32 = 2;
+            let e2ee_kp = crate::p2p::crypto::E2eeKeypair::generate();
+            let mut e2ee_cipher: Option<crate::p2p::crypto::SessionCipher> = None;
+            let mut last_kf_req = Instant::now() - Duration::from_secs(2);
             let mut current_challenge_salt: Option<String> = None;
             let mut last_rx_from_peer = Instant::now();
             let mut is_reconnecting = false;
@@ -364,6 +369,26 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         ACTIVE_JPEG_QUALITY.store(q, Ordering::Relaxed);
                         ACTIVE_SCALE_PCT.store(sc, Ordering::Relaxed);
                         ACTIVE_CHROMA_444.store(c444, Ordering::Relaxed);
+                    }
+
+                    if abr_frames_dropped >= 1 && last_kf_req.elapsed() >= Duration::from_millis(450) {
+                        last_kf_req = Instant::now();
+                        let mut kf_pkt = Vec::with_capacity(5);
+                        kf_pkt.extend_from_slice(MAGIC_DSKY);
+                        kf_pkt.push(PKT_KEYFRAME_REQ);
+                        if !force_relay {
+                            if let Some(p_addr) = peer_addr {
+                                if p_addr != server_addr {
+                                    let _ = socket.send_to(&kf_pkt, p_addr).await;
+                                }
+                            }
+                            if let Some(l_addr) = peer_lan_addr {
+                                let _ = socket.send_to(&kf_pkt, l_addr).await;
+                            }
+                        } else {
+                            let relay_kf = wrap_relay_packet(&norm_target, &kf_pkt);
+                            let _ = socket.send_to(&relay_kf, server_addr).await;
+                        }
                     }
 
                     abr_window_start = Instant::now();
@@ -520,6 +545,28 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         let _ = socket.send_to(&relay_hello, server_addr).await;
                     }
 
+                    // 4. E2EE X25519 Key Exchange initiation if session cipher not yet derived
+                    if e2ee_cipher.is_none() {
+                        let mut e2ee_hello = Vec::with_capacity(37);
+                        e2ee_hello.extend_from_slice(MAGIC_DSKY);
+                        e2ee_hello.push(PKT_E2EE_HELLO);
+                        e2ee_hello.extend_from_slice(&e2ee_kp.public_bytes());
+                        if !force_relay {
+                            if let Some(p_addr) = peer_addr {
+                                if p_addr != server_addr {
+                                    let _ = socket.send_to(&e2ee_hello, p_addr).await;
+                                }
+                            }
+                            if let Some(l_addr) = peer_lan_addr {
+                                let _ = socket.send_to(&e2ee_hello, l_addr).await;
+                            }
+                        }
+                        if (!is_direct_peer || force_relay) && !is_serverless {
+                            let relay_e2ee = wrap_relay_packet(&norm_target, &e2ee_hello);
+                            let _ = socket.send_to(&relay_e2ee, server_addr).await;
+                        }
+                    }
+
                     last_hello = Instant::now();
                 }
 
@@ -668,7 +715,25 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     recv_res = socket.recv_from(&mut buf) => {
                         if let Ok((len, from_addr)) = recv_res {
                             abr_bytes_received += len as u64;
-                            let slice = &buf[..len];
+                            let raw_slice = &buf[..len];
+                            let decrypted_holder: Vec<u8>;
+                            let slice: &[u8] = if raw_slice.len() >= 13
+                                && &raw_slice[0..4] == MAGIC_DSKY
+                                && raw_slice[4] == PKT_ENCRYPTED_FRAME
+                            {
+                                if let Some(ref cipher) = e2ee_cipher {
+                                    if let Some(plain) = cipher.decrypt_dsky_packet(raw_slice) {
+                                        decrypted_holder = plain;
+                                        &decrypted_holder
+                                    } else {
+                                        continue;
+                                    }
+                                } else {
+                                    continue;
+                                }
+                            } else {
+                                raw_slice
+                            };
 
                             if slice.len() >= 5 && &slice[0..4] == MAGIC_DSKY {
                                 let pkt_type = slice[4];
@@ -689,6 +754,14 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 }
 
                                 match pkt_type {
+                                    PKT_E2EE_ACK => {
+                                        if slice.len() >= 37 && e2ee_cipher.is_none() {
+                                            let mut host_pub = [0u8; 32];
+                                            host_pub.copy_from_slice(&slice[5..37]);
+                                            e2ee_cipher = Some(e2ee_kp.derive_session_cipher(&host_pub, true));
+                                            info!("🔐 [CLIENT E2EE] X25519 + ChaCha20-Poly1305 session established with {}", from_addr);
+                                        }
+                                    }
                                     PKT_PONG => {
                                         if slice.len() >= 9 {
                                             let sent_ts = u32::from_le_bytes([

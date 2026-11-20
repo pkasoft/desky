@@ -37,3 +37,9 @@ pub const PKT_FILE_NACK: u8 = 0x15;
 // --- Hardware Codec Streaming Chunks (0x16 - 0x17) ---
 pub const PKT_FRAME_CHUNK_H264: u8 = 0x16; // Hardware-accelerated H.264 / AVC video chunk
 pub const PKT_FRAME_CHUNK_H265: u8 = 0x17; // Hardware-accelerated H.265 / HEVC video chunk
+
+// --- End-to-End Encryption & Packet-Loss Recovery (0x18 - 0x1B) ---
+pub const PKT_E2EE_HELLO: u8 = 0x18;      // Initiator ephemeral X25519 public key (32 bytes)
+pub const PKT_E2EE_ACK: u8 = 0x19;        // Responder ephemeral X25519 public key (32 bytes)
+pub const PKT_ENCRYPTED_FRAME: u8 = 0x1A; // ChaCha20-Poly1305 AEAD encrypted DSKY payload
+pub const PKT_KEYFRAME_REQ: u8 = 0x1B;    // Packet-loss recovery: immediate keyframe/IDR request

@@ -22,6 +22,7 @@ pub use crate::recorder;
 pub mod server_2012;
 pub mod server_2016_2019;
 pub mod server_2022;
+pub mod service;
 pub mod system;
 pub mod tray;
 pub mod ui;

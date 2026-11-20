@@ -3,11 +3,13 @@ pub mod buffer;
 pub mod chat;
 pub mod clipboard;
 pub mod client;
+pub mod crypto;
 pub mod file_transfer;
 pub mod host;
 pub mod radar;
 pub mod routing;
 pub mod state;
+pub mod tcp_fallback;
 pub mod voice;
 
 #[allow(unused_imports)]

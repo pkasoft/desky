@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod audio;
 pub mod capture;
 pub mod clipboard;
 pub mod codec;
@@ -6,6 +7,7 @@ pub mod input;
 pub mod system;
 pub mod tray;
 pub mod ui;
+pub mod wayland;
 
 pub use capture::capture_screen_frame;
 #[allow(unused_imports)]
@@ -41,6 +43,14 @@ pub fn run() -> anyhow::Result<()> {
     });
 
     codec::probe_hardware_codecs();
+
+    let wl = wayland::probe_wayland_capabilities();
+    if wl.is_wayland {
+        tracing::info!(
+            "Wayland session detected (XWayland={}, PipeWire={}, Portal={})",
+            wl.has_xwayland, wl.has_pipewire, wl.has_portal
+        );
+    }
 
     ui::append_status_log("Desky Linux X11 Engine initialized.");
     let app = ui::LinuxApp::new()?;

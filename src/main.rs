@@ -44,6 +44,9 @@ fn main() -> anyhow::Result<()> {
             windows::install::uninstall_from_system();
             return Ok(());
         }
+        if std::env::args().any(|a| a == "--service") {
+            return windows::service::run_windows_service();
+        }
         info!(" Operating System: Windows 64-bit");
         info!(" UI Architecture: Direct Win32 pkasoft.com White Theme");
         info!(" Graphics: High-Speed GDI & 4:4:4 Pipeline");
