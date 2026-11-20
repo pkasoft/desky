@@ -22,7 +22,7 @@ use windows::core::{w, Interface};
 use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, IMF2DBuffer,
+    ICodecAPI, IMFActivate, IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, IMF2DBuffer,
     MFMediaType_Video, MFT_CATEGORY_VIDEO_DECODER, MFT_CATEGORY_VIDEO_ENCODER,
     MFT_ENUM_FLAG_HARDWARE, MFT_ENUM_FLAG_SORTANDFILTER, MFT_ENUM_FLAG_SYNCMFT,
     MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
@@ -39,6 +39,24 @@ use crate::codec::{CodecType, EncodedFrame, VideoDecoder, VideoEncoder};
 static MF_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static H264_HW_CHECKED: AtomicBool = AtomicBool::new(false);
 static H264_HW_AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+const CODECAPI_LOW_LATENCY: windows::core::GUID = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
+const CODECAPI_RATE_CONTROL: windows::core::GUID = windows::core::GUID::from_u128(0x1c0608e9_370c_4710_8a58_cb6181c42423);
+const CODECAPI_MEAN_BITRATE: windows::core::GUID = windows::core::GUID::from_u128(0xf7222374_2144_4815_b550_a37f8e12ee52);
+const CODECAPI_MAX_BITRATE: windows::core::GUID = windows::core::GUID::from_u128(0x9651eae4_39b9_4123_86fd_ec5982f3682b);
+const CODECAPI_QUALITY: windows::core::GUID = windows::core::GUID::from_u128(0xfcbf5771_da0e_453b_823d_733362b342fb);
+const CODECAPI_B_FRAMES: windows::core::GUID = windows::core::GUID::from_u128(0x8d390aac_dc5c_4200_b57f_814d04babab2);
+const CODECAPI_GOP_SIZE: windows::core::GUID = windows::core::GUID::from_u128(0x95f34a07_8bd9_47e8_a581_9389ac525792);
+const CODECAPI_FORCE_KEYFRAME: windows::core::GUID = windows::core::GUID::from_u128(0x398c1e33_f7c8_4b1c_8a0e_c3b2b177c3aa);
+
+unsafe fn set_codec_api_u32(transform: &IMFTransform, guid: &windows::core::GUID, val: u32) {
+    if let Ok(codec_api) = transform.cast::<ICodecAPI>() {
+        let var = windows::Win32::System::Variant::VARIANT::from(val);
+        unsafe {
+            let _ = codec_api.SetValue(guid, &var);
+        }
+    }
+}
 
 /// Dynamic function pointers loaded from `mfplat.dll` at runtime
 pub(crate) struct MfPlatSymbols {
@@ -474,22 +492,27 @@ impl H264MfEncoder {
             }
 
             if let Ok(attrs) = transform.GetAttributes() {
-                let low_latency = windows::core::GUID::from_u128(0x9c27891a_ed7a_40e1_88e8_292c34c343da);
                 let real_time = windows::core::GUID::from_u128(0xc03eb300_0985_4228_b384_5f532f83ee18);
-                let gop_size = windows::core::GUID::from_u128(0x95f34a07_8bd9_47e8_a581_9389ac525792);
-                let rate_control = windows::core::GUID::from_u128(0x1c0608e9_370c_4710_8a58_cb6181c42423);
-                let quality_level = windows::core::GUID::from_u128(0xfcbf5771_da0e_453b_823d_733362b342fb);
                 let cabac_enable = windows::core::GUID::from_u128(0xee68b6e0_e609_4161_9d54_96180c35b505);
                 let quality_vs_speed = windows::core::GUID::from_u128(0x98332df8_03cd_476b_89fa_7629ecd4f399);
 
-                let _ = attrs.SetUINT32(&low_latency, 1);
+                let _ = attrs.SetUINT32(&CODECAPI_LOW_LATENCY, 1);
                 let _ = attrs.SetUINT32(&real_time, 1);
-                let _ = attrs.SetUINT32(&gop_size, (self.fps * 2).clamp(30, 120));
-                let _ = attrs.SetUINT32(&rate_control, 4); // LowDelayVBR
-                let _ = attrs.SetUINT32(&quality_level, 92);
+                let _ = attrs.SetUINT32(&CODECAPI_GOP_SIZE, (self.fps * 2).clamp(30, 120));
+                let _ = attrs.SetUINT32(&CODECAPI_RATE_CONTROL, 2); // PeakConstrainedVBR
+                let _ = attrs.SetUINT32(&CODECAPI_QUALITY, 94);
                 let _ = attrs.SetUINT32(&cabac_enable, 1);
                 let _ = attrs.SetUINT32(&quality_vs_speed, 100);
             }
+
+            // Apply official ICodecAPI low-latency & zero B-frame tuning directly to hardware MFT
+            set_codec_api_u32(&transform, &CODECAPI_LOW_LATENCY, 1);
+            set_codec_api_u32(&transform, &CODECAPI_B_FRAMES, 0);
+            set_codec_api_u32(&transform, &CODECAPI_RATE_CONTROL, 2); // PeakConstrainedVBR
+            set_codec_api_u32(&transform, &CODECAPI_MEAN_BITRATE, self.bitrate);
+            set_codec_api_u32(&transform, &CODECAPI_MAX_BITRATE, self.bitrate.saturating_mul(2).min(60_000_000));
+            set_codec_api_u32(&transform, &CODECAPI_QUALITY, 94);
+            set_codec_api_u32(&transform, &CODECAPI_GOP_SIZE, (self.fps * 2).clamp(30, 120));
 
             // Configure Output Media Type (H.264 High Profile)
             let out_media: IMFMediaType = self.mf.create_media_type()?;
@@ -545,10 +568,8 @@ impl H264MfEncoder {
             self.bitrate = clamped;
             if let Some(ref trans) = self.transform {
                 unsafe {
-                    if let Ok(attrs) = trans.GetAttributes() {
-                        let avg_bitrate_guid = windows::Win32::Media::MediaFoundation::MF_MT_AVG_BITRATE;
-                        let _ = attrs.SetUINT32(&avg_bitrate_guid, clamped);
-                    }
+                    set_codec_api_u32(trans, &CODECAPI_MEAN_BITRATE, clamped);
+                    set_codec_api_u32(trans, &CODECAPI_MAX_BITRATE, clamped.saturating_mul(2).min(60_000_000));
                 }
             }
         }
@@ -597,6 +618,7 @@ impl VideoEncoder for H264MfEncoder {
             sample.SetSampleTime(time)?;
             sample.SetSampleDuration(duration)?;
             if _force_keyframe {
+                set_codec_api_u32(transform, &CODECAPI_FORCE_KEYFRAME, 1);
                 let _ = sample.SetUINT32(&windows::Win32::Media::MediaFoundation::MFSampleExtension_CleanPoint, 1);
             }
 

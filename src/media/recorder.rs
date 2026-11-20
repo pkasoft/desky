@@ -124,7 +124,7 @@ pub fn start_recording(width: u32, height: u32, fps: u32) -> Result<PathBuf, Str
     };
 
     let target_fps = fps.clamp(15, 120);
-    let (tx, rx) = sync_channel::<RecordedFrame>(30);
+    let (tx, rx) = sync_channel::<RecordedFrame>(90);
 
     if let Ok(mut guard) = RECORDER_SENDER.lock() {
         *guard = Some(tx);
@@ -296,13 +296,13 @@ fn run_recorder_writer(
                     height = *h;
                 }
                 jpeg_buf.clear();
-                let quality = match RECORD_QUALITY_SCALE.load(Ordering::Relaxed) {
-                    0 => 82,
-                    1 => 75,
-                    _ => 65,
+                let (quality, sampling) = match RECORD_QUALITY_SCALE.load(Ordering::Relaxed) {
+                    0 => (95, jpeg_encoder::SamplingFactor::R_4_4_4),
+                    1 => (88, jpeg_encoder::SamplingFactor::R_4_2_2),
+                    _ => (78, jpeg_encoder::SamplingFactor::R_4_2_0),
                 };
                 let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, quality);
-                encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::R_4_2_0);
+                encoder.set_sampling_factor(sampling);
                 if let Err(e) = encoder.encode(
                     &data[..expected_len],
                     *w as u16,

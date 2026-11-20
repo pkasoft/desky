@@ -421,13 +421,13 @@ impl P2PManager {
                                 let pixel_count = (cap_w * cap_h) as u64;
                                 let base_bitrate: u32 = if any_relay {
                                     if req_quality >= 85 {
-                                        8_000_000 // 8 Mbps over relay
+                                        14_000_000 // 14 Mbps over relay
                                     } else if req_quality >= 75 {
-                                        6_000_000 // 6 Mbps over relay
+                                        10_000_000 // 10 Mbps over relay
                                     } else if req_quality >= 68 {
-                                        4_500_000 // 4.5 Mbps over relay
+                                        7_000_000 // 7 Mbps over relay
                                     } else {
-                                        2_500_000 // 2.5 Mbps over relay
+                                        4_000_000 // 4 Mbps over relay
                                     }
                                 } else {
                                     // Direct P2P: full high-bandwidth desktop transmission
