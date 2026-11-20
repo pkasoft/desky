@@ -3,10 +3,9 @@
 //! Provides zero-C-dependency 48kHz stereo S16LE audio streaming on Linux
 //! via `parec` / `pw-record` (capture) and `pacat` / `pw-play` (playback).
 
-#![allow(dead_code)]
-
 use std::io::{Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 
 pub struct LinuxAudioCapturer {
     child: Child,
@@ -96,5 +95,24 @@ impl Drop for LinuxAudioPlayer {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+static LINUX_AUDIO_PLAYER: OnceLock<Mutex<Option<LinuxAudioPlayer>>> = OnceLock::new();
+
+pub fn play_remote_audio_chunk(pcm: &[u8]) {
+    if pcm.is_empty() {
+        return;
+    }
+    let store = LINUX_AUDIO_PLAYER.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = store.lock() {
+        if guard.is_none() {
+            *guard = LinuxAudioPlayer::start().ok();
+        }
+        if let Some(ref mut player) = *guard {
+            if player.play_pcm_chunk(pcm).is_err() {
+                *guard = None;
+            }
+        }
     }
 }

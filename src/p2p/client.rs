@@ -974,6 +974,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 let pcm = &slice[10..];
                                                 crate::windows::audio::play_remote_audio_chunk(sample_rate, channels, pcm);
                                             }
+                                            #[cfg(target_os = "linux")]
+                                            {
+                                                let pcm = &slice[10..];
+                                                crate::linux::audio::play_remote_audio_chunk(pcm);
+                                            }
                                         }
                                     }
                                     PKT_VOICE_CHUNK => {

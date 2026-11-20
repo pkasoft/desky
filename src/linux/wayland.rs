@@ -4,8 +4,6 @@
 //! probes `PipeWire` and `xdg-desktop-portal` availability, and checks XWayland
 //! compatibility for hybrid desktop environments (Ubuntu, Fedora, Arch).
 
-#![allow(dead_code)]
-
 use std::process::Command;
 
 #[derive(Debug, Clone)]

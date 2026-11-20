@@ -15,7 +15,7 @@ pub mod voice;
 #[allow(unused_imports)]
 pub use buffer::{
     get_buffer_reassembly_limits, get_client_buffer_size_mb, get_client_buffer_tier,
-    set_client_buffer_size_mb, set_client_buffer_tier, CLIENT_BUFFER_SIZE_MB,
+    set_client_buffer_tier, CLIENT_BUFFER_SIZE_MB,
 };
 #[allow(unused_imports)]
 pub use routing::{

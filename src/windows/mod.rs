@@ -45,7 +45,7 @@ use tracing::info;
 pub fn run() -> anyhow::Result<()> {
     desktop::enable_debug_privilege();
     let platform = get_platform();
-    info!("🚀 Running Desky on Platform Engine: {:?}", platform);
+    info!("🚀 Running Desky on Platform Engine: {:?} (Session0={})", platform, service::is_running_in_session_zero());
     codec::probe_hardware_codecs();
 
     match platform {

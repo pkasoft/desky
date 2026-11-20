@@ -123,21 +123,7 @@ pub fn trigger_system_action(action: SystemAction) -> (bool, String) {
         }
         SystemAction::CtrlAltDel => {
             super::desktop::configure_software_sas();
-            let success = unsafe {
-                use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryA};
-                use windows::core::s;
-                if let Ok(h) = LoadLibraryA(s!("sas.dll")) {
-                    if let Some(proc) = GetProcAddress(h, s!("SendSAS")) {
-                        let sendsas: extern "system" fn(i32) = std::mem::transmute(proc);
-                        sendsas(0);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            };
+            let success = super::service::send_sas_ctrl_alt_del();
             if success {
                 (true, "SAS Ctrl+Alt+Del triggered".into())
             } else {

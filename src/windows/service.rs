@@ -5,7 +5,7 @@
 //! - Switches capture/input threads to the active input desktop (`Winlogon` / UAC / `Default`)
 //! - Dispatches Secure Attention Sequence (`Ctrl+Alt+Del`) via `sas.dll!SendSAS`
 
-#![allow(unsafe_op_in_unsafe_fn, dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use tracing::info;
@@ -18,9 +18,6 @@ use windows::Win32::System::Services::{
     SERVICE_CONTROL_STOP, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
     SERVICE_STATUS_HANDLE, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TABLE_ENTRYW,
     SERVICE_WIN32_OWN_PROCESS,
-};
-use windows::Win32::System::StationsAndDesktops::{
-    CloseDesktop, OpenInputDesktop, SetThreadDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS,
 };
 use windows::Win32::System::Threading::GetCurrentProcessId;
 
@@ -39,24 +36,6 @@ pub fn is_running_in_session_zero() -> bool {
                     return session_id == 0;
                 }
             }
-        }
-    }
-    false
-}
-
-/// Switches the calling thread to whichever desktop currently receives user input
-/// (e.g., `Default`, `Winlogon` lock screen, or secure UAC `Consent` desktop).
-pub fn switch_thread_to_input_desktop() -> bool {
-    unsafe {
-        // DESKTOP_ALL_ACCESS (0x000F_01FF)
-        if let Ok(hdesk) = OpenInputDesktop(
-            DESKTOP_CONTROL_FLAGS(0),
-            false,
-            DESKTOP_ACCESS_FLAGS(0x000F_01FF),
-        ) {
-            let ok = SetThreadDesktop(hdesk).is_ok();
-            let _ = CloseDesktop(hdesk);
-            return ok;
         }
     }
     false

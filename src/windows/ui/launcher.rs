@@ -80,7 +80,6 @@ pub fn request_main_redraw() {
     }
 }
 
-#[allow(dead_code)]
 pub fn bring_main_window_to_front() {
     unsafe {
         if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
@@ -164,6 +163,7 @@ pub fn prompt_incoming_request(client_id: &str) {
         "Incoming request from ID: {} - Host approval prompt opened.",
         client_id
     ));
+    bring_main_window_to_front();
     unsafe {
         if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
             let _ = PostMessageW(

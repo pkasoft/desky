@@ -677,6 +677,88 @@ impl P2PManager {
                     });
                 }
 
+                // Dedicated Host Audio PulseAudio/PipeWire Streamer OS Thread (Linux)
+                #[cfg(target_os = "linux")]
+                {
+                    let clients_audio = Arc::clone(&active_clients);
+                    let running_audio = Arc::clone(&running);
+                    let sock_audio = Arc::clone(&std_sock_stream);
+                    let target_server_audio = target_server;
+
+                    std::thread::spawn(move || {
+                        let mut capturer_opt: Option<crate::linux::audio::LinuxAudioCapturer> = None;
+                        let mut pcm_buf = [0u8; 3840]; // ~20ms @ 48kHz stereo S16LE
+
+                        while running_audio.load(Ordering::Relaxed) {
+                            let has_subscribers = {
+                                if let Ok(map) = clients_audio.lock() {
+                                    map.values().any(|s| s.auth_state == AuthState::Approved)
+                                } else {
+                                    false
+                                }
+                            };
+                            if !has_subscribers {
+                                capturer_opt = None;
+                                std::thread::sleep(Duration::from_millis(100));
+                                continue;
+                            }
+
+                            if capturer_opt.is_none() {
+                                match crate::linux::audio::LinuxAudioCapturer::start() {
+                                    Ok(c) => capturer_opt = Some(c),
+                                    Err(_) => {
+                                        std::thread::sleep(Duration::from_millis(1500));
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            if let Some(ref mut capturer) = capturer_opt {
+                                match capturer.read_pcm_chunk(&mut pcm_buf) {
+                                    Ok(n) if n > 0 => {
+                                        let subscribers: Vec<ClientSubscriber> = {
+                                            if let Ok(map) = clients_audio.lock() {
+                                                map.values()
+                                                    .filter(|s| s.auth_state == AuthState::Approved)
+                                                    .cloned()
+                                                    .collect()
+                                            } else {
+                                                Vec::new()
+                                            }
+                                        };
+                                        if !subscribers.is_empty() {
+                                            let mut pkt = Vec::with_capacity(10 + n);
+                                            pkt.extend_from_slice(MAGIC_DSKY);
+                                            pkt.push(crate::p2p::state::PKT_AUDIO_CHUNK);
+                                            pkt.push(2u8); // stereo
+                                            pkt.extend_from_slice(&48000u32.to_le_bytes());
+                                            pkt.extend_from_slice(&pcm_buf[..n]);
+                                            for sub in &subscribers {
+                                                if sub.addr != target_server_audio {
+                                                    let _ = sock_audio.send_to(&pkt, sub.addr);
+                                                }
+                                                if let Some(l_addr) = sub.lan_addr {
+                                                    if l_addr != sub.addr {
+                                                        let _ = sock_audio.send_to(&pkt, l_addr);
+                                                    }
+                                                }
+                                                if !sub.is_direct && !sub.relay_id.is_empty() {
+                                                    let relay = wrap_relay_packet(&sub.relay_id, &pkt);
+                                                    let _ = sock_audio.send_to(&relay, target_server_audio);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        capturer_opt = None;
+                                        std::thread::sleep(Duration::from_millis(500));
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+
                 let socket_recv = Arc::clone(&socket);
                 let current_id_clone = Arc::clone(&current_id);
                 let clients_recv = Arc::clone(&active_clients);

@@ -135,7 +135,6 @@ pub struct TabGeometry {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
 pub struct ToolbarLayout {
     pub brand_w: i32,
     pub home_x: i32,
@@ -143,7 +142,6 @@ pub struct ToolbarLayout {
     pub home_is_compact: bool,
 
     pub tabs_area_x: i32,
-    pub tabs_area_w: i32,
     pub session_tabs: Vec<TabGeometry>,
     pub plus_x: i32,
     pub plus_w: i32,
@@ -359,7 +357,6 @@ impl ToolbarLayout {
             home_w,
             home_is_compact,
             tabs_area_x,
-            tabs_area_w,
             session_tabs,
             plus_x,
             plus_w,

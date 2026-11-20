@@ -47,6 +47,12 @@ fn main() -> anyhow::Result<()> {
         if std::env::args().any(|a| a == "--service") {
             return windows::service::run_windows_service();
         }
+        if std::env::args().any(|a| a == "--install-service") {
+            return windows::service::install_windows_service();
+        }
+        if std::env::args().any(|a| a == "--uninstall-service") {
+            return windows::service::uninstall_windows_service();
+        }
         info!(" Operating System: Windows 64-bit");
         info!(" UI Architecture: Direct Win32 pkasoft.com White Theme");
         info!(" Graphics: High-Speed GDI & 4:4:4 Pipeline");

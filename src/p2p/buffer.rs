@@ -13,19 +13,6 @@ pub fn get_client_buffer_size_mb() -> u32 {
     CLIENT_BUFFER_SIZE_MB.load(Ordering::Relaxed)
 }
 
-/// Set the stream buffer size in Megabytes.
-#[allow(dead_code)]
-pub fn set_client_buffer_size_mb(mb: u32) {
-    let sanitized = match mb {
-        128 => 128,
-        256 => 256,
-        512 => 512,
-        1024 => 1024,
-        _ => 256,
-    };
-    CLIENT_BUFFER_SIZE_MB.store(sanitized, Ordering::Relaxed);
-}
-
 /// Get the segment index (0..=3) corresponding to the active buffer preset.
 pub fn get_client_buffer_tier() -> usize {
     match get_client_buffer_size_mb() {
