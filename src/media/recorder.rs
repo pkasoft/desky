@@ -267,53 +267,77 @@ fn run_recorder_writer(
     let movi_fourcc_pos = (HEADER_SIZE - 4) as u32;
 
     let mut jpeg_buf = Vec::with_capacity(256 * 1024);
+    let mut last_jpeg = Vec::<u8>::new();
+    let frame_interval = Duration::from_micros(1_000_000 / fps.max(1) as u64);
 
-    // 2. Receive and write frames
-    while let Ok(frame) = rx.recv() {
-        let frame_jpeg: &[u8] = match &frame {
-            RecordedFrame::Jpeg(bytes) => {
-                if bytes.is_empty() {
+    // 2. Receive and write frames (duplicate last frame at target FPS during idle periods)
+    loop {
+        let frame_opt = match rx.recv_timeout(frame_interval) {
+            Ok(f) => Some(f),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if !IS_RECORDING.load(Ordering::Relaxed) {
+                    break;
+                }
+                if last_jpeg.is_empty() {
                     continue;
                 }
-                // Dynamically detect frame resolution from actual JPEG headers
-                if frames_written == 0 || width == 0 || height == 0 {
-                    if let Some((w, h)) = parse_jpeg_dimensions(bytes) {
-                        if w > 0 && h > 0 {
-                            width = w;
-                            height = h;
+                None
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+
+        let frame_jpeg: &[u8] = if let Some(ref frame) = frame_opt {
+            match frame {
+                RecordedFrame::Jpeg(bytes) => {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    // Dynamically detect frame resolution from actual JPEG headers
+                    if frames_written == 0 || width == 0 || height == 0 {
+                        if let Some((w, h)) = parse_jpeg_dimensions(bytes) {
+                            if w > 0 && h > 0 {
+                                width = w;
+                                height = h;
+                            }
                         }
                     }
+                    last_jpeg.clear();
+                    last_jpeg.extend_from_slice(bytes);
+                    last_jpeg.as_slice()
                 }
-                bytes.as_slice()
+                RecordedFrame::Bgra { data, width: w, height: h } => {
+                    let expected_len = (*w as usize) * (*h as usize) * 4;
+                    if data.len() < expected_len || *w == 0 || *h == 0 {
+                        continue;
+                    }
+                    if frames_written == 0 || width == 0 || height == 0 {
+                        width = *w;
+                        height = *h;
+                    }
+                    jpeg_buf.clear();
+                    let (quality, sampling) = match RECORD_QUALITY_SCALE.load(Ordering::Relaxed) {
+                        0 => (95, jpeg_encoder::SamplingFactor::R_4_4_4),
+                        1 => (88, jpeg_encoder::SamplingFactor::R_4_2_2),
+                        _ => (78, jpeg_encoder::SamplingFactor::R_4_2_0),
+                    };
+                    let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, quality);
+                    encoder.set_sampling_factor(sampling);
+                    if let Err(e) = encoder.encode(
+                        &data[..expected_len],
+                        *w as u16,
+                        *h as u16,
+                        jpeg_encoder::ColorType::Bgra,
+                    ) {
+                        tracing::warn!("Recorder failed to encode BGRA frame to JPEG: {}", e);
+                        continue;
+                    }
+                    last_jpeg.clear();
+                    last_jpeg.extend_from_slice(&jpeg_buf);
+                    last_jpeg.as_slice()
+                }
             }
-            RecordedFrame::Bgra { data, width: w, height: h } => {
-                let expected_len = (*w as usize) * (*h as usize) * 4;
-                if data.len() < expected_len || *w == 0 || *h == 0 {
-                    continue;
-                }
-                if frames_written == 0 || width == 0 || height == 0 {
-                    width = *w;
-                    height = *h;
-                }
-                jpeg_buf.clear();
-                let (quality, sampling) = match RECORD_QUALITY_SCALE.load(Ordering::Relaxed) {
-                    0 => (95, jpeg_encoder::SamplingFactor::R_4_4_4),
-                    1 => (88, jpeg_encoder::SamplingFactor::R_4_2_2),
-                    _ => (78, jpeg_encoder::SamplingFactor::R_4_2_0),
-                };
-                let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg_buf, quality);
-                encoder.set_sampling_factor(sampling);
-                if let Err(e) = encoder.encode(
-                    &data[..expected_len],
-                    *w as u16,
-                    *h as u16,
-                    jpeg_encoder::ColorType::Bgra,
-                ) {
-                    tracing::warn!("Recorder failed to encode BGRA frame to JPEG: {}", e);
-                    continue;
-                }
-                jpeg_buf.as_slice()
-            }
+        } else {
+            last_jpeg.as_slice()
         };
 
         if frame_jpeg.is_empty() {

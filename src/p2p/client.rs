@@ -268,15 +268,21 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 }
                             } else if codec_type == PKT_FRAME_CHUNK_TILE {
                                 use crate::codec::VideoDecoder;
-                                if let Ok(bgra) = tile_decoder.decode(&frame_bytes, orig_w, orig_h) {
-                                    Some(crate::p2p::state::RemoteFrame {
-                                        frame_id: f_id,
-                                        width: orig_w,
-                                        height: orig_h,
-                                        orig_width: orig_w,
-                                        orig_height: orig_h,
-                                        bgra,
-                                    })
+                                if frame_bytes.len() >= 8 {
+                                    let dec_w = u32::from_le_bytes(frame_bytes[0..4].try_into().unwrap());
+                                    let dec_h = u32::from_le_bytes(frame_bytes[4..8].try_into().unwrap());
+                                    if let Ok(bgra) = tile_decoder.decode(&frame_bytes, dec_w, dec_h) {
+                                        Some(crate::p2p::state::RemoteFrame {
+                                            frame_id: f_id,
+                                            width: dec_w,
+                                            height: dec_h,
+                                            orig_width: orig_w,
+                                            orig_height: orig_h,
+                                            bgra,
+                                        })
+                                    } else {
+                                        None
+                                    }
                                 } else {
                                     None
                                 }

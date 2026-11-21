@@ -99,6 +99,9 @@ pub fn execute_toolbar_action(hit: i32) {
             let orig_h = REMOTE_ORIG_H.load(Ordering::Relaxed).max(720);
             let fps = TARGET_FPS.load(Ordering::Relaxed);
             if let Ok(path) = crate::recorder::start_recording(orig_w, orig_h, fps) {
+                if let Some(latest) = crate::p2p::get_latest_remote_frame() {
+                    crate::recorder::push_bgra_frame(&latest.bgra, latest.width, latest.height);
+                }
                 append_status_log(&format!("🔴 Recording started: {}", path.display()));
             }
         }
