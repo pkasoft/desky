@@ -108,7 +108,9 @@ pub fn hit_test_session_status_view(
                 return BTN_RETURN_TO_HOME;
             }
         }
-        SessionStatus::Connecting(_) | SessionStatus::WaitingApproval(_) => {
+        SessionStatus::Connecting(_)
+        | SessionStatus::WaitingApproval(_)
+        | SessionStatus::Connected(_) => {
             let btn_w = 190;
             let btn_h = 40;
             let btn_x = card_x + (card_w - btn_w) / 2;
@@ -366,6 +368,9 @@ pub unsafe fn draw_session_status_view(
             SessionStatus::Connecting(_) => {
                 "Contacting rendezvous server...\nEstablishing secure P2P hole-punching and relay fallback link...".to_string()
             }
+            SessionStatus::Connected(_) => {
+                "Authorization granted! Establishing encrypted stream and waiting for the initial video frame...".to_string()
+            }
             _ => {
                 "This session is currently inactive or closed. Click Retry to reconnect to this Desky ID.".to_string()
             }
@@ -430,7 +435,9 @@ pub unsafe fn draw_session_status_view(
             };
             let _ = DrawTextW(hdc, &mut cancel_txt, &mut cancel_rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
         }
-        SessionStatus::Connecting(_) | SessionStatus::WaitingApproval(_) => {
+        SessionStatus::Connecting(_)
+        | SessionStatus::WaitingApproval(_)
+        | SessionStatus::Connected(_) => {
             // Cancel Connection Button
             let btn_w = 190;
             let btn_h = 40;

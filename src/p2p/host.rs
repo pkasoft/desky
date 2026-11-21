@@ -803,6 +803,7 @@ impl P2PManager {
                     let local_port = socket_recv.local_addr().ok().map(|a| a.port()).unwrap_or(0);
                     let host_lan_bytes = encode_lan_endpoint_port(local_port, target_server);
                     let mut last_incoming_punch: Option<(SocketAddr, Instant)> = None;
+                    let mut last_e2ee_peer: Option<([u8; 32], [u8; 32])> = None;
                     let auth_limiter = crate::p2p::crypto::AuthRateLimiter::new();
                     let mut buf = vec![0u8; 8192];
 
@@ -1333,17 +1334,39 @@ impl P2PManager {
                                     if slice.len() >= 37 {
                                         let mut peer_pub = [0u8; 32];
                                         peer_pub.copy_from_slice(&slice[5..37]);
-                                        let kp = crate::p2p::crypto::E2eeKeypair::generate();
-                                        let cipher = std::sync::Arc::new(kp.derive_session_cipher(&peer_pub, false));
-                                        if let Ok(mut g) = session_cipher_recv.lock() {
-                                            *g = Some(cipher);
-                                        }
+
+                                        let has_active_cipher = session_cipher_recv
+                                            .lock()
+                                            .ok()
+                                            .map(|g| g.is_some())
+                                            .unwrap_or(false);
+
+                                        let host_pub: [u8; 32] = match last_e2ee_peer {
+                                            Some((cached_peer, cached_host))
+                                                if has_active_cipher && cached_peer == peer_pub =>
+                                            {
+                                                cached_host
+                                            }
+                                            _ => {
+                                                let kp = crate::p2p::crypto::E2eeKeypair::generate();
+                                                let cipher = std::sync::Arc::new(
+                                                    kp.derive_session_cipher(&peer_pub, false),
+                                                );
+                                                if let Ok(mut g) = session_cipher_recv.lock() {
+                                                    *g = Some(cipher);
+                                                }
+                                                let hp = kp.public_bytes();
+                                                last_e2ee_peer = Some((peer_pub, hp));
+                                                info!("🔐 [HOST E2EE] X25519 + ChaCha20-Poly1305 session established with {}", from_addr);
+                                                hp
+                                            }
+                                        };
                                         force_kf_recv.store(true, Ordering::Relaxed);
 
                                         let mut ack = Vec::with_capacity(37);
                                         ack.extend_from_slice(MAGIC_DSKY);
                                         ack.push(PKT_E2EE_ACK);
-                                        ack.extend_from_slice(&kp.public_bytes());
+                                        ack.extend_from_slice(&host_pub);
                                         if from_addr != target_server {
                                             let _ = socket_recv.send_to(&ack, from_addr).await;
                                         }
@@ -1366,7 +1389,6 @@ impl P2PManager {
                                                 let _ = socket_recv.send_to(&relay_ack, target_server).await;
                                             }
                                         }
-                                        info!("🔐 [HOST E2EE] X25519 + ChaCha20-Poly1305 session established with {}", from_addr);
                                     }
                                 }
                                 PKT_KEYFRAME_REQ => {
