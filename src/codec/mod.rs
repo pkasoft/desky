@@ -6,6 +6,7 @@
 //! - OS-specific hardware-accelerated codecs are isolated in their respective OS platform modules
 //!   (e.g., `src/windows/codec/` for Windows Media Foundation MFT hardware acceleration).
 
+pub mod desky_tile;
 pub mod mjpeg;
 
 /// Codec identifiers used across the wire protocol
@@ -18,6 +19,8 @@ pub enum CodecType {
     H264 = 0x02,
     /// Hardware-accelerated H.265 / HEVC video stream
     H265 = 0x03,
+    /// Custom hybrid Lossless-RLE + 4:4:4 Tile-Delta remote desktop codec
+    DeskyTile = 0x04,
 }
 
 impl CodecType {
@@ -25,6 +28,7 @@ impl CodecType {
         match val {
             0x02 => CodecType::H264,
             0x03 => CodecType::H265,
+            0x04 => CodecType::DeskyTile,
             _ => CodecType::Mjpeg,
         }
     }

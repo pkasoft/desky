@@ -470,6 +470,7 @@ pub fn get_active_stream_codec_name() -> &'static str {
     match ACTIVE_STREAM_CODEC.load(Ordering::Relaxed) {
         0x16 => "H.264 (Hardware GPU)",
         0x17 => "H.265 / HEVC (Hardware GPU)",
+        0x1C => "DeskyTile (Lossless RLE + 4:4:4)",
         _ => "Motion-JPEG (SIMD 4:4:4)",
     }
 }
@@ -478,27 +479,22 @@ pub fn get_active_stream_codec_badge() -> &'static str {
     match ACTIVE_STREAM_CODEC.load(Ordering::Relaxed) {
         0x16 => "H.264 GPU",
         0x17 => "H.265 GPU",
+        0x1C => "DESKY-TILE",
         _ => "MJPEG 4:4:4",
     }
 }
 
 // Preferred Video Codec:
-// 0 = Auto (Best-to-Rest: H.265 GPU -> H.264 GPU -> MJPEG 4:4:4)
+// 0 = Auto (DeskyTile 4:4:4 -> H.265 GPU -> H.264 GPU -> MJPEG 4:4:4)
 // 1 = Force H.265 (HEVC GPU)
 // 2 = Force H.264 (AVC GPU)
 // 3 = Force Motion-JPEG (4:4:4 SIMD)
+// 4 = Force DeskyTile (Lossless RLE + 4:4:4)
 pub static CLIENT_CODEC_PREF: AtomicU8 = AtomicU8::new(0);
 
 
 pub fn get_client_codec_pref() -> u8 {
-    let pref = CLIENT_CODEC_PREF.load(Ordering::Relaxed);
-    #[cfg(target_os = "linux")]
-    {
-        if pref == 0 && !crate::platform::codec::is_h264_hardware_available() {
-            return 3;
-        }
-    }
-    pref
+    CLIENT_CODEC_PREF.load(Ordering::Relaxed)
 }
 
 pub fn set_client_codec_pref(pref: u8) {
@@ -506,20 +502,8 @@ pub fn set_client_codec_pref(pref: u8) {
         1 if crate::platform::codec::is_h265_hardware_available() => 1,
         2 if crate::platform::codec::is_h264_hardware_available() => 2,
         3 => 3,
-        _ => {
-            #[cfg(target_os = "linux")]
-            {
-                if !crate::platform::codec::is_h264_hardware_available() {
-                    3
-                } else {
-                    0
-                }
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                0
-            }
-        }
+        4 => 4,
+        _ => 0,
     };
     CLIENT_CODEC_PREF.store(sanitized, Ordering::Relaxed);
 }

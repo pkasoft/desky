@@ -880,7 +880,7 @@ unsafe fn draw_category_codecs(
         f_sub,
     );
     let pref = crate::p2p::get_client_codec_pref();
-    let opts = ["Auto (Recommended)", "H.265 / HEVC", "H.264 / AVC", "JPEG Software"];
+    let opts = ["Auto (DeskyTile 4:4:4)", "H.265 / HEVC", "H.264 / AVC", "JPEG Software"];
     draw_segment_pills(
         hdc,
         cx + 18,

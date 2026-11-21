@@ -18,7 +18,8 @@ use crate::p2p::state::{
     SESSION_BITRATE_KBPS, SESSION_RTT_MS,
 };
 use crate::protocol::{
-    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME, PKT_KEYFRAME_REQ,
+    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME,
+    PKT_FRAME_CHUNK_TILE, PKT_KEYFRAME_REQ,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
@@ -214,6 +215,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     let mut logged_first = false;
                     let mut h264_decoder = crate::platform::codec::PlatformH264Decoder::new().ok();
                     let mut h265_decoder = crate::platform::codec::PlatformH265Decoder::new().ok();
+                    let mut tile_decoder = crate::codec::desky_tile::DeskyTileDecoder::new();
 
                     while CLIENT_SESSION_ACTIVE.load(Ordering::Relaxed)
                         && CLIENT_SESSION_GEN.load(Ordering::Relaxed) == my_gen
@@ -264,6 +266,20 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 } else {
                                     None
                                 }
+                            } else if codec_type == PKT_FRAME_CHUNK_TILE {
+                                use crate::codec::VideoDecoder;
+                                if let Ok(bgra) = tile_decoder.decode(&frame_bytes, orig_w, orig_h) {
+                                    Some(crate::p2p::state::RemoteFrame {
+                                        frame_id: f_id,
+                                        width: orig_w,
+                                        height: orig_h,
+                                        orig_width: orig_w,
+                                        orig_height: orig_h,
+                                        bgra,
+                                    })
+                                } else {
+                                    None
+                                }
                             } else if codec_type == PKT_FRAME_CHUNK_H264 {
                                 use crate::codec::VideoDecoder;
                                 if let Some(ref mut dec) = h264_decoder {
@@ -305,7 +321,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 }
 
                                 if crate::recorder::is_recording() {
-                                    if codec_type == PKT_FRAME_CHUNK_H264 || codec_type == PKT_FRAME_CHUNK_H265 {
+                                    if codec_type == PKT_FRAME_CHUNK_H264
+                                        || codec_type == PKT_FRAME_CHUNK_H265
+                                        || codec_type == PKT_FRAME_CHUNK_TILE
+                                    {
                                         crate::recorder::push_bgra_frame(&decoded.bgra, decoded.width, decoded.height);
                                     } else {
                                         crate::recorder::push_frame(&frame_bytes);
@@ -515,15 +534,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     hello.extend_from_slice(my_relay_id.as_bytes());
                     hello.extend_from_slice(&my_lan_bytes);
                     hello.push(if is_direct_peer { 1u8 } else { 0u8 });
-                    #[cfg(target_os = "linux")]
-                    {
-                        let _ = get_client_codec_pref();
-                        hello.push(3u8);
-                    }
-                    #[cfg(not(target_os = "linux"))]
-                    {
-                        hello.push(get_client_codec_pref());
-                    }
+                    hello.push(get_client_codec_pref());
 
                     // 1. Direct WAN / Active Peer path (only if not forced relay)
                     if !force_relay {
@@ -842,7 +853,10 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
                                         }
                                     }
-                                    PKT_FRAME_CHUNK | PKT_FRAME_CHUNK_H264 | PKT_FRAME_CHUNK_H265 => {
+                                    PKT_FRAME_CHUNK
+                                    | PKT_FRAME_CHUNK_H264
+                                    | PKT_FRAME_CHUNK_H265
+                                    | PKT_FRAME_CHUNK_TILE => {
                                         if slice.len() > 17 {
                                             let frame_id = u32::from_le_bytes([
                                                 slice[5], slice[6], slice[7], slice[8],

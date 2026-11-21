@@ -520,7 +520,7 @@ pub fn draw_fullscreen_settings_view(
             let pref = crate::p2p::get_client_codec_pref();
 
             let c_opts = [
-                (0u8, "Auto", true),
+                (0u8, "Auto (DeskyTile)", true),
                 (1, "H.265 GPU (Unsupported)", h265_avail),
                 (2, "H.264 VA-API", h264_avail),
                 (3, "Motion-JPEG 4:4:4", true),

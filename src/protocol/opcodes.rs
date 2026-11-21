@@ -43,3 +43,4 @@ pub const PKT_E2EE_HELLO: u8 = 0x18;      // Initiator ephemeral X25519 public k
 pub const PKT_E2EE_ACK: u8 = 0x19;        // Responder ephemeral X25519 public key (32 bytes)
 pub const PKT_ENCRYPTED_FRAME: u8 = 0x1A; // ChaCha20-Poly1305 AEAD encrypted DSKY payload
 pub const PKT_KEYFRAME_REQ: u8 = 0x1B;    // Packet-loss recovery: immediate keyframe/IDR request
+pub const PKT_FRAME_CHUNK_TILE: u8 = 0x1C; // Custom hybrid Lossless-RLE + 4:4:4 Tile-Delta frame chunk

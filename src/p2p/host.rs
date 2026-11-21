@@ -11,7 +11,8 @@ use crate::p2p::state::{
 };
 use crate::codec::VideoEncoder;
 use crate::protocol::{
-    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME, PKT_KEYFRAME_REQ,
+    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME,
+    PKT_FRAME_CHUNK_TILE, PKT_KEYFRAME_REQ,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -217,6 +218,7 @@ impl P2PManager {
                     std::thread::spawn(move || {
                         let mut frame_id: u32 = 1;
                         let mut mjpeg_encoder = crate::codec::mjpeg::MjpegEncoder::new(76, true);
+                        let mut tile_encoder = crate::codec::desky_tile::DeskyTileEncoder::new(90);
                         let mut last_encoded_len: usize = 0;
                         let mut last_frame_hash: u64 = 0;
                         let mut last_sent_frame_time = Instant::now() - Duration::from_secs(2);
@@ -453,8 +455,19 @@ impl P2PManager {
 
                                 let preferred_codec = subscribers.first().map(|s| s.codec_pref).unwrap_or(0);
 
+                                // TIER 0 (CUSTOM DESKTOP CODEC): DeskyTile (Lossless RLE + 4:4:4 Tile-Delta)
+                                if preferred_codec == 0 || preferred_codec == 4 {
+                                    tile_encoder.set_quality(req_quality.clamp(78, 96));
+                                    if let Ok(frame) = tile_encoder.encode(&bgra, cap_w, cap_h, force_keyframe) {
+                                        if !frame.data.is_empty() {
+                                            encoded_data = frame.data;
+                                            encoded_pkt_type = PKT_FRAME_CHUNK_TILE;
+                                        }
+                                    }
+                                }
+
                                 // TIER 1 (H.265 / HEVC GPU)
-                                if (preferred_codec == 0 || preferred_codec == 1) && crate::platform::codec::is_h265_hardware_available() {
+                                if encoded_data.is_empty() && preferred_codec == 1 && crate::platform::codec::is_h265_hardware_available() {
                                     if h265_encoder.is_none() || h265_w != cap_w || h265_h != cap_h {
                                         h265_encoder = crate::platform::codec::PlatformH265Encoder::new(cap_w, cap_h, max_fps, target_bitrate).ok();
                                         h265_w = cap_w;
@@ -845,7 +858,7 @@ impl P2PManager {
                                     };
                                     let client_confirmed_direct =
                                         slice.len() >= 39 && slice[38] != 0;
-                                    let client_codec_pref = if slice.len() > 39 { slice[39].min(3) } else { 0 };
+                                    let client_codec_pref = if slice.len() > 39 { slice[39].min(4) } else { 0 };
 
                                     let norm_cid = normalize_id(&raw_cid);
                                     let my_own_id = normalize_id(&current_id_clone.read().await);
