@@ -255,6 +255,7 @@ pub unsafe fn draw_session_status_view(
         SessionStatus::WaitingApproval(_) => "Waiting for Host Authorization",
         SessionStatus::PasswordRequired(_) => "Unattended Access",
         SessionStatus::Connecting(_) => "Connecting to Remote Desk",
+        SessionStatus::Connected(_) => "Authorized — Starting Video Stream",
         _ => "Session Offline",
     };
     let mut title_utf16: Vec<u16> = title_str.encode_utf16().collect();

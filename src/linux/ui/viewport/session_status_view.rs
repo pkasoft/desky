@@ -71,6 +71,7 @@ pub fn draw_session_status_view(
         SessionStatus::WaitingApproval(_) => "Waiting for Host Authorization",
         SessionStatus::PasswordRequired(_) => "Unattended Access Password Required",
         SessionStatus::Connecting(_) => "Connecting to Remote Desk",
+        SessionStatus::Connected(_) => "Authorized — Starting Video Stream",
         _ => "Session Offline",
     };
     canvas.draw_text_centered(

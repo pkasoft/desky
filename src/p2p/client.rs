@@ -434,6 +434,19 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     last_matchmaker_retry = Instant::now();
                 }
 
+                // Auto-fallback to server relay if direct P2P fails to deliver video frames within 3s
+                if !received_any_frame
+                    && is_direct_peer
+                    && !force_relay
+                    && !is_serverless
+                    && session_start.elapsed() > Duration::from_secs(3)
+                    && last_rx_from_peer.elapsed() > Duration::from_secs(2)
+                {
+                    warn!("⚠️ Direct P2P path stalled; falling back to server relay tunneling for {}", display_target);
+                    is_direct_peer = false;
+                    last_hello = Instant::now() - Duration::from_secs(10);
+                }
+
                 // Auto-reconnect & network blip resilience for active sessions
                 if received_any_frame {
                     let rx_elapsed = last_rx_from_peer.elapsed();
@@ -539,8 +552,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                         }
                     }
 
-                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified or during reconnect or in force_relay)
-                    if (!is_direct_peer || is_reconnecting || force_relay) && !is_serverless {
+                    // 3. VDS Relay fallback (used whenever direct Host -> Client P2P is not yet verified, awaiting first frame, reconnecting, or force_relay)
+                    if (!is_direct_peer || !received_any_frame || is_reconnecting || force_relay) && !is_serverless {
                         let relay_hello = wrap_relay_packet(&norm_target, &hello);
                         let _ = socket.send_to(&relay_hello, server_addr).await;
                     }
@@ -561,7 +574,7 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                 let _ = socket.send_to(&e2ee_hello, l_addr).await;
                             }
                         }
-                        if (!is_direct_peer || force_relay) && !is_serverless {
+                        if (!is_direct_peer || !received_any_frame || force_relay) && !is_serverless {
                             let relay_e2ee = wrap_relay_packet(&norm_target, &e2ee_hello);
                             let _ = socket.send_to(&relay_e2ee, server_addr).await;
                         }
@@ -805,6 +818,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                         set_session_status(SessionStatus::Connected(
                                                             display_target.clone(),
                                                         ));
+                                                        last_hello = Instant::now() - Duration::from_secs(10);
+                                                        crate::platform::ui::request_main_redraw();
                                                     }
                                                 }
                                                 AUTH_DECLINED => {

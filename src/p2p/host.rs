@@ -949,10 +949,6 @@ impl P2PManager {
                                             if !is_from_server {
                                                 entry.addr = from_addr;
                                                 entry.is_direct = true;
-                                            } else if client_confirmed_direct
-                                                && entry.addr != target_server
-                                            {
-                                                entry.is_direct = true;
                                             } else if !client_confirmed_direct {
                                                 entry.is_direct = false;
                                             }
@@ -1314,11 +1310,34 @@ impl P2PManager {
                                         if let Ok(mut g) = session_cipher_recv.lock() {
                                             *g = Some(cipher);
                                         }
+                                        force_kf_recv.store(true, Ordering::Relaxed);
+
                                         let mut ack = Vec::with_capacity(37);
                                         ack.extend_from_slice(MAGIC_DSKY);
                                         ack.push(PKT_E2EE_ACK);
                                         ack.extend_from_slice(&kp.public_bytes());
-                                        let _ = socket_recv.send_to(&ack, from_addr).await;
+                                        if from_addr != target_server {
+                                            let _ = socket_recv.send_to(&ack, from_addr).await;
+                                        }
+                                        let dests: Vec<(SocketAddr, Option<SocketAddr>, String)> = if let Ok(map) = clients_recv.lock() {
+                                            map.values()
+                                                .map(|s| (s.addr, s.lan_addr, s.relay_id.clone()))
+                                                .collect()
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        for (s_addr, s_lan, s_relay) in dests {
+                                            if s_addr != target_server && s_addr != from_addr {
+                                                let _ = socket_recv.send_to(&ack, s_addr).await;
+                                            }
+                                            if let Some(l_addr) = s_lan {
+                                                let _ = socket_recv.send_to(&ack, l_addr).await;
+                                            }
+                                            if !s_relay.is_empty() {
+                                                let relay_ack = wrap_relay_packet(&s_relay, &ack);
+                                                let _ = socket_recv.send_to(&relay_ack, target_server).await;
+                                            }
+                                        }
                                         info!("🔐 [HOST E2EE] X25519 + ChaCha20-Poly1305 session established with {}", from_addr);
                                     }
                                 }
