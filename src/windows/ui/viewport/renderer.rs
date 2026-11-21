@@ -14,7 +14,7 @@ use windows::Win32::Graphics::Gdi::{
     GetDC, ReleaseDC, SelectObject, SetBrushOrgEx, SetStretchBltMode, StretchDIBits, BITMAPINFO,
     BITMAPINFOHEADER, BI_RGB, COLORONCOLOR, DIB_RGB_COLORS, HALFTONE, HDC, HGDIOBJ, SRCCOPY,
 };
-use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsWindow};
+use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, IsIconic, IsWindow, IsWindowVisible};
 
 use super::file_hud;
 use super::overflow_menu::draw_overflow_menu;
@@ -67,6 +67,14 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
         let mut last_ui_refresh = Instant::now();
         let mut last_edit_wanted: bool = true;
         let mut last_host_session_active: bool = false;
+        let mut last_server_online: bool = false;
+        let mut last_server_ping: u32 = 0;
+        let mut last_tabs_len: usize = 0;
+        let mut last_card3_tab: u8 = 255;
+        let mut last_card3_scroll: i32 = -1;
+        let mut last_settings_hover: i32 = -1;
+        let mut last_settings_scroll: i32 = -1;
+        let mut idle_sleep_ms: u64;
 
         let mut cached_mem_dc: Option<HDC> = None;
         let mut cached_mem_bmp: Option<windows::Win32::Graphics::Gdi::HBITMAP> = None;
@@ -78,6 +86,10 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
             unsafe {
                 if !IsWindow(Some(target_hwnd)).as_bool() {
                     break;
+                }
+                if !IsWindowVisible(target_hwnd).as_bool() || IsIconic(target_hwnd).as_bool() {
+                    std::thread::sleep(Duration::from_millis(200));
+                    continue;
                 }
 
                 let mut rect = RECT::default();
@@ -135,6 +147,17 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                 let cur_frame_id = latest_frame.as_ref().map(|f| f.frame_id).unwrap_or(0);
 
                 let frame_changed = cur_frame_id != last_rendered_frame_id;
+                let server_online = crate::p2p::is_server_online();
+                let server_ping = crate::p2p::get_server_ping_ms();
+                let tabs_len = tabs.len();
+                let card3_tab = crate::windows::ui::launcher::BOTTOM_CARD3_TAB.load(Ordering::Relaxed);
+                let card3_scroll = crate::windows::ui::launcher::CARD3_SCROLL_Y.load(Ordering::Relaxed);
+                let settings_hover = super::settings_modal::SETTINGS_HOVER_ID.load(Ordering::Relaxed);
+                let settings_scroll = super::settings_modal::SETTINGS_SCROLL_Y.load(Ordering::Relaxed);
+                let forced_redraw = crate::windows::ui::launcher::FORCE_VIEWPORT_REDRAW.swap(false, Ordering::Relaxed);
+
+                idle_sleep_ms = if active_idx > 0 { 8 } else { 40 };
+
                 let ui_changed = active_idx != last_tab_idx
                     || hover_state != last_hover
                     || client_w != last_w
@@ -149,11 +172,26 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     || session_status != last_session_status
                     || status_hover != last_status_hover
                     || chat_open != last_chat_open
-                    || chat_hover != last_chat_hover;
+                    || chat_hover != last_chat_hover
+                    || server_online != last_server_online
+                    || server_ping != last_server_ping
+                    || tabs_len != last_tabs_len
+                    || card3_tab != last_card3_tab
+                    || card3_scroll != last_card3_scroll
+                    || settings_hover != last_settings_hover
+                    || settings_scroll != last_settings_scroll
+                    || forced_redraw;
 
-                let periodic_refresh = last_ui_refresh.elapsed() >= Duration::from_millis(50);
+                let periodic_refresh = host_ui_active && last_ui_refresh.elapsed() >= Duration::from_millis(1000);
 
                 if frame_changed || ui_changed || periodic_refresh {
+                    last_server_online = server_online;
+                    last_server_ping = server_ping;
+                    last_tabs_len = tabs_len;
+                    last_card3_tab = card3_tab;
+                    last_card3_scroll = card3_scroll;
+                    last_settings_hover = settings_hover;
+                    last_settings_scroll = settings_scroll;
                     last_rendered_frame_id = cur_frame_id;
                     last_tab_idx = active_idx;
                     last_hover = hover_state;
@@ -372,7 +410,7 @@ pub fn start_viewport_render_thread(hwnd: HWND) {
                     }
                 }
             }
-            std::thread::sleep(Duration::from_millis(8));
+            std::thread::sleep(Duration::from_millis(idle_sleep_ms));
         }
 
         unsafe {

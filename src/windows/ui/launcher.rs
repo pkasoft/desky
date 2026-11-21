@@ -57,6 +57,7 @@ pub static BOTTOM_TAB_RADAR: AtomicBool = AtomicBool::new(false);
 pub static BOTTOM_CARD3_TAB: AtomicU8 = AtomicU8::new(0); // 0 = Recent Sessions, 1 = Address Book, 2 = LAN Radar
 pub static CARD3_SCROLL_Y: AtomicI32 = AtomicI32::new(0);
 pub static CARD3_MAX_SCROLL: AtomicI32 = AtomicI32::new(0);
+pub static FORCE_VIEWPORT_REDRAW: AtomicBool = AtomicBool::new(true);
 static STATUS_LOGS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
 pub fn scroll_card3(delta: i32) {
@@ -72,6 +73,7 @@ pub fn scroll_card3(delta: i32) {
 }
 
 pub fn request_main_redraw() {
+    FORCE_VIEWPORT_REDRAW.store(true, Ordering::Relaxed);
     unsafe {
         if !HWND_MAIN_WINDOW.0.is_null() && IsWindow(Some(HWND_MAIN_WINDOW)).as_bool() {
             let _ = InvalidateRect(Some(HWND_MAIN_WINDOW), None, false);

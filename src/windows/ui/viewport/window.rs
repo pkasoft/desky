@@ -1136,6 +1136,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             LRESULT(0)
         }
         WM_PAINT => {
+            crate::windows::ui::launcher::FORCE_VIEWPORT_REDRAW.store(true, Ordering::Relaxed);
             let mut ps = PAINTSTRUCT::default();
             let _ = BeginPaint(hwnd, &mut ps);
             let _ = EndPaint(hwnd, &ps);
