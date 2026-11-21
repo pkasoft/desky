@@ -404,7 +404,8 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                             if let Some(l_addr) = peer_lan_addr {
                                 let _ = socket.send_to(&kf_pkt, l_addr).await;
                             }
-                        } else {
+                        }
+                        if (!is_direct_peer || !received_any_frame || force_relay) && !is_serverless {
                             let relay_kf = wrap_relay_packet(&norm_target, &kf_pkt);
                             let _ = socket.send_to(&relay_kf, server_addr).await;
                         }
@@ -417,8 +418,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                 }
 
 
-                // Keep VDS relay return route alive if direct P2P hasn't been established yet (skip in serverless)
-                if !is_serverless && !is_direct_peer && last_relay_hb.elapsed() >= Duration::from_secs(6) {
+                // Keep VDS relay return route alive if direct P2P hasn't delivered video yet or during reconnect (skip in serverless)
+                if !is_serverless
+                    && (!is_direct_peer || !received_any_frame || is_reconnecting)
+                    && last_relay_hb.elapsed() >= Duration::from_secs(6)
+                {
                     if let Ok(hb_bytes) = serde_json::to_vec(&relay_hb) {
                         let _ = socket.send_to(&hb_bytes, server_addr).await;
                     }
@@ -481,8 +485,9 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     } else if rx_elapsed > Duration::from_secs(4) {
                         if !is_reconnecting {
                             is_reconnecting = true;
+                            is_direct_peer = false;
                             warn!(
-                                "⚠️ Network blip detected (>4s without peer packet). Re-punching UDP and enabling Relay mirroring..."
+                                "⚠️ Network blip detected (>4s without peer packet). Falling back to Relay tunneling & re-punching UDP..."
                             );
                             set_session_status(SessionStatus::Connecting(format!(
                                 "{} (Reconnecting...)",

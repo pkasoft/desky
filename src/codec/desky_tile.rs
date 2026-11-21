@@ -150,7 +150,8 @@ impl VideoEncoder for DeskyTileEncoder {
                     (TILE_MODE_RLE, &self.rle_scratch)
                 } else {
                     self.jpeg_scratch.clear();
-                    let mut enc = Encoder::new(&mut self.jpeg_scratch, self.quality);
+                    let tile_q = if is_keyframe { self.quality.min(80) } else { self.quality };
+                    let mut enc = Encoder::new(&mut self.jpeg_scratch, tile_q);
                     enc.set_sampling_factor(SamplingFactor::R_4_4_4);
                     enc.encode(&self.tile_scratch, tw as u16, th as u16, ColorType::Bgra)?;
                     (TILE_MODE_JPEG444, &self.jpeg_scratch)

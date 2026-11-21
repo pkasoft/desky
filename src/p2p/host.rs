@@ -222,6 +222,7 @@ impl P2PManager {
                         let mut last_encoded_len: usize = 0;
                         let mut last_frame_hash: u64 = 0;
                         let mut last_sent_frame_time = Instant::now() - Duration::from_secs(2);
+                        let mut had_subscribers = false;
                         let mut h264_encoder: Option<crate::platform::codec::PlatformH264Encoder> = None;
                         let mut h264_w: u32 = 0;
                         let mut h264_h: u32 = 0;
@@ -250,8 +251,20 @@ impl P2PManager {
                             };
 
                             if subscribers.is_empty() {
+                                if had_subscribers {
+                                    had_subscribers = false;
+                                    last_frame_hash = 0;
+                                    if let Ok(mut g) = session_cipher_cap.lock() {
+                                        *g = None;
+                                    }
+                                }
                                 std::thread::sleep(Duration::from_millis(50));
                                 continue;
+                            }
+                            if !had_subscribers {
+                                had_subscribers = true;
+                                last_frame_hash = 0;
+                                force_kf_cap.store(true, Ordering::Relaxed);
                             }
 
                             let any_relay = subscribers.iter().any(|s| !s.is_direct);
@@ -571,9 +584,11 @@ impl P2PManager {
                                                 if !sub.is_direct && !sub.relay_id.is_empty() {
                                                     let relay_pkt =
                                                         wrap_relay_packet(&sub.relay_id, &wire_pkt);
-                                                    let _ = std_sock_stream_capture
-                                                        .send_to(&relay_pkt, target_server_stream);
+                                                    send_chunk_retry(&std_sock_stream_capture, &relay_pkt, target_server_stream);
                                                 }
+                                            }
+                                            if idx % 8 == 7 {
+                                                std::thread::sleep(Duration::from_micros(150));
                                             }
 
                                             // Smooth micro-pacing so socket/LAN buffers never drop UDP packets
