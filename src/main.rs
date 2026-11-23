@@ -40,12 +40,17 @@ fn main() -> anyhow::Result<()> {
     info!(" Desky v{} - Native Remote Desktop", env!("CARGO_PKG_VERSION"));
     #[cfg(target_os = "windows")]
     {
+        if std::env::args().any(|a| a == "--service") {
+            return windows::service::run_windows_service();
+        }
+        if !windows::desktop::is_current_process_elevated() {
+            info!("Process is not elevated; requesting Administrator privileges via UAC...");
+            let _ = windows::desktop::elevate_process();
+            return Ok(());
+        }
         if std::env::args().any(|a| a == "--uninstall") {
             windows::install::uninstall_from_system();
             return Ok(());
-        }
-        if std::env::args().any(|a| a == "--service") {
-            return windows::service::run_windows_service();
         }
         if std::env::args().any(|a| a == "--install-service") {
             return windows::service::install_windows_service();

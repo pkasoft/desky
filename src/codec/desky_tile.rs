@@ -17,6 +17,7 @@ use super::{CodecType, EncodedFrame, VideoDecoder, VideoEncoder};
 pub const TILE_SIZE: usize = 64;
 const TILE_MODE_RLE: u8 = 0x00;
 const TILE_MODE_JPEG444: u8 = 0x01;
+const TILE_MODE_SOLID: u8 = 0x02;
 
 pub struct DeskyTileEncoder {
     quality: u8,
@@ -45,33 +46,49 @@ impl DeskyTileEncoder {
         self.quality = quality.clamp(50, 98);
     }
 
-    fn encode_rle_bgra(src: &[u8], out: &mut Vec<u8>) {
+    /// Returns `Some([b, g, r, a])` if every pixel in `src` is identical.
+    #[inline]
+    fn detect_solid_bgra(src: &[u8]) -> Option<[u8; 4]> {
+        let first: [u8; 4] = src.get(..4)?.try_into().ok()?;
+        let first_u32 = u32::from_ne_bytes(first);
+        for px in src.chunks_exact(4) {
+            if u32::from_ne_bytes([px[0], px[1], px[2], px[3]]) != first_u32 {
+                return None;
+            }
+        }
+        Some(first)
+    }
+
+    /// Encodes BGRA pixels with RLE, aborting early if output exceeds `max_len`.
+    /// Returns `true` if RLE fit within `max_len`.
+    fn encode_rle_bgra(src: &[u8], out: &mut Vec<u8>, max_len: usize) -> bool {
         out.clear();
-        let px_count = src.len() / 4;
+        let pixels: &[[u8; 4]] = bytemuck_pixels(src);
+        let px_count = pixels.len();
         let mut i = 0;
         while i < px_count {
-            let base = i * 4;
-            let b0 = src[base];
-            let b1 = src[base + 1];
-            let b2 = src[base + 2];
-            let b3 = src[base + 3];
+            let p0 = pixels[i];
             let mut run = 1usize;
-            while run < 256 && i + run < px_count {
-                let p = (i + run) * 4;
-                if src[p] == b0 && src[p + 1] == b1 && src[p + 2] == b2 && src[p + 3] == b3 {
-                    run += 1;
-                } else {
-                    break;
-                }
+            let limit = (px_count - i).min(256);
+            while run < limit && pixels[i + run] == p0 {
+                run += 1;
+            }
+            if out.len() + 5 > max_len {
+                return false;
             }
             out.push((run - 1) as u8);
-            out.push(b0);
-            out.push(b1);
-            out.push(b2);
-            out.push(b3);
+            out.extend_from_slice(&p0);
             i += run;
         }
+        true
     }
+}
+
+#[inline]
+fn bytemuck_pixels(src: &[u8]) -> &[[u8; 4]] {
+    let len = src.len() / 4;
+    // SAFETY: `[u8; 4]` has alignment 1 and size 4, matching 4-byte BGRA slices.
+    unsafe { std::slice::from_raw_parts(src.as_ptr() as *const [u8; 4], len) }
 }
 
 impl VideoEncoder for DeskyTileEncoder {
@@ -144,17 +161,25 @@ impl VideoEncoder for DeskyTileEncoder {
                     self.tile_scratch.extend_from_slice(&bgra[off..off + row_bytes]);
                 }
 
-                // Try lossless BGRA RLE first; if it achieves >= 2.5x compression, use lossless RLE!
-                Self::encode_rle_bgra(&self.tile_scratch, &mut self.rle_scratch);
-                let (mode, payload): (u8, &[u8]) = if self.rle_scratch.len() * 5 <= self.tile_scratch.len() * 2 {
-                    (TILE_MODE_RLE, &self.rle_scratch)
+                // 1. Fast path: solid-color tile (4 bytes total)
+                // 2. Lossless BGRA RLE with early abort if compression < 2.5x
+                // 3. Fallback: 4:4:4 full-chroma JPEG for photographic/video regions
+                let solid_buf;
+                let (mode, payload): (u8, &[u8]) = if let Some(px) = Self::detect_solid_bgra(&self.tile_scratch) {
+                    solid_buf = px;
+                    (TILE_MODE_SOLID, &solid_buf)
                 } else {
-                    self.jpeg_scratch.clear();
-                    let tile_q = if is_keyframe { self.quality.min(80) } else { self.quality };
-                    let mut enc = Encoder::new(&mut self.jpeg_scratch, tile_q);
-                    enc.set_sampling_factor(SamplingFactor::R_4_4_4);
-                    enc.encode(&self.tile_scratch, tw as u16, th as u16, ColorType::Bgra)?;
-                    (TILE_MODE_JPEG444, &self.jpeg_scratch)
+                    let max_rle_len = (self.tile_scratch.len() * 2) / 5;
+                    if Self::encode_rle_bgra(&self.tile_scratch, &mut self.rle_scratch, max_rle_len) {
+                        (TILE_MODE_RLE, &self.rle_scratch)
+                    } else {
+                        self.jpeg_scratch.clear();
+                        let tile_q = if is_keyframe { self.quality.min(80) } else { self.quality };
+                        let mut enc = Encoder::new(&mut self.jpeg_scratch, tile_q);
+                        enc.set_sampling_factor(SamplingFactor::R_4_4_4);
+                        enc.encode(&self.tile_scratch, tw as u16, th as u16, ColorType::Bgra)?;
+                        (TILE_MODE_JPEG444, &self.jpeg_scratch)
+                    }
                 };
 
                 out.extend_from_slice(&(tx as u16).to_le_bytes());
@@ -170,13 +195,15 @@ impl VideoEncoder for DeskyTileEncoder {
 
         out[tile_count_pos..tile_count_pos + 2].copy_from_slice(&dirty_count.to_le_bytes());
 
-        // Update previous frame cache
-        if self.prev_bgra.len() != expected_len {
-            self.prev_bgra.resize(expected_len, 0);
+        // Update previous frame cache only if anything changed (or dimensions changed)
+        if is_keyframe || dirty_count > 0 {
+            if self.prev_bgra.len() != expected_len {
+                self.prev_bgra.resize(expected_len, 0);
+            }
+            self.prev_bgra.copy_from_slice(&bgra[..expected_len]);
+            self.prev_w = width;
+            self.prev_h = height;
         }
-        self.prev_bgra.copy_from_slice(&bgra[..expected_len]);
-        self.prev_w = width;
-        self.prev_h = height;
 
         Ok(EncodedFrame {
             codec: CodecType::DeskyTile,
@@ -203,6 +230,31 @@ impl DeskyTileDecoder {
         }
     }
 
+    fn decode_solid_into_fb(
+        solid: &[u8],
+        fb: &mut [u8],
+        fb_stride: usize,
+        x0: usize,
+        y0: usize,
+        tw: usize,
+        th: usize,
+    ) -> Result<()> {
+        if solid.len() < 4 {
+            return Ok(());
+        }
+        let px: [u8; 4] = [solid[0], solid[1], solid[2], solid[3]];
+        let row_bytes = tw * 4;
+        for row in 0..th {
+            let start = (y0 + row) * fb_stride + x0 * 4;
+            if start + row_bytes <= fb.len() {
+                for dst in fb[start..start + row_bytes].chunks_exact_mut(4) {
+                    dst.copy_from_slice(&px);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn decode_rle_into_fb(
         rle: &[u8],
         fb: &mut [u8],
@@ -212,31 +264,29 @@ impl DeskyTileDecoder {
         tw: usize,
         th: usize,
     ) -> Result<()> {
-        let total_px = tw * th;
-        let mut px_idx = 0usize;
+        let mut row = 0usize;
+        let mut col = 0usize;
         let mut pos = 0usize;
-        while pos + 5 <= rle.len() && px_idx < total_px {
-            let run = (rle[pos] as usize) + 1;
-            let b = rle[pos + 1];
-            let g = rle[pos + 2];
-            let r = rle[pos + 3];
-            let a = rle[pos + 4];
+        while pos + 5 <= rle.len() && row < th {
+            let mut rem = (rle[pos] as usize) + 1;
+            let px = [rle[pos + 1], rle[pos + 2], rle[pos + 3], rle[pos + 4]];
             pos += 5;
 
-            for _ in 0..run {
-                if px_idx >= total_px {
-                    break;
+            while rem > 0 && row < th {
+                let span = rem.min(tw - col);
+                let start = (y0 + row) * fb_stride + (x0 + col) * 4;
+                let end = start + span * 4;
+                if end <= fb.len() {
+                    for dst in fb[start..end].chunks_exact_mut(4) {
+                        dst.copy_from_slice(&px);
+                    }
                 }
-                let ty_row = px_idx / tw;
-                let tx_col = px_idx % tw;
-                let off = (y0 + ty_row) * fb_stride + (x0 + tx_col) * 4;
-                if off + 4 <= fb.len() {
-                    fb[off] = b;
-                    fb[off + 1] = g;
-                    fb[off + 2] = r;
-                    fb[off + 3] = a;
+                col += span;
+                rem -= span;
+                if col == tw {
+                    col = 0;
+                    row += 1;
                 }
-                px_idx += 1;
             }
         }
         Ok(())
@@ -300,16 +350,15 @@ impl VideoDecoder for DeskyTileDecoder {
                 continue;
             }
 
-            if mode == TILE_MODE_RLE {
+            if mode == TILE_MODE_SOLID {
+                let _ = Self::decode_solid_into_fb(payload, &mut self.fb, stride, x0, y0, tw, th);
+            } else if mode == TILE_MODE_RLE {
                 let _ = Self::decode_rle_into_fb(payload, &mut self.fb, stride, x0, y0, tw, th);
             } else if mode == TILE_MODE_JPEG444 {
-                let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGBA);
+                let options = DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::BGRA);
                 let mut dec = JpegDecoder::new_with_options(std::io::Cursor::new(payload), options);
-                if let Ok(mut pixels) = dec.decode() {
+                if let Ok(pixels) = dec.decode() {
                     if pixels.len() == tw * th * 4 {
-                        for px in pixels.chunks_exact_mut(4) {
-                            px.swap(0, 2); // RGBA -> BGRA
-                        }
                         let row_bytes = tw * 4;
                         for row in 0..th {
                             let dst_off = (y0 + row) * stride + x0 * 4;
@@ -374,5 +423,39 @@ mod tests {
 
         let out2 = dec.decode(&delta.data, w, h).unwrap();
         assert_eq!(out2, frame2);
+
+        // Idle frame -> 0 dirty tiles
+        let idle = enc.encode(&frame2, w, h, false).unwrap();
+        assert_eq!(u16::from_le_bytes(idle.data[9..11].try_into().unwrap()), 0);
+        assert_eq!(dec.decode(&idle.data, w, h).unwrap(), frame2);
+    }
+
+    #[test]
+    fn test_desky_tile_solid_and_jpeg444_non_multiple_dims() {
+        let w = 130u32;
+        let h = 95u32;
+        let mut frame = vec![0u8; (w * h * 4) as usize];
+        // Fill with a solid color first, then put noisy gradient in tile (0,0) to trigger JPEG444
+        for px in frame.chunks_exact_mut(4) {
+            px.copy_from_slice(&[0x33, 0x66, 0x99, 0xFF]);
+        }
+        for y in 0..64usize {
+            for x in 0..64usize {
+                let idx = (y * (w as usize) + x) * 4;
+                frame[idx] = ((x * 7 + y * 13) & 0xFF) as u8;
+                frame[idx + 1] = ((x * 11 + y * 5) & 0xFF) as u8;
+                frame[idx + 2] = ((x * 3 + y * 17) & 0xFF) as u8;
+                frame[idx + 3] = 0xFF;
+            }
+        }
+
+        let mut enc = DeskyTileEncoder::new(92);
+        let mut dec = DeskyTileDecoder::new();
+        let kf = enc.encode(&frame, w, h, true).unwrap();
+        let out = dec.decode(&kf.data, w, h).unwrap();
+        assert_eq!(out.len(), frame.len());
+        // Solid edge tiles must be pixel-exact
+        let edge_off = (80 * (w as usize) + 100) * 4;
+        assert_eq!(&out[edge_off..edge_off + 4], &[0x33, 0x66, 0x99, 0xFF]);
     }
 }

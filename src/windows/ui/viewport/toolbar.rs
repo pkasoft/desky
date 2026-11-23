@@ -6,10 +6,10 @@
 use std::sync::atomic::{AtomicI32, Ordering};
 use windows::Win32::Foundation::{COLORREF, HWND, RECT, SIZE};
 use windows::Win32::Graphics::Gdi::{
-    CreatePen, CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect,
-    GetTextExtentPoint32W, Rectangle, SelectClipRgn, SelectObject, SetBkMode, SetTextColor,
-    DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, FW_BOLD,
-    FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, PS_SOLID, TRANSPARENT,
+    CreatePen, CreateRectRgn, CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetDC,
+    GetTextExtentPoint32W, Rectangle, ReleaseDC, SelectClipRgn, SelectObject, SetBkMode,
+    SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER,
+    FW_BOLD, FW_SEMIBOLD, HBRUSH, HDC, HGDIOBJ, PS_SOLID, TRANSPARENT,
 };
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 
@@ -177,6 +177,48 @@ pub struct ToolbarLayout {
     pub right_buttons_start_x: i32,
 }
 
+fn get_home_pill_label() -> (String, bool) {
+    let is_online = crate::p2p::is_server_online();
+    if is_online {
+        let ping = crate::p2p::get_server_ping_ms();
+        let s = if ping > 0 {
+            format!("Online ({}ms)", ping)
+        } else {
+            "Online".to_string()
+        };
+        (s, true)
+    } else {
+        ("Offline".to_string(), false)
+    }
+}
+
+fn measure_home_pill_width(text: &str) -> i32 {
+    let icon_sz = 14;
+    let gap = 8;
+    let pad_x = 12;
+    let text_w = unsafe {
+        let hdc = GetDC(None);
+        if !hdc.is_invalid() {
+            let font = create_segoe_font(12, FW_SEMIBOLD);
+            let old = SelectObject(hdc, HGDIOBJ(font.0));
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            let mut sz = SIZE::default();
+            let ok = GetTextExtentPoint32W(hdc, &wide, &mut sz).as_bool();
+            let _ = SelectObject(hdc, old);
+            let _ = DeleteObject(HGDIOBJ(font.0));
+            let _ = ReleaseDC(None, hdc);
+            if ok {
+                sz.cx
+            } else {
+                (text.len() as i32) * 7
+            }
+        } else {
+            (text.len() as i32) * 7
+        }
+    };
+    (pad_x * 2 + icon_sz + gap + text_w + 2).max(88)
+}
+
 impl ToolbarLayout {
     pub fn compute(client_w: i32, num_tabs: usize, active_idx: usize) -> Self {
         let btn_w = 32;
@@ -209,11 +251,13 @@ impl ToolbarLayout {
         let codec_w = 80;
 
         let mut home_pill_x = None;
-        let home_pill_w = 124;
+        let mut home_pill_w = 0;
 
         let right_buttons_start_x;
 
         if is_home {
+            let (pill_text, _) = get_home_pill_label();
+            home_pill_w = measure_home_pill_width(&pill_text);
             let px = settings_x - home_pill_w - 8;
             home_pill_x = Some(px);
             right_buttons_start_x = px;
@@ -645,20 +689,16 @@ pub unsafe fn draw_tab_bar(
 
     if is_home {
         if let Some(pill_x) = layout.home_pill_x {
-            let is_online = crate::p2p::is_server_online();
-            let ping = crate::p2p::get_server_ping_ms();
-            let (pill_text_str, pill_bg, pill_fg) = if is_online {
-                let s = if ping > 0 { format!("Online ({}ms)", ping) } else { "Online".to_string() };
-                (s, TB_ACTIVE_BG, TB_ACTIVE_BORDER)
+            let (pill_text_str, is_online) = get_home_pill_label();
+            let (pill_bg, pill_fg) = if is_online {
+                (TB_ACTIVE_BG, TB_ACTIVE_BORDER)
             } else {
-                ("Offline".to_string(), COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
+                (COLORREF(0x00EBF0FF), COLORREF(0x002B37DF))
             };
 
             let _ = SelectObject(hdc, HGDIOBJ(font_tab.0));
             SetTextColor(hdc, pill_fg);
             let mut pill_text: Vec<u16> = pill_text_str.encode_utf16().collect();
-            let mut pill_sz = SIZE::default();
-            let _ = GetTextExtentPoint32W(hdc, &mut pill_text, &mut pill_sz);
 
             let icon_sz = 14;
             let gap = 8;

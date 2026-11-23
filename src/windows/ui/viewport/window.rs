@@ -4,7 +4,7 @@
 //! Hosts the primary unified window, creates the responsive Remote Desk input control,
 //! routes user mouse/keyboard input to remote machines or local tabs, and manages clipboard synchronization.
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicIsize, Ordering};
 use tracing::info;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -18,13 +18,15 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{ReleaseCapture, SetCapture};
 use windows::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, LoadCursorW, PostQuitMessage,
-    SetCursor,
-    IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, MINMAXINFO, WM_CHAR, WM_CLIPBOARDUPDATE, WM_CLOSE,
-    WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND,
-    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_RBUTTONDOWN,
-    WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_TIMER,
+    CallNextHookEx, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos,
+    GetForegroundWindow, LoadCursorW, PostQuitMessage, SetCursor, SetWindowsHookExW,
+    UnhookWindowsHookEx, HHOOK, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, KBDLLHOOKSTRUCT,
+    LLKHF_ALTDOWN, LLKHF_INJECTED, MINMAXINFO, WH_KEYBOARD_LL, WM_CHAR, WM_CLIPBOARDUPDATE,
+    WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLOREDIT, WM_DESTROY, WM_DROPFILES, WM_ERASEBKGND,
+    WM_GETMINMAXINFO, WM_KEYDOWN, WM_KEYUP, WM_KILLFOCUS, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN,
+    WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETCURSOR, WM_SETFOCUS, WM_SIZE, WM_SYSKEYDOWN,
+    WM_SYSKEYUP, WM_TIMER,
 };
 
 use super::input_injector::{
@@ -206,6 +208,39 @@ pub unsafe fn execute_toolbar_action(hwnd: HWND, hit: i32) {
     }
 }
 
+static KEYBOARD_HOOK: AtomicIsize = AtomicIsize::new(0);
+
+unsafe extern "system" fn low_level_keyboard_proc(
+    n_code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if n_code >= 0 {
+        let fg = GetForegroundWindow();
+        let vp = HWND_VIEWPORT.load(Ordering::Relaxed);
+        if vp != 0
+            && (fg.0 as isize) == vp
+            && super::input_injector::is_remote_session_interactive()
+            && !crate::p2p::is_chat_open()
+        {
+            let kbd = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            if (kbd.flags.0 & LLKHF_INJECTED.0) == 0 {
+                let msg_id = wparam.0 as u32;
+                let is_down = msg_id == WM_KEYDOWN || msg_id == WM_SYSKEYDOWN;
+                let is_up = msg_id == WM_KEYUP || msg_id == WM_SYSKEYUP;
+
+                // Intercept Alt+Tab / Alt+Shift+Tab before Windows shell steals focus
+                if kbd.vkCode == 0x09 && (kbd.flags.0 & LLKHF_ALTDOWN.0) != 0 && (is_down || is_up)
+                {
+                    inject_remote_key(0x09, is_down);
+                    return LRESULT(1);
+                }
+            }
+        }
+    }
+    CallNextHookEx(None, n_code, wparam, lparam)
+}
+
 pub unsafe extern "system" fn viewport_wnd_proc(
     hwnd: HWND,
     msg: u32,
@@ -229,6 +264,15 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             // Set refresh timer (every 2s) for status, network, and ping updates
             let _ = windows::Win32::UI::WindowsAndMessaging::SetTimer(Some(hwnd), 1001, 2000, None);
             let _ = AddClipboardFormatListener(hwnd);
+
+            if let Ok(hook) = SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(low_level_keyboard_proc),
+                Some(h_instance),
+                0,
+            ) {
+                KEYBOARD_HOOK.store(hook.0 as isize, Ordering::Relaxed);
+            }
             LRESULT(0)
         }
         WM_TIMER => {
@@ -1034,7 +1078,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
             LRESULT(0)
         }
-        WM_KEYDOWN => {
+        WM_KEYDOWN | WM_SYSKEYDOWN => {
             let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
             if active == 0 {
                 if wparam.0 == 0x0D {
@@ -1062,13 +1106,6 @@ pub unsafe extern "system" fn viewport_wnd_proc(
                 } else {
                     inject_remote_key(0x1B, true);
                 }
-            } else if wparam.0 == 0x09 {
-                let prev = SHOW_SETTINGS_MODAL.fetch_xor(true, Ordering::Relaxed);
-                if !prev {
-                    reset_settings_scroll();
-                }
-                sync_edit_target_visibility();
-                info!("Full-Screen Settings Page toggled: {}", !prev);
             } else if !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 let vk = wparam.0 as u32;
                 let is_ctrl =
@@ -1122,7 +1159,7 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
             LRESULT(0)
         }
-        WM_KEYUP => {
+        WM_KEYUP | WM_SYSKEYUP => {
             let active = ACTIVE_TAB_INDEX.load(Ordering::Relaxed);
             if active == 0 {
                 return LRESULT(0);
@@ -1130,11 +1167,16 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             if VIEWPORT_IS_ADMIN_MODE.load(Ordering::Relaxed) {
                 return LRESULT(0);
             }
-            if wparam.0 != 0x1B
-                && wparam.0 != 0x09
-                && !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed)
-            {
+            if wparam.0 != 0x1B && !SHOW_SETTINGS_MODAL.load(Ordering::Relaxed) {
                 inject_remote_key(wparam.0 as u32, false);
+            }
+            LRESULT(0)
+        }
+        WM_KILLFOCUS => {
+            if super::input_injector::is_remote_session_interactive() {
+                inject_remote_key(0x12, false); // VK_MENU (Alt)
+                inject_remote_key(0x11, false); // VK_CONTROL
+                inject_remote_key(0x10, false); // VK_SHIFT
             }
             LRESULT(0)
         }
@@ -1168,6 +1210,10 @@ pub unsafe extern "system" fn viewport_wnd_proc(
             }
         }
         WM_DESTROY => {
+            let hook_ptr = KEYBOARD_HOOK.swap(0, Ordering::Relaxed);
+            if hook_ptr != 0 {
+                let _ = UnhookWindowsHookEx(HHOOK(hook_ptr as *mut _));
+            }
             crate::windows::tray::remove_tray_icon(hwnd);
             VIEWPORT_RUNNING.store(false, Ordering::SeqCst);
             let _ = RemoveClipboardFormatListener(hwnd);

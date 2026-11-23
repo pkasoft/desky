@@ -15,9 +15,9 @@ use windows::Win32::System::Com::{
     IPersistFile,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW,
-    RegSetValueExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD,
-    REG_OPTION_NON_VOLATILE, REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteKeyW, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE,
+    REG_SZ,
 };
 use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
@@ -162,29 +162,47 @@ pub fn get_install_paths() -> (PathBuf, PathBuf, PathBuf, bool) {
     (target_dir, desktop_dir, start_menu_dir, is_admin)
 }
 
-pub fn is_installed() -> bool {
-    let cur = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    let cur_str = cur.to_string_lossy().to_lowercase();
+pub fn get_installed_exe_path() -> Option<PathBuf> {
+    if let Ok(prog_files) = std::env::var("ProgramFiles") {
+        let p = PathBuf::from(prog_files).join("Desky").join("desky.exe");
+        if p.exists() {
+            return Some(p);
+        }
+    }
 
     if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        let expected = format!("{}\\programs\\desky", local_appdata.to_lowercase());
-        if cur_str.starts_with(&expected) {
-            return true;
+        let p = PathBuf::from(local_appdata)
+            .join("Programs")
+            .join("Desky")
+            .join("desky.exe");
+        if p.exists() {
+            return Some(p);
         }
     }
 
-    if let Ok(prog_files) = std::env::var("ProgramFiles") {
-        let expected = format!("{}\\desky", prog_files.to_lowercase());
-        if cur_str.starts_with(&expected) {
-            return true;
+    None
+}
+
+pub fn is_installed() -> bool {
+    if let Ok(cur) = std::env::current_exe() {
+        let cur_str = cur.to_string_lossy().to_lowercase();
+
+        if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+            let expected = format!("{}\\programs\\desky", local_appdata.to_lowercase());
+            if cur_str.starts_with(&expected) {
+                return true;
+            }
+        }
+
+        if let Ok(prog_files) = std::env::var("ProgramFiles") {
+            let expected = format!("{}\\desky", prog_files.to_lowercase());
+            if cur_str.starts_with(&expected) {
+                return true;
+            }
         }
     }
 
-    false
+    get_installed_exe_path().is_some()
 }
 
 pub fn install_to_system() -> anyhow::Result<PathBuf> {
@@ -217,6 +235,11 @@ pub fn install_to_system() -> anyhow::Result<PathBuf> {
 
     // 3. Register in Windows Add/Remove Programs
     let _ = register_uninstall(&target_exe, is_admin);
+
+    // 4. If autostart is enabled, point the Scheduled Task to the installed executable
+    if is_autostart_enabled() {
+        let _ = set_autostart_enabled(true);
+    }
 
     Ok(target_exe)
 }
@@ -256,57 +279,69 @@ pub fn uninstall_from_system() {
     }
 }
 
-pub fn is_autostart_enabled() -> bool {
+const AUTOSTART_TASK_NAME: &str = "Desky";
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+fn remove_legacy_run_autostart() {
     let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
     let val_name = to_wide("Desky");
     let mut hkey = HKEY::default();
     unsafe {
-        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), None, KEY_READ, &mut hkey).is_ok() {
-            let mut size: u32 = 0;
-            let exists = RegQueryValueExW(
-                hkey,
-                PCWSTR(val_name.as_ptr()),
-                None,
-                None,
-                None,
-                Some(&mut size),
-            )
-            .is_ok();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), None, KEY_WRITE, &mut hkey).is_ok() {
+            let _ = RegDeleteValueW(hkey, PCWSTR(val_name.as_ptr()));
             let _ = RegCloseKey(hkey);
-            return exists && size > 0;
         }
     }
-    false
+}
+
+pub fn is_autostart_enabled() -> bool {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("schtasks")
+        .args(["/Query", "/TN", AUTOSTART_TASK_NAME])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 pub fn set_autostart_enabled(enabled: bool) -> anyhow::Result<()> {
-    let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-    let val_name = to_wide("Desky");
-    let mut hkey = HKEY::default();
-    unsafe {
-        if enabled {
-            let exe = std::env::current_exe()?;
-            let cmd = format!("\"{}\" --tray", exe.to_string_lossy());
-            RegCreateKeyExW(
-                HKEY_CURRENT_USER,
-                PCWSTR(subkey.as_ptr()),
-                None,
-                PCWSTR::null(),
-                REG_OPTION_NON_VOLATILE,
-                KEY_WRITE,
-                None,
-                &mut hkey,
-                None,
-            )
-            .ok()?;
-            set_reg_sz(hkey, "Desky", &cmd);
-            let _ = RegCloseKey(hkey);
-            info!("Enabled Windows Startup (Background Tray): {}", cmd);
-        } else if RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(subkey.as_ptr()), None, KEY_WRITE, &mut hkey).is_ok() {
-            let _ = RegDeleteValueW(hkey, PCWSTR(val_name.as_ptr()));
-            let _ = RegCloseKey(hkey);
-            info!("Disabled Windows Startup (Background Tray)");
+    use std::os::windows::process::CommandExt;
+
+    // Remove any legacy HKCU\...\Run entry (Windows blocks elevated apps in Run)
+    remove_legacy_run_autostart();
+
+    if enabled {
+        let exe = match get_installed_exe_path() {
+            Some(p) => p,
+            None => std::env::current_exe()?,
+        };
+        let cmd = format!("\"{}\" --tray", exe.to_string_lossy());
+        let output = std::process::Command::new("schtasks")
+            .args([
+                "/Create",
+                "/TN",
+                AUTOSTART_TASK_NAME,
+                "/TR",
+                &cmd,
+                "/SC",
+                "ONLOGON",
+                "/RL",
+                "HIGHEST",
+                "/F",
+            ])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("Failed to create elevated startup task: {}", err.trim());
         }
+        info!("Enabled Windows Elevated Startup Task (ONLOGON / HIGHEST): {}", cmd);
+    } else {
+        let _ = std::process::Command::new("schtasks")
+            .args(["/Delete", "/TN", AUTOSTART_TASK_NAME, "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        info!("Disabled Windows Elevated Startup Task");
     }
     Ok(())
 }

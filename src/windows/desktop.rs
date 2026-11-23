@@ -171,6 +171,21 @@ pub fn configure_software_sas() {
         .status();
 }
 
+/// Formats command-line arguments for `ShellExecuteW` `lpParameters`.
+fn format_shell_execute_params() -> String {
+    std::env::args()
+        .skip(1)
+        .map(|arg| {
+            if arg.is_empty() || arg.contains([' ', '\t', '"']) {
+                format!("\"{}\"", arg.replace('"', "\\\""))
+            } else {
+                arg
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Triggers UAC elevation prompt on the local Windows host to re-launch Desky as Administrator
 pub fn elevate_process() -> bool {
     unsafe {
@@ -180,12 +195,22 @@ pub fn elevate_process() -> bool {
                 .encode_utf16()
                 .chain(std::iter::once(0))
                 .collect();
+            let params_str = format_shell_execute_params();
+            let wide_params: Vec<u16> = params_str
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let params_ptr = if params_str.is_empty() {
+                PCWSTR::null()
+            } else {
+                PCWSTR(wide_params.as_ptr())
+            };
             let verb = w!("runas");
             let h_inst = ShellExecuteW(
                 None,
                 verb,
                 PCWSTR(wide_exe.as_ptr()),
-                None,
+                params_ptr,
                 None,
                 SW_SHOWNORMAL,
             );

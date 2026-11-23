@@ -1987,6 +1987,13 @@ pub fn handle_settings_click(
                             dest.display()
                         ));
                         unsafe {
+                            let _ = windows::Win32::Graphics::Gdi::InvalidateRect(
+                                Some(hwnd),
+                                None,
+                                false,
+                            );
+                        }
+                        unsafe {
                             let msg = format!(
                                 "Desky has been successfully installed!\n\n\
                                 • Desktop shortcut created\n\

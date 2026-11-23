@@ -5,7 +5,7 @@
 
 use crate::protocol::{InputEvent, MouseButton};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    keybd_event, mouse_event, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+    mouse_event, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
 };
@@ -53,10 +53,10 @@ pub fn handle_event(event: &InputEvent) {
                 mouse_event(MOUSEEVENTF_WHEEL, 0, 0, *delta, 0);
             }
             InputEvent::KeyDown { key_code } => {
-                keybd_event(*key_code as u8, 0, Default::default(), 0);
+                crate::windows::input::inject_key_event(*key_code, true);
             }
             InputEvent::KeyUp { key_code } => {
-                keybd_event(*key_code as u8, 0, KEYEVENTF_KEYUP, 0);
+                crate::windows::input::inject_key_event(*key_code, false);
             }
         }
     }
