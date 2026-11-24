@@ -845,7 +845,7 @@ pub fn start_host_registration(&self) {
                                                 pkt.push(2u8); // stereo
                                                 pkt.extend_from_slice(&48000u32.to_le_bytes());
                                                 pkt.extend_from_slice(&pcm_buf[..n]);
-                                                send_packet_to_subscribers(
+                                                Self::send_packet_to_subscribers(
                                                     &sock_audio,
                                                     target_server_audio,
                                                     &subscribers,

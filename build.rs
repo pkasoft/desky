@@ -9,53 +9,6 @@ fn main() {
     }
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
-        embed_windows_manifest();
+        let _ = embed_resource::compile_for("resky.rc", ["resky"], embed_resource::NONE);
     }
-}
-
-fn embed_windows_manifest() {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let manifest_path = std::path::Path::new(&manifest_dir).join("resky.manifest");
-    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
-
-    if target_env == "msvc" {
-        println!("cargo:rustc-link-arg-bin=resky=/MANIFEST:EMBED");
-        println!(
-            "cargo:rustc-link-arg-bin=resky=/MANIFESTINPUT:{}",
-            manifest_path.display()
-        );
-        return;
-    }
-
-    let out_dir = match std::env::var("OUT_DIR") {
-        Ok(dir) => dir,
-        Err(_) => return,
-    };
-    let rc_path = std::path::Path::new(&manifest_dir).join("resky.rc");
-    let res_obj = std::path::Path::new(&out_dir).join("resky_manifest.res.o");
-
-    let candidates = ["windres", "x86_64-w64-mingw32-windres"];
-    for tool in candidates {
-        let status = std::process::Command::new(tool)
-            .args([
-                "-i",
-                &rc_path.to_string_lossy(),
-                "-O",
-                "coff",
-                "-o",
-                &res_obj.to_string_lossy(),
-            ])
-            .status();
-
-        if let Ok(s) = status
-            && s.success()
-        {
-            println!("cargo:rustc-link-arg-bin=resky={}", res_obj.display());
-            return;
-        }
-    }
-
-    println!(
-        "cargo:warning=Could not run windres to embed resky.manifest; runtime elevation check will still apply."
-    );
 }
