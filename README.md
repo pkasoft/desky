@@ -54,7 +54,7 @@ Resky is an ultra-lightweight, high-framerate remote desktop application designe
 ### Build
 
 ```bash
-git clone git@github.com:pkasoft/desky.git
+git clone git@github.com:pkasoft/resky.git
 cd desky
 cargo build --release
 ```
