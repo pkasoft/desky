@@ -55,9 +55,22 @@ Resky is an ultra-lightweight, high-framerate remote desktop application designe
 
 ```bash
 git clone git@github.com:pkasoft/resky.git
-cd desky
+cd resky
+cp src/config.rs.example src/config.rs
+# Edit src/config.rs to set DEFAULT_VDS_SERVER to your rendezvous server (host:port)
 cargo build --release
 ```
+
+### Server Configuration (Self-Hosted)
+
+No public server IP is hardcoded in this repository. Before connecting over the internet, run your own matchmaker/relay server (`crates/desky-server`) and point Resky to it using either method:
+
+1. **Runtime Environment Variable** (works with prebuilt binaries):
+   ```powershell
+   $env:DESKY_VDS_SERVER="your-server-domain-or-ip:21116"
+   .\resky.exe
+   ```
+2. **Build-Time Config**: Edit `src/config.rs` (`DEFAULT_VDS_SERVER`) before running `cargo build --release`.
 
 ---
 
