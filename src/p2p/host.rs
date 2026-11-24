@@ -1015,19 +1015,33 @@ pub fn start_host_registration(&self) {
                                                     } else {
                                                         client_lan_addr.unwrap_or(from_addr)
                                                     };
-                                                    info!(
-                                                        "🔔 [HOST APPROVAL] Incoming connection request from {} ({})",
-                                                        client_id_disp,
-                                                        initial_addr
-                                                    );
-                                                    need_ui_prompt = true;
+                                                    let auto_approved =
+                                                        crate::p2p::state::is_peer_recently_approved(&client_key);
+                                                    if auto_approved {
+                                                        info!(
+                                                            "🔄 [AUTO-RECONNECT] Re-approved peer {} ({}) after connection drop",
+                                                            client_id_disp,
+                                                            initial_addr
+                                                        );
+                                                    } else {
+                                                        info!(
+                                                            "🔔 [HOST APPROVAL] Incoming connection request from {} ({})",
+                                                            client_id_disp,
+                                                            initial_addr
+                                                        );
+                                                        need_ui_prompt = true;
+                                                    }
                                                     should_punch_lan = true;
                                                     ClientSubscriber {
                                                         client_id: client_id_disp.clone(),
                                                         relay_id: relay_id.clone(),
                                                         addr: initial_addr,
                                                         lan_addr: client_lan_addr,
-                                                        auth_state: AuthState::Pending,
+                                                        auth_state: if auto_approved {
+                                                            AuthState::Approved
+                                                        } else {
+                                                            AuthState::Pending
+                                                        },
                                                         last_seen: Instant::now(),
                                                         target_fps: fps,
                                                         capture_cursor: cur,
@@ -1195,15 +1209,24 @@ pub fn start_host_registration(&self) {
                                     }
                                 }
                                 PKT_DISCONNECT => {
+                                    let mut disconnected_keys = Vec::new();
                                     if let Ok(mut map) = clients_recv.lock() {
                                         if from_addr == target_server {
+                                            disconnected_keys.extend(map.keys().cloned());
                                             map.clear();
                                         } else {
-                                            map.retain(|_, sub| {
-                                                sub.addr != from_addr
-                                                    && sub.lan_addr != Some(from_addr)
+                                            map.retain(|k, sub| {
+                                                let keep = sub.addr != from_addr
+                                                    && sub.lan_addr != Some(from_addr);
+                                                if !keep {
+                                                    disconnected_keys.push(k.clone());
+                                                }
+                                                keep
                                             });
                                         }
+                                    }
+                                    for k in disconnected_keys {
+                                        crate::p2p::state::revoke_recently_approved_peer(&k);
                                     }
                                     if let Ok(mut pg) = pending_approval_store().lock() {
                                         *pg = None;
@@ -1368,14 +1391,19 @@ pub fn start_host_registration(&self) {
                                                 auth_limiter.clear(from_addr.ip());
                                                 info!("🔓 [HOST] Client authenticated successfully via Unattended Password!");
                                                 let mut maybe_sub = None;
+                                                let mut approved_keys = Vec::new();
                                                 if let Ok(mut map) = clients_recv.lock() {
-                                                    for sub in map.values_mut() {
+                                                    for (key, sub) in map.iter_mut() {
                                                         if sub.addr == from_addr || sub.lan_addr == Some(from_addr) || from_addr == target_server {
                                                             sub.auth_state = AuthState::Approved;
                                                             sub.last_seen = Instant::now();
+                                                            approved_keys.push(key.clone());
                                                             maybe_sub = Some((sub.addr, sub.lan_addr, sub.relay_id.clone()));
                                                         }
                                                     }
+                                                }
+                                                for k in approved_keys {
+                                                    crate::p2p::state::mark_peer_recently_approved(&k);
                                                 }
                                                 if let Ok(mut pg) = pending_approval_store().lock() {
                                                     *pg = None;
@@ -1641,14 +1669,22 @@ pub fn start_host_registration(&self) {
                                             let entry = map
                                                 .entry(client_key.clone())
                                                 .or_insert_with(|| {
-                                                    need_ui_prompt = true;
+                                                    let auto_approved =
+                                                        crate::p2p::state::is_peer_recently_approved(&client_key);
+                                                    if !auto_approved {
+                                                        need_ui_prompt = true;
+                                                    }
                                                     first_direct = true;
                                                     ClientSubscriber {
                                                         client_id: client_id_disp.clone(),
                                                         relay_id: String::new(),
                                                         addr: from_addr,
                                                         lan_addr: None,
-                                                        auth_state: AuthState::Pending,
+                                                        auth_state: if auto_approved {
+                                                            AuthState::Approved
+                                                        } else {
+                                                            AuthState::Pending
+                                                        },
                                                         last_seen: Instant::now(),
                                                         target_fps: 60,
                                                         capture_cursor: true,

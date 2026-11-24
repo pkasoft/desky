@@ -17,6 +17,41 @@ pub use super::admin_rpc::*;
 
 pub static CLIENT_REMOTE_CURSOR_SHAPE: AtomicU8 = AtomicU8::new(0);
 
+static RECENTLY_APPROVED_PEERS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+const APPROVED_RECONNECT_GRACE: Duration = Duration::from_secs(900); // 15 minutes
+
+pub fn mark_peer_recently_approved(client_key: &str) {
+    if client_key.is_empty() {
+        return;
+    }
+    let store = RECENTLY_APPROVED_PEERS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut map) = store.lock() {
+        map.insert(client_key.to_string(), Instant::now());
+    }
+}
+
+pub fn is_peer_recently_approved(client_key: &str) -> bool {
+    if client_key.is_empty() {
+        return false;
+    }
+    let store = RECENTLY_APPROVED_PEERS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut map) = store.lock() {
+        map.retain(|_, when| when.elapsed() < APPROVED_RECONNECT_GRACE);
+        return map.contains_key(client_key);
+    }
+    false
+}
+
+pub fn revoke_recently_approved_peer(client_key: &str) {
+    if client_key.is_empty() {
+        return;
+    }
+    let store = RECENTLY_APPROVED_PEERS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut map) = store.lock() {
+        map.remove(client_key);
+    }
+}
+
 pub fn set_remote_cursor_shape(shape: u8) {
     CLIENT_REMOTE_CURSOR_SHAPE.store(shape, Ordering::Relaxed);
 }
@@ -241,6 +276,8 @@ pub fn respond_to_pending_approval(approved: bool) {
     };
 
     let mut acks_to_send: Vec<(SocketAddr, Option<SocketAddr>, String, u8)> = Vec::new();
+    let mut newly_approved_keys = Vec::new();
+    let mut revoked_keys = Vec::new();
     if let Ok(mut map) = host_subscribers_store().lock() {
         let now = Instant::now();
         for (key, sub) in map.iter_mut() {
@@ -252,6 +289,7 @@ pub fn respond_to_pending_approval(approved: bool) {
                 if approved {
                     sub.auth_state = AuthState::Approved;
                     sub.last_seen = now;
+                    newly_approved_keys.push(key.clone());
                     acks_to_send.push((
                         sub.addr,
                         sub.lan_addr,
@@ -260,6 +298,7 @@ pub fn respond_to_pending_approval(approved: bool) {
                     ));
                 } else {
                     sub.auth_state = AuthState::Declined(now);
+                    revoked_keys.push(key.clone());
                     acks_to_send.push((
                         sub.addr,
                         sub.lan_addr,
@@ -269,6 +308,12 @@ pub fn respond_to_pending_approval(approved: bool) {
                 }
             }
         }
+    }
+    for k in newly_approved_keys {
+        mark_peer_recently_approved(&k);
+    }
+    for k in revoked_keys {
+        revoke_recently_approved_peer(&k);
     }
 
     if !acks_to_send.is_empty() {
