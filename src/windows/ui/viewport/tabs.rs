@@ -79,22 +79,6 @@ pub fn switch_session_tab(tab_idx: usize) {
                         let wide_title: Vec<u16> =
                             title.encode_utf16().chain(std::iter::once(0)).collect();
                         let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
-
-                        let current_target = crate::p2p::get_active_session_target();
-                        let is_active = crate::p2p::is_client_session_active();
-                        let norm_tab_target = crate::p2p::normalize_id(&tab.id);
-                        let matches_active = current_target
-                            .as_deref()
-                            .map(|t| crate::p2p::normalize_id(t) == norm_tab_target)
-                            .unwrap_or(false);
-
-                        if !is_active || !matches_active {
-                            crate::p2p::start_client_session(
-                                &tab.id,
-                                TARGET_FPS.load(Ordering::Relaxed),
-                                CAPTURE_CURSOR.load(Ordering::Relaxed),
-                            );
-                        }
                     }
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }

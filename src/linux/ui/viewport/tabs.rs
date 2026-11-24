@@ -56,25 +56,8 @@ pub fn get_session_tabs() -> Vec<SessionTab> {
 pub fn switch_session_tab(tab_idx: usize) {
     SHOW_SETTINGS_MODAL.store(false, Ordering::Relaxed);
     let tabs = get_session_tabs();
-    if let Some(tab) = tabs.get(tab_idx) {
+    if tabs.get(tab_idx).is_some() {
         ACTIVE_TAB_INDEX.store(tab_idx, Ordering::Relaxed);
-        if tab_idx > 0 {
-            let current_target = crate::p2p::get_active_session_target();
-            let is_active = crate::p2p::is_client_session_active();
-            let norm_tab_target = crate::p2p::normalize_id(&tab.id);
-            let matches_active = current_target
-                .as_deref()
-                .map(|t| crate::p2p::normalize_id(t) == norm_tab_target)
-                .unwrap_or(false);
-
-            if !is_active || !matches_active {
-                crate::p2p::start_client_session(
-                    &tab.id,
-                    TARGET_FPS.load(Ordering::Relaxed),
-                    CAPTURE_CURSOR.load(Ordering::Relaxed),
-                );
-            }
-        }
         request_main_redraw();
     }
 }
