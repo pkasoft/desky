@@ -18,8 +18,8 @@ use crate::p2p::state::{
     SESSION_BITRATE_KBPS, SESSION_RTT_MS,
 };
 use crate::protocol::{
-    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME,
-    PKT_FRAME_CHUNK_TILE, PKT_KEYFRAME_REQ,
+    InputEvent, SignalMsg, PKT_AUDIO_OPUS, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME,
+    PKT_FRAME_CHUNK_TILE, PKT_KEYFRAME_REQ, PKT_VOICE_OPUS,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
@@ -659,8 +659,13 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                     }
                 }
 
-                // Flush outgoing intercom voice packets (Technician -> Host)
-                while let Some(pkt) = pop_outgoing_voice_packet() {
+                // Flush outgoing intercom voice packets (Technician -> Host, E2EE encrypted when active)
+                while let Some(raw_pkt) = pop_outgoing_voice_packet() {
+                    let pkt = if let Some(ref cipher) = e2ee_cipher {
+                        cipher.encrypt_dsky_packet(&raw_pkt).unwrap_or(raw_pkt)
+                    } else {
+                        raw_pkt
+                    };
                     if let Some(p_addr) = peer_addr {
                         if p_addr != server_addr && !force_relay {
                             let _ = socket.send_to(&pkt, p_addr).await;
@@ -1005,6 +1010,27 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             crate::p2p::state::handle_outgoing_file_nack(&missing);
                                         }
                                     }
+                                    PKT_AUDIO_OPUS => {
+                                        static OPUS_DEC: std::sync::OnceLock<
+                                            std::sync::Mutex<Option<crate::codec::opus_audio::OpusAudioDecoder>>,
+                                        > = std::sync::OnceLock::new();
+                                        let slot = OPUS_DEC.get_or_init(|| std::sync::Mutex::new(None));
+                                        if let Some((sample_rate, channels, pcm)) =
+                                            crate::codec::opus_audio::decode_opus_packet_with_slot(slot, slice)
+                                        {
+                                            #[cfg(target_os = "windows")]
+                                            crate::windows::audio::play_remote_audio_chunk(
+                                                sample_rate,
+                                                channels,
+                                                &pcm,
+                                            );
+                                            #[cfg(target_os = "linux")]
+                                            {
+                                                let _ = (sample_rate, channels);
+                                                crate::linux::audio::play_remote_audio_chunk(&pcm);
+                                            }
+                                        }
+                                    }
                                     PKT_AUDIO_CHUNK => {
                                         if slice.len() >= 10 {
                                             #[cfg(target_os = "windows")]
@@ -1021,6 +1047,27 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                             }
                                         }
                                     }
+                                    PKT_VOICE_OPUS => {
+                                        static VOICE_OPUS_DEC: std::sync::OnceLock<
+                                            std::sync::Mutex<Option<crate::codec::opus_audio::OpusAudioDecoder>>,
+                                        > = std::sync::OnceLock::new();
+                                        let slot = VOICE_OPUS_DEC.get_or_init(|| std::sync::Mutex::new(None));
+                                        if let Some((sample_rate, channels, pcm)) =
+                                            crate::codec::opus_audio::decode_opus_packet_with_slot(slot, slice)
+                                        {
+                                            #[cfg(target_os = "windows")]
+                                            crate::windows::audio::play_remote_voice_chunk(
+                                                sample_rate,
+                                                channels,
+                                                &pcm,
+                                            );
+                                            #[cfg(target_os = "linux")]
+                                            {
+                                                let _ = (sample_rate, channels);
+                                                crate::linux::audio::play_remote_voice_chunk(&pcm);
+                                            }
+                                        }
+                                    }
                                     PKT_VOICE_CHUNK => {
                                         if slice.len() >= 10 {
                                             #[cfg(target_os = "windows")]
@@ -1029,6 +1076,11 @@ pub fn start_client_session(target_id: &str, initial_fps: u32, capture_cursor: b
                                                 let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
                                                 let pcm = &slice[10..];
                                                 crate::windows::audio::play_remote_voice_chunk(sample_rate, channels, pcm);
+                                            }
+                                            #[cfg(target_os = "linux")]
+                                            {
+                                                let pcm = &slice[10..];
+                                                crate::linux::audio::play_remote_voice_chunk(pcm);
                                             }
                                         }
                                     }

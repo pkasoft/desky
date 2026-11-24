@@ -44,3 +44,5 @@ pub const PKT_E2EE_ACK: u8 = 0x19;        // Responder ephemeral X25519 public k
 pub const PKT_ENCRYPTED_FRAME: u8 = 0x1A; // ChaCha20-Poly1305 AEAD encrypted DSKY payload
 pub const PKT_KEYFRAME_REQ: u8 = 0x1B;    // Packet-loss recovery: immediate keyframe/IDR request
 pub const PKT_FRAME_CHUNK_TILE: u8 = 0x1C; // Custom hybrid Lossless-RLE + 4:4:4 Tile-Delta frame chunk
+pub const PKT_AUDIO_OPUS: u8 = 0x1D;       // Opus-compressed low-latency audio frame with seq number
+pub const PKT_VOICE_OPUS: u8 = 0x1E;       // Opus-compressed 2-way voice intercom frame with seq number

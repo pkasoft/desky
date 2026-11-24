@@ -89,8 +89,8 @@ impl WasapiLoopbackCapturer {
             let channels = mix_format.nChannels;
             let is_float = mix_format.wFormatTag == 3 || mix_format.wBitsPerSample == 32;
 
-            // 20ms buffer duration for ultra-low latency
-            let buffer_duration_hns = 200_000i64; // 20ms in 100ns units
+            // 60ms internal ring buffer prevents WASAPI discontinuities on OS scheduling hiccups
+            let buffer_duration_hns = 600_000i64; // 60ms in 100ns units
 
             client.Initialize(
                 AUDCLNT_SHAREMODE_SHARED,
@@ -345,6 +345,8 @@ struct AudioBlock {
 pub struct AudioPlayer {
     h_wave_out: HWAVEOUT,
     blocks: Vec<Box<AudioBlock>>,
+    pending_pcm: Vec<u8>,
+    last_push: std::time::Instant,
     pub sample_rate: u32,
     pub channels: u16,
 }
@@ -392,6 +394,8 @@ impl AudioPlayer {
             Ok(Self {
                 h_wave_out,
                 blocks,
+                pending_pcm: Vec::with_capacity(16384),
+                last_push: std::time::Instant::now(),
                 sample_rate,
                 channels,
             })
@@ -403,21 +407,59 @@ impl AudioPlayer {
             return;
         }
 
+        let frame_align = (self.channels as usize * 2).max(2);
+        // Coalesce small MTU-sized network packets into ~20ms waveOut blocks to avoid micro-stutters
+        let target_block_bytes = ((self.sample_rate as usize * frame_align) / 50).max(frame_align);
+
+        // If there was a long silence gap (> 120ms), discard stale partial buffer
+        if self.last_push.elapsed().as_millis() > 120 {
+            self.pending_pcm.clear();
+        }
+        self.last_push = std::time::Instant::now();
+        self.pending_pcm.extend_from_slice(pcm_bytes);
+
+        // Cap pending buffer at ~120ms to prevent latency buildup
+        let max_pending = target_block_bytes * 6;
+        if self.pending_pcm.len() > max_pending {
+            let drop_bytes = ((self.pending_pcm.len() - max_pending) / frame_align) * frame_align;
+            self.pending_pcm.drain(..drop_bytes);
+        }
+
+        if self.pending_pcm.len() < target_block_bytes {
+            return;
+        }
+
+        let flush_len = (self.pending_pcm.len() / frame_align) * frame_align;
+        if flush_len == 0 {
+            return;
+        }
+
         unsafe {
             // 1. Reclaim any completed blocks
+            let mut active_blocks = 0usize;
             for block in &mut self.blocks {
-                if block.prepared && (block.header.dwFlags & 1 != 0) {
-                    // WHDR_DONE
-                    let _ = waveOutUnprepareHeader(
-                        self.h_wave_out,
-                        &mut block.header,
-                        std::mem::size_of::<WAVEHDR>() as u32,
-                    );
-                    block.prepared = false;
+                if block.prepared {
+                    if block.header.dwFlags & 1 != 0 {
+                        // WHDR_DONE
+                        let _ = waveOutUnprepareHeader(
+                            self.h_wave_out,
+                            &mut block.header,
+                            std::mem::size_of::<WAVEHDR>() as u32,
+                        );
+                        block.prepared = false;
+                    } else {
+                        active_blocks += 1;
+                    }
                 }
             }
 
-            // 2. Find an available (unprepared) block or allocate one if pool is not saturated
+            // Prevent unbounded latency (> ~240ms queued) by dropping excess if queue is full
+            if active_blocks >= 12 {
+                self.pending_pcm.drain(..flush_len);
+                return;
+            }
+
+            // 2. Find an available (unprepared) block
             let mut target_idx = None;
             for (idx, block) in self.blocks.iter().enumerate() {
                 if !block.prepared {
@@ -426,40 +468,29 @@ impl AudioPlayer {
                 }
             }
 
-            if target_idx.is_none() && self.blocks.len() < 32 {
+            if target_idx.is_none() && self.blocks.len() < 24 {
                 self.blocks.push(Box::new(AudioBlock {
                     header: WAVEHDR::default(),
-                    buffer: vec![0u8; pcm_bytes.len().max(8192)],
+                    buffer: vec![0u8; flush_len.max(8192)],
                     prepared: false,
                 }));
                 target_idx = Some(self.blocks.len() - 1);
             }
 
-            // If still saturated, reclaim the oldest block to prevent buffer queue buildup
-            let block_idx = match target_idx {
-                Some(i) => i,
-                None => {
-                    let first = &mut self.blocks[0];
-                    if first.prepared {
-                        let _ = waveOutUnprepareHeader(
-                            self.h_wave_out,
-                            &mut first.header,
-                            std::mem::size_of::<WAVEHDR>() as u32,
-                        );
-                        first.prepared = false;
-                    }
-                    0
-                }
+            let Some(block_idx) = target_idx else {
+                self.pending_pcm.drain(..flush_len);
+                return;
             };
 
             let block = &mut self.blocks[block_idx];
-            if block.buffer.len() < pcm_bytes.len() {
-                block.buffer.resize(pcm_bytes.len(), 0);
+            if block.buffer.len() < flush_len {
+                block.buffer.resize(flush_len, 0);
             }
-            block.buffer[..pcm_bytes.len()].copy_from_slice(pcm_bytes);
+            block.buffer[..flush_len].copy_from_slice(&self.pending_pcm[..flush_len]);
+            self.pending_pcm.drain(..flush_len);
 
             block.header.lpData = windows::core::PSTR(block.buffer.as_mut_ptr());
-            block.header.dwBufferLength = pcm_bytes.len() as u32;
+            block.header.dwBufferLength = flush_len as u32;
             block.header.dwBytesRecorded = 0;
             block.header.dwUser = 0;
             block.header.dwFlags = 0;

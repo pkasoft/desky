@@ -8,6 +8,7 @@
 
 pub mod desky_tile;
 pub mod mjpeg;
+pub mod opus_audio;
 
 /// Codec identifiers used across the wire protocol
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

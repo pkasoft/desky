@@ -11,8 +11,8 @@ use crate::p2p::state::{
 };
 use crate::codec::VideoEncoder;
 use crate::protocol::{
-    InputEvent, SignalMsg, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME,
-    PKT_FRAME_CHUNK_TILE, PKT_KEYFRAME_REQ,
+    InputEvent, SignalMsg, PKT_AUDIO_OPUS, PKT_E2EE_ACK, PKT_E2EE_HELLO, PKT_ENCRYPTED_FRAME,
+    PKT_FRAME_CHUNK_TILE, PKT_KEYFRAME_REQ, PKT_VOICE_OPUS,
 };
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,7 +56,35 @@ impl P2PManager {
     }
 
     /// Spawns the background UDP rendezvous registration, keep-alive, and Direct P2P Host screen streamer
-    pub fn start_host_registration(&self) {
+    fn send_packet_to_subscribers(
+    sock: &std::net::UdpSocket,
+    target_server: SocketAddr,
+    subscribers: &[ClientSubscriber],
+    pkt: Vec<u8>,
+    cipher_store: &std::sync::Mutex<Option<Arc<crate::p2p::crypto::SessionCipher>>>,
+) {
+    let wire_pkt = if let Ok(guard) = cipher_store.lock() {
+        if let Some(ref cipher) = *guard {
+            cipher.encrypt_dsky_packet(&pkt).unwrap_or(pkt)
+        } else {
+            pkt
+        }
+    } else {
+        pkt
+    };
+    for sub in subscribers {
+        if sub.is_direct || sub.addr != target_server {
+            let _ = sock.send_to(&wire_pkt, sub.addr);
+        } else if let Some(l_addr) = sub.lan_addr {
+            let _ = sock.send_to(&wire_pkt, l_addr);
+        } else if !sub.relay_id.is_empty() {
+            let relay = wrap_relay_packet(&sub.relay_id, &wire_pkt);
+            let _ = sock.send_to(&relay, target_server);
+        }
+    }
+}
+
+pub fn start_host_registration(&self) {
         let machine_id = self.machine_id.clone();
         let cached_id = self.cached_id.clone();
         let server_addr_str = self.server_addr.clone();
@@ -396,21 +424,15 @@ impl P2PManager {
                                     }
                                 }
 
-                                // Host -> Client Intercom Voice packets flush
+                                // Host -> Client Intercom Voice packets flush (E2EE encrypted when active)
                                 while let Some(v_pkt) = crate::p2p::state::pop_outgoing_voice_packet() {
-                                    for sub in &subscribers {
-                                        if sub.is_direct || sub.addr != target_server_stream {
-                                            let _ = std_sock_stream_capture.send_to(&v_pkt, sub.addr);
-                                            if let Some(l_addr) = sub.lan_addr {
-                                                if l_addr != sub.addr {
-                                                    let _ = std_sock_stream_capture.send_to(&v_pkt, l_addr);
-                                                }
-                                            }
-                                        } else if !sub.relay_id.is_empty() {
-                                            let relay = wrap_relay_packet(&sub.relay_id, &v_pkt);
-                                            let _ = std_sock_stream_capture.send_to(&relay, target_server_stream);
-                                        }
-                                    }
+                                    Self::send_packet_to_subscribers(
+                                        &std_sock_stream_capture,
+                                        target_server_stream,
+                                        &subscribers,
+                                        v_pkt,
+                                        &session_cipher_cap,
+                                    );
                                 }
 
                                 let frame_hash = fast_frame_hash(&bgra, cap_w, cap_h);
@@ -622,9 +644,12 @@ impl P2PManager {
                     let running_audio = Arc::clone(&running);
                     let sock_audio = Arc::clone(&std_sock_stream);
                     let target_server_audio = target_server;
+                    let session_cipher_audio = Arc::clone(&session_cipher_store);
 
                     std::thread::spawn(move || {
                         let mut capturer_opt: Option<crate::windows::audio::WasapiLoopbackCapturer> = None;
+                        let mut opus_enc_opt: Option<crate::codec::opus_audio::OpusAudioEncoder> = None;
+                        let mut audio_seq: u16 = 0;
 
                         while running_audio.load(Ordering::Relaxed) {
                             let has_subscribers = {
@@ -654,52 +679,87 @@ impl P2PManager {
                             let capturer = capturer_opt.as_ref().unwrap();
                             let channels = capturer.channels;
                             let sample_rate = capturer.sample_rate;
+                            if opus_enc_opt
+                                .as_ref()
+                                .map(|e| !e.matches_input(sample_rate, channels))
+                                .unwrap_or(true)
+                            {
+                                opus_enc_opt =
+                                    crate::codec::opus_audio::OpusAudioEncoder::new(sample_rate, channels).ok();
+                            }
+                            let frame_align = (channels as usize * 2).max(2);
+                            let max_pcm_chunk = (1200 / frame_align) * frame_align;
 
-                            match capturer.read_packet() {
-                                Ok(Some(pcm_data)) => {
-                                    if !pcm_data.is_empty() {
-                                        let subscribers: Vec<ClientSubscriber> = {
-                                            if let Ok(map) = clients_audio.lock() {
-                                                map.values()
-                                                    .filter(|s| s.auth_state == AuthState::Approved)
-                                                    .cloned()
-                                                    .collect()
-                                            } else {
-                                                Vec::new()
-                                            }
-                                        };
-                                        if !subscribers.is_empty() {
-                                            let mut pkt = Vec::with_capacity(10 + pcm_data.len());
-                                            pkt.extend_from_slice(MAGIC_DSKY);
-                                            pkt.push(crate::p2p::state::PKT_AUDIO_CHUNK);
-                                            pkt.push(channels as u8);
-                                            pkt.extend_from_slice(&sample_rate.to_le_bytes());
-                                            pkt.extend_from_slice(&pcm_data);
-
-                                            for sub in &subscribers {
-                                                if sub.is_direct || sub.addr != target_server_audio {
-                                                    let _ = sock_audio.send_to(&pkt, sub.addr);
-                                                    if let Some(l_addr) = sub.lan_addr {
-                                                        if l_addr != sub.addr {
-                                                            let _ = sock_audio.send_to(&pkt, l_addr);
-                                                        }
+                            let mut had_error = false;
+                            // Drain ALL queued WASAPI packets before sleeping so 10ms frames aren't dropped
+                            loop {
+                                match capturer.read_packet() {
+                                    Ok(Some(pcm_data)) => {
+                                        if !pcm_data.is_empty() {
+                                            let subscribers: Vec<ClientSubscriber> = {
+                                                if let Ok(map) = clients_audio.lock() {
+                                                    map.values()
+                                                        .filter(|s| s.auth_state == AuthState::Approved)
+                                                        .cloned()
+                                                        .collect()
+                                                } else {
+                                                    Vec::new()
+                                                }
+                                            };
+                                            if !subscribers.is_empty() {
+                                                if let Some(ref mut enc) = opus_enc_opt {
+                                                    let out_ch = enc.out_channels as u8;
+                                                    for opus_frame in enc.encode_pcm_bytes(&pcm_data) {
+                                                        let seq = audio_seq;
+                                                        audio_seq = audio_seq.wrapping_add(1);
+                                                        let pkt = crate::codec::opus_audio::build_opus_packet(
+                                                            PKT_AUDIO_OPUS,
+                                                            out_ch,
+                                                            seq,
+                                                            crate::codec::opus_audio::OPUS_SAMPLE_RATE,
+                                                            &opus_frame,
+                                                        );
+                                                        Self::send_packet_to_subscribers(
+                                                            &sock_audio,
+                                                            target_server_audio,
+                                                            &subscribers,
+                                                            pkt,
+                                                            &session_cipher_audio,
+                                                        );
                                                     }
-                                                } else if !sub.relay_id.is_empty() {
-                                                    let relay = wrap_relay_packet(&sub.relay_id, &pkt);
-                                                    let _ = sock_audio.send_to(&relay, target_server_audio);
+                                                } else {
+                                                    for chunk in pcm_data.chunks(max_pcm_chunk) {
+                                                        let mut pkt = Vec::with_capacity(10 + chunk.len());
+                                                        pkt.extend_from_slice(MAGIC_DSKY);
+                                                        pkt.push(crate::p2p::state::PKT_AUDIO_CHUNK);
+                                                        pkt.push(channels as u8);
+                                                        pkt.extend_from_slice(&sample_rate.to_le_bytes());
+                                                        pkt.extend_from_slice(chunk);
+                                                        Self::send_packet_to_subscribers(
+                                                            &sock_audio,
+                                                            target_server_audio,
+                                                            &subscribers,
+                                                            pkt,
+                                                            &session_cipher_audio,
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
                                     }
-                                    std::thread::sleep(Duration::from_millis(15));
+                                    Ok(None) => break,
+                                    Err(_) => {
+                                        had_error = true;
+                                        break;
+                                    }
                                 }
-                                Ok(None) => {
-                                    std::thread::sleep(Duration::from_millis(15));
-                                }
-                                Err(_) => {
-                                    capturer_opt = None;
-                                    std::thread::sleep(Duration::from_millis(500));
-                                }
+                            }
+
+                            if had_error {
+                                capturer_opt = None;
+                                std::thread::sleep(Duration::from_millis(500));
+                            } else {
+                                std::thread::sleep(Duration::from_millis(5));
                             }
                         }
                     });
@@ -712,9 +772,13 @@ impl P2PManager {
                     let running_audio = Arc::clone(&running);
                     let sock_audio = Arc::clone(&std_sock_stream);
                     let target_server_audio = target_server;
+                    let session_cipher_audio = Arc::clone(&session_cipher_store);
 
                     std::thread::spawn(move || {
                         let mut capturer_opt: Option<crate::linux::audio::LinuxAudioCapturer> = None;
+                        let mut opus_enc_opt =
+                            crate::codec::opus_audio::OpusAudioEncoder::new(48000, 2).ok();
+                        let mut audio_seq: u16 = 0;
                         let mut pcm_buf = [0u8; 3840]; // ~20ms @ 48kHz stereo S16LE
 
                         while running_audio.load(Ordering::Relaxed) {
@@ -755,25 +819,39 @@ impl P2PManager {
                                             }
                                         };
                                         if !subscribers.is_empty() {
-                                            let mut pkt = Vec::with_capacity(10 + n);
-                                            pkt.extend_from_slice(MAGIC_DSKY);
-                                            pkt.push(crate::p2p::state::PKT_AUDIO_CHUNK);
-                                            pkt.push(2u8); // stereo
-                                            pkt.extend_from_slice(&48000u32.to_le_bytes());
-                                            pkt.extend_from_slice(&pcm_buf[..n]);
-                                            for sub in &subscribers {
-                                                if sub.addr != target_server_audio {
-                                                    let _ = sock_audio.send_to(&pkt, sub.addr);
+                                            if let Some(ref mut enc) = opus_enc_opt {
+                                                for opus_frame in enc.encode_pcm_bytes(&pcm_buf[..n]) {
+                                                    let seq = audio_seq;
+                                                    audio_seq = audio_seq.wrapping_add(1);
+                                                    let pkt = crate::codec::opus_audio::build_opus_packet(
+                                                        PKT_AUDIO_OPUS,
+                                                        2u8,
+                                                        seq,
+                                                        crate::codec::opus_audio::OPUS_SAMPLE_RATE,
+                                                        &opus_frame,
+                                                    );
+                                                    Self::send_packet_to_subscribers(
+                                                        &sock_audio,
+                                                        target_server_audio,
+                                                        &subscribers,
+                                                        pkt,
+                                                        &session_cipher_audio,
+                                                    );
                                                 }
-                                                if let Some(l_addr) = sub.lan_addr {
-                                                    if l_addr != sub.addr {
-                                                        let _ = sock_audio.send_to(&pkt, l_addr);
-                                                    }
-                                                }
-                                                if !sub.is_direct && !sub.relay_id.is_empty() {
-                                                    let relay = wrap_relay_packet(&sub.relay_id, &pkt);
-                                                    let _ = sock_audio.send_to(&relay, target_server_audio);
-                                                }
+                                            } else {
+                                                let mut pkt = Vec::with_capacity(10 + n);
+                                                pkt.extend_from_slice(MAGIC_DSKY);
+                                                pkt.push(crate::p2p::state::PKT_AUDIO_CHUNK);
+                                                pkt.push(2u8); // stereo
+                                                pkt.extend_from_slice(&48000u32.to_le_bytes());
+                                                pkt.extend_from_slice(&pcm_buf[..n]);
+                                                send_packet_to_subscribers(
+                                                    &sock_audio,
+                                                    target_server_audio,
+                                                    &subscribers,
+                                                    pkt,
+                                                    &session_cipher_audio,
+                                                );
                                             }
                                         }
                                     }
@@ -1402,6 +1480,28 @@ impl P2PManager {
                                         }
                                     }
                                 }
+                                PKT_VOICE_OPUS => {
+                                    static HOST_VOICE_OPUS_DEC: std::sync::OnceLock<
+                                        std::sync::Mutex<Option<crate::codec::opus_audio::OpusAudioDecoder>>,
+                                    > = std::sync::OnceLock::new();
+                                    let slot = HOST_VOICE_OPUS_DEC
+                                        .get_or_init(|| std::sync::Mutex::new(None));
+                                    if let Some((sample_rate, channels, pcm)) =
+                                        crate::codec::opus_audio::decode_opus_packet_with_slot(slot, slice)
+                                    {
+                                        #[cfg(target_os = "windows")]
+                                        crate::windows::audio::play_remote_voice_chunk(
+                                            sample_rate,
+                                            channels,
+                                            &pcm,
+                                        );
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            let _ = (sample_rate, channels);
+                                            crate::linux::audio::play_remote_voice_chunk(&pcm);
+                                        }
+                                    }
+                                }
                                 PKT_VOICE_CHUNK => {
                                     if slice.len() >= 10 {
                                         #[cfg(target_os = "windows")]
@@ -1410,6 +1510,11 @@ impl P2PManager {
                                             let sample_rate = u32::from_le_bytes(slice[6..10].try_into().unwrap());
                                             let pcm = &slice[10..];
                                             crate::windows::audio::play_remote_voice_chunk(sample_rate, channels, pcm);
+                                        }
+                                        #[cfg(target_os = "linux")]
+                                        {
+                                            let pcm = &slice[10..];
+                                            crate::linux::audio::play_remote_voice_chunk(pcm);
                                         }
                                     }
                                 }

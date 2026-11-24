@@ -558,7 +558,7 @@ pub fn draw_fullscreen_settings_view(
                 body_y + 48,
                 content_w - 36,
                 54,
-                "WASAPI desktop audio loopback and 2-way voice intercom are Windows-specific features and are disabled on Linux clients.",
+                "Opus-compressed 48 kHz desktop audio and E2EE 2-way voice intercom are active via PulseAudio / PipeWire (parec, pacat, pw-record, pw-play).",
                 13.0,
                 false,
                 PK_MUTED,
