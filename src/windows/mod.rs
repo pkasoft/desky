@@ -56,6 +56,11 @@ pub fn run() -> anyhow::Result<()> {
         WindowsPlatform::Win7_8 => win7_8::init(),
     }
 
+    let prefs = crate::identity::load_preferences();
+    audio::set_audio_volume_pct(prefs.audio_volume_pct);
+    audio::set_noise_gate_threshold(prefs.mic_noise_gate);
+    crate::codec::opus_audio::set_opus_bitrate_kbps(prefs.opus_bitrate_kbps);
+
     let ident = crate::identity::load_or_create_identity();
     tracing::info!(
         "Loaded Client Identity: Machine GUID = {}, Cached ID = {:?}",

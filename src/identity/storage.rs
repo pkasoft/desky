@@ -82,10 +82,28 @@ pub struct AppPreferences {
     pub close_to_tray: bool,
     #[serde(default)]
     pub start_on_boot: bool,
+    #[serde(default = "default_audio_volume")]
+    pub audio_volume_pct: u8,
+    #[serde(default = "default_noise_gate")]
+    pub mic_noise_gate: u16,
+    #[serde(default = "default_opus_bitrate")]
+    pub opus_bitrate_kbps: u16,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_audio_volume() -> u8 {
+    100
+}
+
+fn default_noise_gate() -> u16 {
+    40
+}
+
+fn default_opus_bitrate() -> u16 {
+    96
 }
 
 impl Default for AppPreferences {
@@ -93,6 +111,9 @@ impl Default for AppPreferences {
         Self {
             close_to_tray: true,
             start_on_boot: false,
+            audio_volume_pct: 100,
+            mic_noise_gate: 40,
+            opus_bitrate_kbps: 96,
         }
     }
 }

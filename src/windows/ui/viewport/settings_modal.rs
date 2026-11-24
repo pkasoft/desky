@@ -307,7 +307,7 @@ pub unsafe fn draw_fullscreen_settings_view(
         0 => 480,
         1 => 650,
         2 => 360,
-        3 => 320,
+        3 => 660,
         4 => 320,
         5 => 460,
         _ => 540,
@@ -1063,6 +1063,107 @@ unsafe fn draw_category_audio(
         hover_id,
         f_btn,
     );
+
+    // 3. Remote Audio Volume
+    let c2_y = c1_y + card_h + gap;
+    draw_card_frame(
+        hdc,
+        cx,
+        c2_y,
+        cw,
+        card_h,
+        "Remote Audio Playback Volume",
+        "Adjust local speaker volume for incoming remote desktop audio",
+        f_title,
+        f_sub,
+    );
+    let vol = crate::windows::audio::get_audio_volume_pct();
+    let vol_idx = match vol {
+        v if v >= 90 => 0,
+        v if v >= 65 => 1,
+        v if v >= 35 => 2,
+        _ => 3,
+    };
+    let opts2 = ["100%", "75%", "50%", "25%"];
+    draw_segment_pills(
+        hdc,
+        cx + 18,
+        c2_y + 68,
+        cw - 36,
+        36,
+        &opts2,
+        vol_idx,
+        520,
+        hover_id,
+        f_btn,
+    );
+
+    // 4. Audio Noise Gate
+    let c3_y = c2_y + card_h + gap;
+    draw_card_frame(
+        hdc,
+        cx,
+        c3_y,
+        cw,
+        card_h,
+        "Audio Capture Noise Gate",
+        "Suppress background line noise below threshold during quiet passages",
+        f_title,
+        f_sub,
+    );
+    let gate = crate::windows::audio::get_noise_gate_threshold();
+    let gate_idx = match gate {
+        0 => 0,
+        1..=80 => 1,
+        81..=200 => 2,
+        _ => 3,
+    };
+    let opts3 = ["Off", "Low (40)", "Medium (120)", "High (300)"];
+    draw_segment_pills(
+        hdc,
+        cx + 18,
+        c3_y + 68,
+        cw - 36,
+        36,
+        &opts3,
+        gate_idx,
+        530,
+        hover_id,
+        f_btn,
+    );
+
+    // 5. Opus Audio Bitrate
+    let c4_y = c3_y + card_h + gap;
+    draw_card_frame(
+        hdc,
+        cx,
+        c4_y,
+        cw,
+        card_h,
+        "Opus Audio Bitrate",
+        "Balance compressed audio fidelity vs. network bandwidth usage",
+        f_title,
+        f_sub,
+    );
+    let bitrate = crate::codec::opus_audio::get_opus_bitrate_kbps();
+    let br_idx = match bitrate {
+        b if b <= 72 => 0,
+        b if b <= 112 => 1,
+        _ => 2,
+    };
+    let opts4 = ["64 kbps", "96 kbps", "128 kbps"];
+    draw_segment_pills(
+        hdc,
+        cx + 18,
+        c4_y + 68,
+        cw - 36,
+        36,
+        &opts4,
+        br_idx,
+        540,
+        hover_id,
+        f_btn,
+    );
 }
 
 // =========================================================================
@@ -1657,7 +1758,7 @@ pub fn handle_settings_mousemove(
         0 => 480,
         1 => 650,
         2 => 360,
-        3 => 320,
+        3 => 660,
         4 => 320,
         5 => 460,
         _ => 540,
@@ -1953,7 +2054,7 @@ pub fn handle_settings_click(
         0 => 480,
         1 => 650,
         2 => 360,
-        3 => 320,
+        3 => 660,
         4 => 320,
         5 => 460,
         _ => 540,
@@ -2248,6 +2349,39 @@ pub fn handle_settings_click(
                     unsafe {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
+                }
+                return true;
+            }
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 2, 4) {
+                let vol = [100u8, 75, 50, 25][idx];
+                crate::windows::audio::set_audio_volume_pct(vol);
+                let mut prefs = crate::identity::load_preferences();
+                prefs.audio_volume_pct = vol;
+                crate::identity::save_preferences(&prefs);
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 3, 4) {
+                let gate = [0u16, 40, 120, 300][idx];
+                crate::windows::audio::set_noise_gate_threshold(gate);
+                let mut prefs = crate::identity::load_preferences();
+                prefs.mic_noise_gate = gate;
+                crate::identity::save_preferences(&prefs);
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return true;
+            }
+            if let Some(idx) = hit_segs(body_y + (card_h + gap) * 4, 3) {
+                let kbps = [64u16, 96, 128][idx];
+                crate::codec::opus_audio::set_opus_bitrate_kbps(kbps);
+                let mut prefs = crate::identity::load_preferences();
+                prefs.opus_bitrate_kbps = kbps;
+                crate::identity::save_preferences(&prefs);
+                unsafe {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 return true;
             }

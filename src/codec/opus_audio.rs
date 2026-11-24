@@ -5,15 +5,28 @@
 
 use anyhow::{anyhow, Result};
 use opus1::{Application, Bitrate, Channels, OpusDecoder, OpusEncoder, SampleRate};
+use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU16, Ordering};
 
 pub const OPUS_SAMPLE_RATE: u32 = 48_000;
 pub const OPUS_FRAME_SAMPLES: usize = 960; // 20 ms @ 48 kHz
+
+static OPUS_TARGET_BITRATE_KBPS: AtomicU16 = AtomicU16::new(96);
+
+pub fn set_opus_bitrate_kbps(kbps: u16) {
+    OPUS_TARGET_BITRATE_KBPS.store(kbps.clamp(32, 192), Ordering::Relaxed);
+}
+
+pub fn get_opus_bitrate_kbps() -> u16 {
+    OPUS_TARGET_BITRATE_KBPS.load(Ordering::Relaxed)
+}
 
 pub struct OpusAudioEncoder {
     encoder: OpusEncoder,
     pub out_channels: u16,
     in_sample_rate: u32,
     in_channels: u16,
+    applied_bitrate_kbps: u16,
     pending: Vec<i16>,
     out_buf: Vec<u8>,
 }
@@ -42,7 +55,12 @@ impl OpusAudioEncoder {
 
         let mut encoder = OpusEncoder::new(SampleRate::Hz48000, ch_enum, app)
             .map_err(|e| anyhow!("OpusEncoder init failed: {:?}", e))?;
-        encoder.set_bitrate(Bitrate::Auto);
+        let target_kbps = get_opus_bitrate_kbps();
+        if let Some(bps) = NonZeroU32::new(target_kbps as u32 * 1000) {
+            encoder.set_bitrate(Bitrate::BitsPerSecond(bps));
+        } else {
+            encoder.set_bitrate(Bitrate::Auto);
+        }
         let _ = encoder.set_complexity(5);
 
         Ok(Self {
@@ -50,6 +68,7 @@ impl OpusAudioEncoder {
             out_channels,
             in_sample_rate: in_sample_rate.max(8000),
             in_channels: in_channels.max(1),
+            applied_bitrate_kbps: target_kbps,
             pending: Vec::with_capacity(OPUS_FRAME_SAMPLES * out_channels as usize * 2),
             out_buf: vec![0u8; 1275],
         })
@@ -108,6 +127,14 @@ impl OpusAudioEncoder {
                     self.pending.push((s0 + (s1 - s0) * frac) as i16);
                 }
             }
+        }
+
+        let target_kbps = get_opus_bitrate_kbps();
+        if target_kbps != self.applied_bitrate_kbps {
+            if let Some(bps) = NonZeroU32::new(target_kbps as u32 * 1000) {
+                self.encoder.set_bitrate(Bitrate::BitsPerSecond(bps));
+            }
+            self.applied_bitrate_kbps = target_kbps;
         }
 
         let frame_samples_total = OPUS_FRAME_SAMPLES * out_ch;

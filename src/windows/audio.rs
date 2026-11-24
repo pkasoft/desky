@@ -6,7 +6,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 
 use anyhow::Result;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering};
 use std::sync::Mutex;
 use tracing::info;
 
@@ -22,6 +22,24 @@ use windows::Win32::System::Com::{
 };
 
 pub static CLIENT_AUDIO_MUTED: AtomicBool = AtomicBool::new(false);
+pub static REMOTE_AUDIO_VOLUME_PCT: AtomicU8 = AtomicU8::new(100);
+pub static NOISE_GATE_THRESHOLD: AtomicU16 = AtomicU16::new(40);
+
+pub fn set_audio_volume_pct(pct: u8) {
+    REMOTE_AUDIO_VOLUME_PCT.store(pct.min(100), Ordering::Relaxed);
+}
+
+pub fn get_audio_volume_pct() -> u8 {
+    REMOTE_AUDIO_VOLUME_PCT.load(Ordering::Relaxed)
+}
+
+pub fn set_noise_gate_threshold(threshold: u16) {
+    NOISE_GATE_THRESHOLD.store(threshold, Ordering::Relaxed);
+}
+
+pub fn get_noise_gate_threshold() -> u16 {
+    NOISE_GATE_THRESHOLD.load(Ordering::Relaxed)
+}
 
 static AUDIO_PLAYER: Mutex<Option<AudioPlayer>> = Mutex::new(None);
 
@@ -176,9 +194,10 @@ impl WasapiLoopbackCapturer {
 
             let _ = self.capture_client.ReleaseBuffer(num_frames_read);
 
-            // Noise gate: if peak amplitude is below line-noise threshold (40 / -58dB),
-            // treat as silence to eliminate background hiss while capturing quiet speech and video playback
-            if max_amp < 40 {
+            // Noise gate: if peak amplitude is below configured threshold,
+            // treat as silence to eliminate background hiss while capturing speech/video
+            let gate = NOISE_GATE_THRESHOLD.load(Ordering::Relaxed) as i16;
+            if gate > 0 && max_amp < gate {
                 return Ok(None);
             }
 
@@ -487,6 +506,14 @@ impl AudioPlayer {
                 block.buffer.resize(flush_len, 0);
             }
             block.buffer[..flush_len].copy_from_slice(&self.pending_pcm[..flush_len]);
+            let vol = REMOTE_AUDIO_VOLUME_PCT.load(Ordering::Relaxed);
+            if vol < 100 {
+                for sample in block.buffer[..flush_len].chunks_exact_mut(2) {
+                    let s = i16::from_le_bytes([sample[0], sample[1]]);
+                    let scaled = ((s as i32 * vol as i32) / 100) as i16;
+                    sample.copy_from_slice(&scaled.to_le_bytes());
+                }
+            }
             self.pending_pcm.drain(..flush_len);
 
             block.header.lpData = windows::core::PSTR(block.buffer.as_mut_ptr());

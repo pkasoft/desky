@@ -1,25 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-pub mod config;
-mod identity;
-mod p2p;
-mod protocol;
-pub mod media;
-pub use media::recorder;
-pub mod codec;
-
-pub mod ui;
-
-#[cfg(target_os = "windows")]
-pub(crate) mod windows;
-#[cfg(target_os = "windows")]
-pub(crate) use windows as platform;
-
 #[cfg(target_os = "linux")]
-pub(crate) mod linux;
-#[cfg(target_os = "linux")]
-pub(crate) use linux as platform;
-
+use desky::linux;
+#[cfg(target_os = "windows")]
+use desky::windows;
 use tracing::info;
 
 fn main() -> anyhow::Result<()> {
