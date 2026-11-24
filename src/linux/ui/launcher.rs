@@ -55,7 +55,7 @@ pub fn set_assigned_desky_id(id: &str) {
     if let Ok(mut guard) = LOCAL_DESKY_ID.lock() {
         *guard = id.to_string();
     }
-    info!("✅ [LINUX HOST] Permanent Desky ID Approved: {}", id);
+    info!("✅ [LINUX HOST] Permanent Resky ID Approved: {}", id);
     append_status_log(&format!("Online | ID: {}", id));
     println!("\n\x1b[1;32m==================================================\x1b[0m");
     println!("\x1b[1;32m  DESKY LINUX ONLINE | pkasoft.com\x1b[0m");
@@ -264,11 +264,11 @@ pub fn get_card3_tab_rects(
     )
 }
 
-/// Validates entered remote Desky ID and initiates connection in the unified window
+/// Validates entered remote Resky ID and initiates connection in the unified window
 pub fn handle_homepage_connect(raw_target: &str) {
     let digits: String = raw_target.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.is_empty() {
-        append_status_log("[!] Please enter a 9-digit remote Desky ID (e.g. 800 258 756)");
+        append_status_log("[!] Please enter a 9-digit remote Resky ID (e.g. 800 258 756)");
         return;
     }
 
@@ -285,7 +285,7 @@ pub fn handle_homepage_connect(raw_target: &str) {
     };
 
     if !local_digits.is_empty() && digits == local_digits {
-        append_status_log("[!] That is THIS computer's own ID! Enter a remote Desky ID.");
+        append_status_log("[!] That is THIS computer's own ID! Enter a remote Resky ID.");
         return;
     }
 
@@ -295,10 +295,10 @@ pub fn handle_homepage_connect(raw_target: &str) {
         digits.clone()
     };
 
-    info!("Initiating P2P session to remote Desky ID: {}", target_display);
+    info!("Initiating P2P session to remote Resky ID: {}", target_display);
     crate::identity::save_recent_session(&target_display);
     append_status_log(&format!(
-        "Requesting session with Remote Desky ID: {}...",
+        "Requesting session with Remote Resky ID: {}...",
         target_display
     ));
 
@@ -693,9 +693,9 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
     if c3_tab == 2 {
         if lan_peers.is_empty() {
             let empty_title = if is_lan_scan_active() {
-                "Scanning local subnet for Desky devices..."
+                "Scanning local subnet for Resky devices..."
             } else {
-                "No Desky devices found on local network"
+                "No Resky devices found on local network"
             };
             canvas.draw_text(
                 item_x,
@@ -711,7 +711,7 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
                 l.col_y + 78,
                 item_w,
                 50,
-                "Desky instances on your local Wi-Fi or subnet appear here with 1-click zero-cloud connect.",
+                "Resky instances on your local Wi-Fi or subnet appear here with 1-click zero-cloud connect.",
                 f_console,
                 false,
                 PK_MUTED,
@@ -788,7 +788,7 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
                 l.col_y + 78,
                 item_w,
                 50,
-                "Enter a 9-digit Desky ID above and click [+ Add] to save it here with a nickname.",
+                "Enter a 9-digit Resky ID above and click [+ Add] to save it here with a nickname.",
                 f_console,
                 false,
                 PK_MUTED,
@@ -1036,7 +1036,7 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
         if !id_to_copy.is_empty() {
             copy_to_clipboard(&id_to_copy);
             append_status_log(&format!(
-                "Desky ID '{}' copied to X11 Clipboard!",
+                "Resky ID '{}' copied to X11 Clipboard!",
                 id_to_copy
             ));
         }
@@ -1112,7 +1112,7 @@ pub fn handle_homepage_click(mx: i16, my: i16, win_w: u16, win_h: u16) -> bool {
                     crate::identity::add_or_update_contact(&digits, &alias, "Favorites", None);
                     append_status_log(&format!("Saved ID {} to Address Book!", digits));
                 } else {
-                    append_status_log("[!] Enter a 9-digit Desky ID above, then click [+ Add]");
+                    append_status_log("[!] Enter a 9-digit Resky ID above, then click [+ Add]");
                 }
             } else if c3_tab == 2 {
                 trigger_lan_radar_scan();
@@ -1224,7 +1224,7 @@ pub fn spawn_linux_approval_popup(client_id: String) {
                 &win_aux,
             );
 
-            let title = "Desky Connection Request";
+            let title = "Resky Connection Request";
             let _ = conn.change_property8(
                 PropMode::REPLACE,
                 win_id,
@@ -1379,7 +1379,7 @@ impl LinuxApp {
         println!("\x1b[1;32m==================================================\x1b[0m");
         println!("\x1b[1;32m  DESKY REMOTE DESKTOP (Linux / X11)\x1b[0m");
         println!(
-            "\x1b[1;37m  Permanent Desky ID: \x1b[1;32m{}\x1b[0m",
+            "\x1b[1;37m  Permanent Resky ID: \x1b[1;32m{}\x1b[0m",
             current_id
         );
         println!("\x1b[1;37m  Theme: \x1b[0;32mpkasoft.com White & Emerald\x1b[0m");
@@ -1408,7 +1408,7 @@ impl LinuxApp {
     }
 
     fn run_terminal_loop(&self) {
-        info!("Running Desky Linux host daemon. Press Ctrl+C to exit.");
+        info!("Running Resky Linux host daemon. Press Ctrl+C to exit.");
         while RUNNING.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_secs(1));
         }

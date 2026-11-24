@@ -1,8 +1,8 @@
 fn main() {
     println!("cargo:rerun-if-changed=src/config.rs");
     println!("cargo:rerun-if-changed=src/config.rs.example");
-    println!("cargo:rerun-if-changed=desky.manifest");
-    println!("cargo:rerun-if-changed=desky.rc");
+    println!("cargo:rerun-if-changed=resky.manifest");
+    println!("cargo:rerun-if-changed=resky.rc");
 
     if !std::path::Path::new("src/config.rs").exists() {
         let _ = std::fs::copy("src/config.rs.example", "src/config.rs");
@@ -15,13 +15,13 @@ fn main() {
 
 fn embed_windows_manifest() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let manifest_path = std::path::Path::new(&manifest_dir).join("desky.manifest");
+    let manifest_path = std::path::Path::new(&manifest_dir).join("resky.manifest");
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
 
     if target_env == "msvc" {
-        println!("cargo:rustc-link-arg-bin=desky=/MANIFEST:EMBED");
+        println!("cargo:rustc-link-arg-bin=resky=/MANIFEST:EMBED");
         println!(
-            "cargo:rustc-link-arg-bin=desky=/MANIFESTINPUT:{}",
+            "cargo:rustc-link-arg-bin=resky=/MANIFESTINPUT:{}",
             manifest_path.display()
         );
         return;
@@ -31,8 +31,8 @@ fn embed_windows_manifest() {
         Ok(dir) => dir,
         Err(_) => return,
     };
-    let rc_path = std::path::Path::new(&manifest_dir).join("desky.rc");
-    let res_obj = std::path::Path::new(&out_dir).join("desky_manifest.res.o");
+    let rc_path = std::path::Path::new(&manifest_dir).join("resky.rc");
+    let res_obj = std::path::Path::new(&out_dir).join("resky_manifest.res.o");
 
     let candidates = ["windres", "x86_64-w64-mingw32-windres"];
     for tool in candidates {
@@ -50,12 +50,12 @@ fn embed_windows_manifest() {
         if let Ok(s) = status
             && s.success()
         {
-            println!("cargo:rustc-link-arg-bin=desky={}", res_obj.display());
+            println!("cargo:rustc-link-arg-bin=resky={}", res_obj.display());
             return;
         }
     }
 
     println!(
-        "cargo:warning=Could not run windres to embed desky.manifest; runtime elevation check will still apply."
+        "cargo:warning=Could not run windres to embed resky.manifest; runtime elevation check will still apply."
     );
 }

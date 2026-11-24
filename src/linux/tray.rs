@@ -2,9 +2,9 @@
 //!
 //! Integrates with `_NET_SYSTEM_TRAY_S0` (LXQt/Lubuntu, XFCE, KDE, MATE, Cinnamon, i3):
 //! - Docks a 24x24 X11 icon window into the desktop panel tray
-//! - Renders a crisp emerald Desky icon via `PixelCanvas`
-//! - Left-click restores & focuses the main Desky window
-//! - Right-click opens an override-redirect X11 menu ("Open Desky" / "Quit Desky")
+//! - Renders a crisp emerald Resky icon via `PixelCanvas`
+//! - Left-click restores & focuses the main Resky window
+//! - Right-click opens an override-redirect X11 menu ("Open Resky" / "Quit Resky")
 
 use std::sync::atomic::Ordering;
 use tracing::info;
@@ -78,7 +78,7 @@ impl LinuxTray {
         conn.create_gc(gc, tray_win, &CreateGCAux::new().graphics_exposures(0)).ok()?;
         let _ = conn.flush();
 
-        info!("Docked Desky XEmbed tray icon (0x{:x}) into tray manager 0x{:x}", tray_win, owner);
+        info!("Docked Resky XEmbed tray icon (0x{:x}) into tray manager 0x{:x}", tray_win, owner);
 
         Some(Self {
             tray_win,
@@ -165,18 +165,18 @@ impl LinuxTray {
         let mut canvas = PixelCanvas::new(w as u16, h as u16);
         canvas.draw_rounded_box(0, 0, w, h, PK_CARD, PK_CARD_BORDER, 4);
 
-        // Item 0: Open Desky
+        // Item 0: Open Resky
         let bg0 = if self.menu_hover == 0 { 0x00E7EDE5 } else { PK_CARD };
         canvas.fill_rect(2, 4, w - 4, 28, bg0);
-        canvas.draw_text(14, 10, "Open Desky", 13.0, true, PK_TEXT, Some(w - 24));
+        canvas.draw_text(14, 10, "Open Resky", 13.0, true, PK_TEXT, Some(w - 24));
 
         // Divider
         canvas.fill_rect(8, 34, w - 16, 1, PK_CARD_BORDER);
 
-        // Item 1: Quit Desky
+        // Item 1: Quit Resky
         let bg1 = if self.menu_hover == 1 { 0x00FDE8E8 } else { PK_CARD };
         canvas.fill_rect(2, 36, w - 4, 28, bg1);
-        canvas.draw_text(14, 42, "Quit Desky", 13.0, true, PK_RED, Some(w - 24));
+        canvas.draw_text(14, 42, "Quit Resky", 13.0, true, PK_RED, Some(w - 24));
 
         canvas.present_to_x11(conn, mwin, mgc, screen.root_depth);
         let _ = conn.flush();

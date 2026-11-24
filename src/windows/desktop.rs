@@ -186,7 +186,7 @@ fn format_shell_execute_params() -> String {
         .join(" ")
 }
 
-/// Triggers UAC elevation prompt on the local Windows host to re-launch Desky as Administrator
+/// Triggers UAC elevation prompt on the local Windows host to re-launch Resky as Administrator
 pub fn elevate_process() -> bool {
     unsafe {
         if let Ok(exe_path) = std::env::current_exe() {

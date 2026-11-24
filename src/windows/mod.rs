@@ -45,7 +45,7 @@ use tracing::info;
 pub fn run() -> anyhow::Result<()> {
     desktop::enable_debug_privilege();
     let platform = get_platform();
-    info!("🚀 Running Desky on Platform Engine: {:?} (Session0={})", platform, service::is_running_in_session_zero());
+    info!("🚀 Running Resky on Platform Engine: {:?} (Session0={})", platform, service::is_running_in_session_zero());
     codec::probe_hardware_codecs();
 
     match platform {
@@ -85,7 +85,7 @@ pub fn run() -> anyhow::Result<()> {
     tracing::info!("Spawning native Win32 window and starting message pump...");
     let app = ui::NativeWin32App::new()?;
     if !crate::windows::install::is_installed() {
-        ui::launcher::append_status_log("💡 Desky is running portable. Click [📌 Pin to Start & Desktop] in the top bar to install.");
+        ui::launcher::append_status_log("💡 Resky is running portable. Click [📌 Pin to Start & Desktop] in the top bar to install.");
     }
     app.run_message_loop();
     Ok(())

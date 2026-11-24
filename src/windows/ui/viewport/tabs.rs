@@ -72,10 +72,10 @@ pub fn switch_session_tab(tab_idx: usize) {
                 unsafe {
                     if tab_idx == 0 {
                         crate::windows::ui::launcher::sync_edit_target_visibility();
-                        let _ = SetWindowTextW(hwnd, w!("Desky | pkasoft.com"));
+                        let _ = SetWindowTextW(hwnd, w!("Resky | pkasoft.com"));
                     } else {
                         crate::windows::ui::launcher::set_edit_target_visibility(false);
-                        let title = format!("Desky | [{}]", tab.title);
+                        let title = format!("Resky | [{}]", tab.title);
                         let wide_title: Vec<u16> =
                             title.encode_utf16().chain(std::iter::once(0)).collect();
                         let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
@@ -161,7 +161,7 @@ pub fn spawn_or_add_tab_viewport(target: &str) {
             }
         }
         ACTIVE_TAB_INDEX.store(idx, Ordering::Relaxed);
-        let window_title = format!("Desky | [{}]", target);
+        let window_title = format!("Resky | [{}]", target);
         let wide_title: Vec<u16> =
             window_title.encode_utf16().chain(std::iter::once(0)).collect();
         unsafe {
@@ -196,13 +196,13 @@ pub unsafe fn spawn_detached_viewport_window(target: &str, screen_x: i32, screen
     let h_module = GetModuleHandleW(None).unwrap_or_default();
     let h_instance: HINSTANCE = h_module.into();
 
-    let window_title = format!("Desky | [{}]", target);
+    let window_title = format!("Resky | [{}]", target);
     let wide_title: Vec<u16> =
         window_title.encode_utf16().chain(std::iter::once(0)).collect();
 
     let viewport_hwnd = CreateWindowExW(
         WINDOW_EX_STYLE::default(),
-        w!("DeskyViewportClass"),
+        w!("ReskyViewportClass"),
         PCWSTR(wide_title.as_ptr()),
         WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         screen_x,

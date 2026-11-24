@@ -1,4 +1,4 @@
-//! Desky Media Subsystem
+//! Resky Media Subsystem
 //!
 //! Handles media capture, session recording, and container muxing.
 

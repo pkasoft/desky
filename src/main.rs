@@ -1,16 +1,16 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 #[cfg(target_os = "linux")]
-use desky::linux;
+use resky::linux;
 #[cfg(target_os = "windows")]
-use desky::windows;
+use resky::windows;
 use tracing::info;
 
 fn main() -> anyhow::Result<()> {
     std::panic::set_hook(Box::new(|info| {
-        let msg = format!("DESKY_PANIC: {}\nLocation: {:?}\nBacktrace: {:?}", info, info.location(), std::backtrace::Backtrace::capture());
+        let msg = format!("RESKY_PANIC: {}\nLocation: {:?}\nBacktrace: {:?}", info, info.location(), std::backtrace::Backtrace::capture());
         eprintln!("{}", msg);
-        let _ = std::fs::write("desky_panic.log", &msg);
+        let _ = std::fs::write("resky_panic.log", &msg);
     }));
 
     tracing_subscriber::fmt()
@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     info!("========================================");
-    info!(" Desky v{} - Native Remote Desktop", env!("CARGO_PKG_VERSION"));
+    info!(" Resky v{} - Native Remote Desktop", env!("CARGO_PKG_VERSION"));
     #[cfg(target_os = "windows")]
     {
         if std::env::args().any(|a| a == "--service") {
@@ -56,6 +56,6 @@ fn main() -> anyhow::Result<()> {
     }
     info!("========================================");
 
-    info!("Desky shutdown cleanly.");
+    info!("Resky shutdown cleanly.");
     Ok(())
 }

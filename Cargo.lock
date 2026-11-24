@@ -152,30 +152,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "desky"
-version = "0.1.0"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "chacha20poly1305",
- "jpeg-encoder",
- "libc",
- "opus1",
- "rand_core",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows",
- "x11rb",
- "x25519-dalek",
- "zune-jpeg",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -440,6 +416,30 @@ name = "regex-syntax"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
+
+[[package]]
+name = "resky"
+version = "0.1.0"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "chacha20poly1305",
+ "jpeg-encoder",
+ "libc",
+ "opus1",
+ "rand_core",
+ "serde",
+ "serde_json",
+ "sha2",
+ "socket2",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+ "x11rb",
+ "x25519-dalek",
+ "zune-jpeg",
+]
 
 [[package]]
 name = "rustc_version"

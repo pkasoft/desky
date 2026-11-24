@@ -46,7 +46,7 @@ impl Default for AdminState {
             scroll_y: 0,
             services: Vec::new(),
             terminal_lines: vec![
-                "[Admin] Desky Silent Remote Management Console".into(),
+                "[Admin] Resky Silent Remote Management Console".into(),
                 "Commands execute on the remote host with zero screen or mouse interruption.".into(),
                 "Type any command below and press Enter (e.g. dir, ipconfig, ps aux):".into(),
             ],

@@ -163,7 +163,7 @@ pub fn schedule_remote_reboot(safe_mode: bool) {
 
         if let Ok(exe_path) = std::env::current_exe() {
             let cmd = format!(
-                "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce /v DeskyAutoReconnect /t REG_SZ /d \"\\\"{}\\\"\" /f",
+                "reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce /v ReskyAutoReconnect /t REG_SZ /d \"\\\"{}\\\"\" /f",
                 exe_path.display()
             );
             let _ = Command::new("cmd")
@@ -181,7 +181,7 @@ pub fn schedule_remote_reboot(safe_mode: bool) {
 
         std::thread::sleep(std::time::Duration::from_millis(500));
         let _ = Command::new("shutdown")
-            .args(["/r", "/t", "3", "/f", "/c", "Desky Remote Restart"])
+            .args(["/r", "/t", "3", "/f", "/c", "Resky Remote Restart"])
             .creation_flags(0x08000000)
             .output();
     });
@@ -389,7 +389,7 @@ pub fn execute_shell_command(cmd: &str) -> (String, i32) {
 pub fn get_system_info() -> SystemStats {
     let hostname = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "Desky Host".into());
+        .unwrap_or_else(|_| "Resky Host".into());
     let cpu_count = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -444,7 +444,7 @@ pub fn set_privacy_curtain(enabled: bool) {
             .spawn(move || unsafe {
                 let h_module = GetModuleHandleW(None).unwrap_or_default();
                 let h_instance: HINSTANCE = h_module.into();
-                let class_name = w!("DeskyPrivacyCurtain");
+                let class_name = w!("ReskyPrivacyCurtain");
 
                 let mut wc = WNDCLASSEXW::default();
                 wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
@@ -462,7 +462,7 @@ pub fn set_privacy_curtain(enabled: bool) {
                 if let Ok(hwnd) = CreateWindowExW(
                     WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
                     class_name,
-                    w!("Desky Privacy Curtain"),
+                    w!("Resky Privacy Curtain"),
                     WS_POPUP | WS_VISIBLE,
                     vx,
                     vy,

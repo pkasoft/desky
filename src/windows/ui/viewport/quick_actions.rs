@@ -228,14 +228,14 @@ pub unsafe fn execute_quick_action(parent_hwnd: HWND, hit_id: i32) {
     if let Some(item) = QUICK_ACTIONS.iter().find(|it| it.id == hit_id) {
         if item.requires_confirm {
             let msg = if item.action == SystemAction::RebootSafe {
-                w!("Are you sure you want to reboot the remote computer into SAFE MODE?\r\n\r\nDesky will automatically configure RunOnce reconnect and reboot.")
+                w!("Are you sure you want to reboot the remote computer into SAFE MODE?\r\n\r\nResky will automatically configure RunOnce reconnect and reboot.")
             } else {
-                w!("Are you sure you want to RESTART the remote computer now?\r\n\r\nDesky will reconnect automatically once Windows boots up.")
+                w!("Are you sure you want to RESTART the remote computer now?\r\n\r\nResky will reconnect automatically once Windows boots up.")
             };
             let ret = MessageBoxW(
                 Some(parent_hwnd),
                 msg,
-                w!("Desky - Remote Reboot Confirmation"),
+                w!("Resky - Remote Reboot Confirmation"),
                 windows::Win32::UI::WindowsAndMessaging::MB_YESNO | windows::Win32::UI::WindowsAndMessaging::MB_ICONWARNING,
             );
             if ret != windows::Win32::UI::WindowsAndMessaging::IDYES {

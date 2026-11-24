@@ -3,10 +3,10 @@
   <assemblyIdentity
     version="1.0.0.0"
     processorArchitecture="*"
-    name="Desky"
+    name="Resky"
     type="win32"
   />
-  <description>Desky Remote Desktop</description>
+  <description>Resky Remote Desktop</description>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>

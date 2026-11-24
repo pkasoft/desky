@@ -38,10 +38,10 @@ pub fn notify_file_received(path: &Path) {
     }
 }
 
-/// Resolves the application configuration storage directory (`%APPDATA%\Desky`)
+/// Resolves the application configuration storage directory (`%APPDATA%\Resky`)
 pub fn get_identity_dir() -> PathBuf {
     if let Ok(app_data) = std::env::var("APPDATA") {
-        let dir = PathBuf::from(app_data).join("Desky");
+        let dir = PathBuf::from(app_data).join("Resky");
         let _ = std::fs::create_dir_all(&dir);
         dir
     } else {

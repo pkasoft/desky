@@ -1,8 +1,8 @@
-# Desky 🖥️⚡
+# Resky 🖥️⚡
 
 > **Zero-friction, high-performance peer-to-peer remote desktop built with Rust.**
 
-Desky is an ultra-lightweight, high-framerate remote desktop application designed as a modern, private, and bloat-free alternative to legacy remote access software.
+Resky is an ultra-lightweight, high-framerate remote desktop application designed as a modern, private, and bloat-free alternative to legacy remote access software.
 
 ---
 
@@ -20,7 +20,7 @@ Desky is an ultra-lightweight, high-framerate remote desktop application designe
 ## 🛠️ Architecture
 
 ```
-                       [ Desky Host ]
+                       [ Resky Host ]
                              │
             ┌────────────────┴────────────────┐
             ▼                                 ▼
@@ -38,7 +38,7 @@ Desky is an ultra-lightweight, high-framerate remote desktop application designe
                (Direct Encrypted P2P Tunnel)
                              │
                              ▼
-                      [ Desky Client ]
+                      [ Resky Client ]
                (Hardware Video Decode & Render)
 ```
 
@@ -63,6 +63,6 @@ cargo build --release
 
 ## 📄 License
 
-Desky is distributed under a **Dual-Licensing Model**:
+Resky is distributed under a **Dual-Licensing Model**:
 - **Personal & Home Use:** 100% Free under the **GNU Affero General Public License v3.0 (AGPLv3)**.
 - **Commercial & Enterprise Use:** Commercial users and organizations must obtain a commercial license. See [LICENSE.md](LICENSE.md) or contact `info@pkasoft.com` for details.

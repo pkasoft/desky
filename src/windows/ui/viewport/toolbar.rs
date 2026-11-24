@@ -491,7 +491,7 @@ pub unsafe fn draw_tab_bar(
     let old_font = SelectObject(hdc, HGDIOBJ(font_brand.0));
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, PK_GREEN_DARK);
-    let mut brand_txt: Vec<u16> = "DESKY".encode_utf16().collect();
+    let mut brand_txt: Vec<u16> = "RESKY".encode_utf16().collect();
     let mut brand_rc = RECT {
         left: 0,
         top: 0,

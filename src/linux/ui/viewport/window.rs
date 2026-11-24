@@ -197,7 +197,7 @@ pub fn run_viewport_x11_window() -> Result<()> {
         &win_aux,
     )?;
 
-    let title = "Desky | pkasoft.com";
+    let title = "Resky | pkasoft.com";
     conn.change_property8(
         PropMode::REPLACE,
         win_id,
@@ -222,7 +222,7 @@ pub fn run_viewport_x11_window() -> Result<()> {
         conn.map_window(win_id)?;
         let _ = conn.set_input_focus(InputFocus::PARENT, win_id, x11rb::CURRENT_TIME);
     } else {
-        info!("Desky started silently in background System Tray (--tray)");
+        info!("Resky started silently in background System Tray (--tray)");
     }
     conn.flush()?;
 
@@ -295,11 +295,11 @@ pub fn run_viewport_x11_window() -> Result<()> {
                 x11rb::protocol::Event::ClientMessage(cm) => {
                     if cm.data.as_data32()[0] == wm_delete_window {
                         if crate::identity::load_preferences().close_to_tray {
-                            info!("WM_DELETE_WINDOW received, hiding Desky window to system tray.");
+                            info!("WM_DELETE_WINDOW received, hiding Resky window to system tray.");
                             let _ = conn.unmap_window(win_id);
                             let _ = conn.flush();
                         } else {
-                            info!("WM_DELETE_WINDOW received, closing Desky window.");
+                            info!("WM_DELETE_WINDOW received, closing Resky window.");
                             RUNNING.store(false, Ordering::SeqCst);
                             break;
                         }

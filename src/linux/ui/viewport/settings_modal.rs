@@ -139,7 +139,7 @@ pub fn draw_fullscreen_settings_view(
     canvas.draw_text(
         sidebar_x + 16,
         sidebar_y + sidebar_h - 44,
-        &format!("Desky v{} (Linux X11)", env!("CARGO_PKG_VERSION")),
+        &format!("Resky v{} (Linux X11)", env!("CARGO_PKG_VERSION")),
         12.0,
         false,
         PK_MUTED,
@@ -252,7 +252,7 @@ pub fn draw_fullscreen_settings_view(
                 body_y + 46,
                 content_w - 36,
                 64,
-                "Desky runs as a single self-contained native Linux binary using X11 protocol and XTest input injection with zero external daemon dependencies.",
+                "Resky runs as a single self-contained native Linux binary using X11 protocol and XTest input injection with zero external daemon dependencies.",
                 13.0,
                 false,
                 PK_MUTED,
@@ -274,7 +274,7 @@ pub fn draw_fullscreen_settings_view(
             canvas.draw_text(
                 content_x + 18,
                 id_y + 46,
-                &format!("Permanent Desky ID:  {}", my_id),
+                &format!("Permanent Resky ID:  {}", my_id),
                 13.5,
                 true,
                 PK_GREEN_DARK,

@@ -1,7 +1,7 @@
 //! Main Win32 Launcher Window & Application Lifecycle
 //!
 //! Exposes responsive Home page rendering, layout calculations, and
-//! application lifecycle for the unified Desky window.
+//! application lifecycle for the unified Resky window.
 
 #![allow(unsafe_op_in_unsafe_fn)]
 use anyhow::Result;
@@ -186,7 +186,7 @@ pub fn set_assigned_desky_id(id: &str) {
         if !HWND_MAIN_WINDOW.0.is_null() {
             crate::windows::tray::update_tray_tooltip(
                 HWND_MAIN_WINDOW,
-                &format!("Desky - ID: {}", id),
+                &format!("Resky - ID: {}", id),
             );
         }
     }
@@ -437,7 +437,7 @@ impl NativeWin32App {
             VIEWPORT_BRUSH = CreateSolidBrush(COLORREF(0x000C0A09));
 
             // Register Viewport Window Class as the single primary application window class
-            let viewport_class_name = w!("DeskyViewportClass");
+            let viewport_class_name = w!("ReskyViewportClass");
             let vwc = WNDCLASSEXW {
                 cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
                 style: CS_HREDRAW | CS_VREDRAW,
@@ -467,7 +467,7 @@ impl NativeWin32App {
             let hwnd = CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 viewport_class_name,
-                w!("Desky | pkasoft.com"),
+                w!("Resky | pkasoft.com"),
                 win_style,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -483,7 +483,7 @@ impl NativeWin32App {
             // Register native Win32 System Tray icon
             crate::windows::tray::add_tray_icon(hwnd);
             if start_in_tray {
-                info!("Desky started silently in background System Tray (--tray)");
+                info!("Resky started silently in background System Tray (--tray)");
             }
 
             // Light theme titlebar
@@ -498,7 +498,7 @@ impl NativeWin32App {
             // Start dedicated viewport render thread immediately for unified window
             super::viewport::start_viewport_render_thread(hwnd);
 
-            info!("Native Win32 Unified Desky Window spawned successfully (HWND: {:?})", hwnd);
+            info!("Native Win32 Unified Resky Window spawned successfully (HWND: {:?})", hwnd);
             Ok(Self)
         }
     }
@@ -809,9 +809,9 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 let _ = SelectObject(mem_dc, HGDIOBJ(font_btn.0));
                 SetTextColor(mem_dc, PK_TEXT);
                 let empty_title = if is_lan_scan_active() {
-                    "Scanning local subnet for Desky devices...".to_string()
+                    "Scanning local subnet for Resky devices...".to_string()
                 } else {
-                    "No Desky devices found on local network".to_string()
+                    "No Resky devices found on local network".to_string()
                 };
                 let mut empty_msg1: Vec<u16> = empty_title.encode_utf16().collect();
                 let mut empty_rc1 = RECT {
@@ -825,7 +825,7 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 let _ = SelectObject(mem_dc, HGDIOBJ(font_console.0));
                 SetTextColor(mem_dc, PK_MUTED);
                 let mut empty_msg2: Vec<u16> =
-                    "Desky instances on your local Wi-Fi or subnet appear here with 1-click zero-cloud connect."
+                    "Resky instances on your local Wi-Fi or subnet appear here with 1-click zero-cloud connect."
                         .encode_utf16()
                         .collect();
                 let mut empty_rc2 = RECT {
@@ -912,7 +912,7 @@ pub unsafe fn draw_homepage_view(mem_dc: HDC, w: i32, h: i32, hover: u8) {
                 let _ = DrawTextW(mem_dc, &mut empty_msg1, &mut empty_rc1, DT_SINGLELINE | DT_VCENTER);
 
                 let mut empty_msg2: Vec<u16> =
-                    "Enter a 9-digit Desky ID above and click [+ Add] to save it here with a nickname."
+                    "Enter a 9-digit Resky ID above and click [+ Add] to save it here with a nickname."
                         .encode_utf16()
                         .collect();
                 let mut empty_rc2 = RECT {
@@ -1162,7 +1162,7 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
 
         if !id_to_copy.is_empty() {
             copy_to_clipboard(&id_to_copy);
-            append_status_log(&format!("Desky ID '{}' copied to Windows Clipboard!", id_to_copy));
+            append_status_log(&format!("Resky ID '{}' copied to Windows Clipboard!", id_to_copy));
         }
         return true;
     }
@@ -1253,7 +1253,7 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
                     crate::identity::add_or_update_contact(&digits, &alias, "Favorites", None);
                     append_status_log(&format!("Saved ID {} to Address Book!", &digits));
                 } else {
-                    append_status_log("[!] Enter a 9-digit Desky ID above, then click [+ Add]");
+                    append_status_log("[!] Enter a 9-digit Resky ID above, then click [+ Add]");
                 }
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return true;
@@ -1348,10 +1348,10 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
                 let pill_btn_x = item_x + item_w - pill_btn_w - 6;
                 if x >= pill_btn_x {
                     let target_display = session.clone();
-                    info!("Initiating P2P session to remote Desky ID: {}", target_display);
+                    info!("Initiating P2P session to remote Resky ID: {}", target_display);
                     crate::identity::save_recent_session(&target_display);
                     append_status_log(&format!(
-                        "Requesting session with Remote Desky ID: {}...",
+                        "Requesting session with Remote Resky ID: {}...",
                         target_display
                     ));
 
@@ -1368,7 +1368,7 @@ pub unsafe fn handle_homepage_click(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) 
     false
 }
 
-/// Validates entered remote Desky ID and initiates connection in the unified window
+/// Validates entered remote Resky ID and initiates connection in the unified window
 pub unsafe fn handle_homepage_connect(hwnd: HWND) {
     let mut buffer = [0u16; 128];
     let len = GetWindowTextLengthW(HWND_EDIT_TARGET) as usize;
@@ -1387,7 +1387,7 @@ pub unsafe fn handle_homepage_connect(hwnd: HWND) {
     } else {
         let digits: String = raw_input.chars().filter(|c| c.is_ascii_digit()).collect();
         if digits.is_empty() {
-            append_status_log("[!] Please enter a 9-digit remote Desky ID or IP (e.g. 800 258 756 or 192.168.1.50:21117)");
+            append_status_log("[!] Please enter a 9-digit remote Resky ID or IP (e.g. 800 258 756 or 192.168.1.50:21117)");
             let _ = InvalidateRect(Some(hwnd), None, false);
             return;
         }

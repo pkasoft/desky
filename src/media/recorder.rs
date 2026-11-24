@@ -107,7 +107,7 @@ pub fn start_recording(width: u32, height: u32, fps: u32) -> Result<PathBuf, Str
     let _ = create_dir_all(&save_dir);
 
     let timestamp = chrono_timestamp();
-    let file_name = format!("Desky_Recording_{}.avi", timestamp);
+    let file_name = format!("Resky_Recording_{}.avi", timestamp);
     let file_path = save_dir.join(&file_name);
 
     let mut file = match OpenOptions::new()
@@ -211,10 +211,10 @@ pub fn stop_recording() -> Option<(PathBuf, u64, u32, Duration)> {
 
 fn dirs_fallback_videos() -> PathBuf {
     if let Some(home) = dirs_home() {
-        let v = home.join("Videos").join("Desky_Recordings");
+        let v = home.join("Videos").join("Resky_Recordings");
         return v;
     }
-    std::env::temp_dir().join("Desky_Recordings")
+    std::env::temp_dir().join("Resky_Recordings")
 }
 
 fn dirs_home() -> Option<PathBuf> {

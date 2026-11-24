@@ -1,4 +1,4 @@
-//! Desky Brand Vector Logo Icon
+//! Resky Brand Vector Logo Icon
 use super::IconCanvas;
 
 pub fn render_desky_logo(canvas: &mut impl IconCanvas, x: f32, y: f32, size: f32) {

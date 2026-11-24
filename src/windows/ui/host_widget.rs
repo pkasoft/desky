@@ -5,9 +5,9 @@
 //! - Fully native window resizing and aero-snap without custom hit-testing overhead
 //! - Starter size compact & responsive (640x420)
 //! - Single-allocation cached font engine (Zero GDI leaks, resolving icon/text disappearance)
-//! - Sharp, crisp geometric cards, input fields, and action buttons matching the Desky Home Page
+//! - Sharp, crisp geometric cards, input fields, and action buttons matching the Resky Home Page
 //! - pkasoft.com White Theme palette: PK_BG canvas, PK_CARD cards, PK_CARD_BORDER, PK_GREEN, PK_GREEN_DARK, PK_GREEN_TINT
-//! - 4 active, real host permission options using iconic Desky green vector icons from `src/ui/icons/`
+//! - 4 active, real host permission options using iconic Resky green vector icons from `src/ui/icons/`
 
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_must_use)]
@@ -217,7 +217,7 @@ pub fn spawn_host_widget() {
 
     unsafe {
         let instance = GetModuleHandleW(None).unwrap_or_default();
-        let class_name = w!("DeskyHostSessionWindowClass");
+        let class_name = w!("ReskyHostSessionWindowClass");
 
         let mut wc = WNDCLASSEXW::default();
         wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
@@ -236,7 +236,7 @@ pub fn spawn_host_widget() {
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(WS_EX_TOPMOST.0),
             class_name,
-            w!("Desky | Session Management"),
+            w!("Resky | Session Management"),
             WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 | WS_VISIBLE.0 | WS_CLIPCHILDREN.0),
             x,
             y,
@@ -249,7 +249,7 @@ pub fn spawn_host_widget() {
         );
 
         if hwnd.is_err() || hwnd.as_ref().unwrap().0.is_null() {
-            tracing::error!("Failed to create Desky Host Session window");
+            tracing::error!("Failed to create Resky Host Session window");
             return;
         }
 
@@ -558,7 +558,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let hbm = CreateCompatibleBitmap(hdc, w, h);
             let old_bm = SelectObject(hdc_mem, HGDIOBJ(hbm.0));
 
-            // Desky signature background canvas (PK_BG #f5f7f5)
+            // Resky signature background canvas (PK_BG #f5f7f5)
             let bg_brush = CreateSolidBrush(PK_BG);
             FillRect(hdc_mem, &rc, bg_brush);
             let _ = DeleteObject(HGDIOBJ(bg_brush.0));
@@ -595,7 +595,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let div_line = RECT { left: col_left_w, top: 0, right: col_left_w + 1, bottom: h };
             FillRect(hdc_mem, &div_line, border_brush);
 
-            // 1.1 Authentic Desky Emblem Card (x: 16, y: 16, size: 72)
+            // 1.1 Authentic Resky Emblem Card (x: 16, y: 16, size: 72)
             crate::ui::draw_desky_logo(hdc_mem, 16, 16, 72);
 
             // 1.2 Remote Peer Identity Header (Right of Avatar: x: 96)
@@ -626,7 +626,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let mut desc_rc = RECT { left: 96, top: 54, right: col_left_w - 10, bottom: 90 };
             DrawTextW(hdc_mem, &mut desc_txt, &mut desc_rc, DT_LEFT);
 
-            // 1.3 Security Badges: Desky Green Lock & Verified Shield
+            // 1.3 Security Badges: Resky Green Lock & Verified Shield
             crate::ui::draw_lock(hdc_mem, 16, 96, 13, PK_GREEN, 2);
             crate::ui::draw_check(hdc_mem, 34, 97, 12, PK_GREEN, 2);
             let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_sec.0));
@@ -642,7 +642,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let mut perm_rc = RECT { left: 16, top: 124, right: col_left_w - 16, bottom: 142 };
             DrawTextW(hdc_mem, &mut perm_txt, &mut perm_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 
-            // 1.5 Active Permission Buttons in Iconic Desky Green (Sharp 6px corners)
+            // 1.5 Active Permission Buttons in Iconic Resky Green (Sharp 6px corners)
             let btn_y = 148;
             let btn_w = 50;
             let btn_h = 42;
@@ -761,7 +761,7 @@ unsafe extern "system" fn host_widget_wndproc(
             let _ = SelectObject(hdc_mem, HGDIOBJ(fonts.font_action.0));
 
             if is_pending {
-                // [ Accept ] Button (x: 16..124) in Iconic Desky Green
+                // [ Accept ] Button (x: 16..124) in Iconic Resky Green
                 let acc_bg = if hover == 30 { PK_GREEN_DARK } else { PK_GREEN };
                 draw_rounded_box(hdc_mem, 16, act_y, 108, act_h, acc_bg, PK_GREEN_DARK, 6);
                 SetTextColor(hdc_mem, COLORREF(0x00FFFFFF));
@@ -933,7 +933,7 @@ unsafe extern "system" fn host_widget_wndproc(
                 DrawTextW(hdc_mem, &mut ph_txt, &mut ph_rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
             }
 
-            // Send Button (Desky Green, sharp 6px corners)
+            // Send Button (Resky Green, sharp 6px corners)
             let send_x = w - 38;
             let send_y = input_y;
             let send_size = 30;

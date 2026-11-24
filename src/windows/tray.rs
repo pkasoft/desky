@@ -1,9 +1,9 @@
 //! Native Win32 System Tray Icon & Context Menu
 //!
 //! Provides a lightweight, zero-dependency system tray icon via `Shell_NotifyIconW`:
-//! - Renders a crisp 32x32 emerald Desky icon directly in memory via `CreateIconIndirect`
-//! - Left-click / Double-click restores & focuses the main Desky window
-//! - Right-click opens a native popup menu ("Open Desky" / "Quit Desky")
+//! - Renders a crisp 32x32 emerald Resky icon directly in memory via `CreateIconIndirect`
+//! - Left-click / Double-click restores & focuses the main Resky window
+//! - Right-click opens a native popup menu ("Open Resky" / "Quit Resky")
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
@@ -142,7 +142,7 @@ pub unsafe fn add_tray_icon(hwnd: HWND) {
         hIcon: hicon,
         ..Default::default()
     };
-    fill_tip(&mut nid.szTip, "Desky Remote Desktop - Online");
+    fill_tip(&mut nid.szTip, "Resky Remote Desktop - Online");
     let _ = Shell_NotifyIconW(NIM_ADD, &nid);
 }
 
@@ -184,9 +184,9 @@ pub unsafe fn show_tray_context_menu(hwnd: HWND) {
     let _ = SetForegroundWindow(hwnd);
 
     if let Ok(hmenu) = CreatePopupMenu() {
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_OPEN, w!("Open Desky"));
+        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_OPEN, w!("Open Resky"));
         let _ = AppendMenuW(hmenu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_QUIT, w!("Quit Desky"));
+        let _ = AppendMenuW(hmenu, MF_STRING, ID_TRAY_QUIT, w!("Quit Resky"));
         let _ = TrackPopupMenu(
             hmenu,
             TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,

@@ -49,7 +49,7 @@ pub fn spawn_progress_window() {
     unsafe {
         let h_module = GetModuleHandleW(None).unwrap_or_default();
         let h_instance: HINSTANCE = h_module.into();
-        let class_name = w!("DeskyProgressClass");
+        let class_name = w!("ReskyProgressClass");
 
         let mut wc = WNDCLASSEXW::default();
         wc.cbSize = std::mem::size_of::<WNDCLASSEXW>() as u32;
@@ -67,7 +67,7 @@ pub fn spawn_progress_window() {
         let hwnd = CreateWindowExW(
             windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST,
             class_name,
-            w!("Desky | File Transfer"),
+            w!("Resky | File Transfer"),
             windows::Win32::UI::WindowsAndMessaging::WS_POPUP
                 | windows::Win32::UI::WindowsAndMessaging::WS_CAPTION
                 | windows::Win32::UI::WindowsAndMessaging::WS_SYSMENU

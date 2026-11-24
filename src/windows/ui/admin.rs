@@ -68,7 +68,7 @@ impl Default for AdminState {
             service_filter_active: false,
             service_scroll_y: 0,
             terminal_lines: vec![
-                "[Admin] Desky Silent Remote Management Console - PowerShell Engine".into(),
+                "[Admin] Resky Silent Remote Management Console - PowerShell Engine".into(),
                 "Commands execute with zero remote screen or mouse interruption.".into(),
                 "Type any PowerShell/CMD command below and press Enter (e.g. dir, ipconfig, Get-Service):".into(),
             ],
@@ -138,7 +138,7 @@ pub fn poll_admin_responses() {
                     state.status_msg = Some((format!("Switched to Monitor #{} (Total: {})", monitor_index + 1, count), Instant::now()));
                 }
                 AdminResp::RebootScheduled { safe_mode } => {
-                    state.status_msg = Some((format!("Host reboot scheduled (Safe Mode: {}). Desky will reconnect automatically...", safe_mode), Instant::now()));
+                    state.status_msg = Some((format!("Host reboot scheduled (Safe Mode: {}). Resky will reconnect automatically...", safe_mode), Instant::now()));
                 }
                 AdminResp::PrivacyModeChanged { enabled } => {
                     state.status_msg = Some((if enabled { "Host Privacy Screen & Input Lock ENABLED".into() } else { "Host Privacy Screen & Input Lock DISABLED".into() }, Instant::now()));
@@ -912,13 +912,13 @@ unsafe fn draw_reboot_confirmation_modal(hdc: HDC, width: i32, height: i32, hove
     let (title, desc, confirm_btn_label, confirm_bg) = match kind {
         ConfirmModalKind::Restart => (
             "Confirm Remote Restart",
-            "The remote host will restart immediately.\n\nDesky will automatically register itself to launch upon startup so you can reconnect once Windows boots back up. Proceed?",
+            "The remote host will restart immediately.\n\nResky will automatically register itself to launch upon startup so you can reconnect once Windows boots back up. Proceed?",
             "Yes, Restart",
             if hover_state == 2996 { PK_GREEN_DARK } else { PK_GREEN },
         ),
         ConfirmModalKind::SafeModeRestart => (
             "Confirm Safe Mode Restart",
-            "The remote host will configure BCD to boot into Safe Mode with Networking.\n\nDesky will auto-launch upon boot so you can reconnect in diagnostic mode. Proceed?",
+            "The remote host will configure BCD to boot into Safe Mode with Networking.\n\nResky will auto-launch upon boot so you can reconnect in diagnostic mode. Proceed?",
             "Yes, Safe Mode",
             if hover_state == 2996 { COLORREF(0x000F7AEE) } else { COLORREF(0x001290FF) },
         ),

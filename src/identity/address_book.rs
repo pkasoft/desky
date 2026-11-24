@@ -13,7 +13,7 @@ use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddressBookEntry {
-    pub id: String,                    // 9-digit Desky ID (e.g. "195 483 733")
+    pub id: String,                    // 9-digit Resky ID (e.g. "195 483 733")
     pub alias: String,                 // Friendly name (e.g. "Office Workstation")
     pub group: String,                 // Category/Tag (e.g. "Work", "Home", "Servers")
     #[serde(default)]

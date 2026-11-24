@@ -219,7 +219,7 @@ pub unsafe fn draw_fullscreen_settings_view(
     // Sidebar bottom metadata badge
     let _ = SelectObject(hdc, HGDIOBJ(font_sub.0));
     SetTextColor(hdc, PK_MUTED);
-    let mut ver_txt: Vec<u16> = format!("Desky v{}\npkasoft.com", env!("CARGO_PKG_VERSION"))
+    let mut ver_txt: Vec<u16> = format!("Resky v{}\npkasoft.com", env!("CARGO_PKG_VERSION"))
         .encode_utf16()
         .collect();
     let mut ver_rc = RECT {
@@ -451,7 +451,7 @@ unsafe fn draw_category_general(
     let _ = SelectObject(hdc, HGDIOBJ(f_sub.0));
     SetTextColor(hdc, PK_MUTED);
     let mut sub_txt: Vec<u16> =
-        "Pin Desky to your Desktop and Windows Start Search so you can launch it instantly without searching Downloads."
+        "Pin Resky to your Desktop and Windows Start Search so you can launch it instantly without searching Downloads."
             .encode_utf16()
             .collect();
     let mut sub_rc = RECT {
@@ -561,7 +561,7 @@ unsafe fn draw_category_general(
         .unwrap_or_else(|_| crate::config::DEFAULT_VDS_SERVER.into());
 
     let rows = [
-        ("Assigned Desky ID", local_id),
+        ("Assigned Resky ID", local_id),
         ("Hardware Machine GUID", ident.machine_id),
         ("P2P Relay Server", vds_server),
     ];
@@ -1566,14 +1566,14 @@ unsafe fn draw_category_about(
         f_btn,
     );
 
-    // 3. About pkasoft Desky Card
+    // 3. About pkasoft Resky Card
     let c2_y = c1_y + c1_h + 14;
     let c2_h = 138;
     draw_rounded_box(hdc, cx, c2_y, cw, c2_h, PK_CARD, PK_CARD_BORDER, 8);
 
     let _ = SelectObject(hdc, HGDIOBJ(f_title.0));
     SetTextColor(hdc, PK_TEXT);
-    let mut a_txt: Vec<u16> = "Desky Remote Desktop".encode_utf16().collect();
+    let mut a_txt: Vec<u16> = "Resky Remote Desktop".encode_utf16().collect();
     let mut a_rc = RECT {
         left: cx + 18,
         top: c2_y + 16,
@@ -2096,16 +2096,16 @@ pub fn handle_settings_click(
                         }
                         unsafe {
                             let msg = format!(
-                                "Desky has been successfully installed!\n\n\
+                                "Resky has been successfully installed!\n\n\
                                 • Desktop shortcut created\n\
-                                • Windows Start Menu integrated (search 'Desky' in Windows Search)\n\
+                                • Windows Start Menu integrated (search 'Resky' in Windows Search)\n\
                                 • Installed to: {}\n\n\
-                                You can now launch Desky anytime from your Desktop or Start Menu.",
+                                You can now launch Resky anytime from your Desktop or Start Menu.",
                                 dest.display()
                             );
                             let wide_msg: Vec<u16> =
                                 msg.encode_utf16().chain(std::iter::once(0)).collect();
-                            let wide_title: Vec<u16> = "Desky - Installed Successfully"
+                            let wide_title: Vec<u16> = "Resky - Installed Successfully"
                                 .encode_utf16()
                                 .chain(std::iter::once(0))
                                 .collect();
@@ -2123,10 +2123,10 @@ pub fn handle_settings_click(
                             e
                         ));
                         unsafe {
-                            let msg = format!("Failed to install Desky:\n\n{}", e);
+                            let msg = format!("Failed to install Resky:\n\n{}", e);
                             let wide_msg: Vec<u16> =
                                 msg.encode_utf16().chain(std::iter::once(0)).collect();
-                            let wide_title: Vec<u16> = "Desky - Installation Error"
+                            let wide_title: Vec<u16> = "Resky - Installation Error"
                                 .encode_utf16()
                                 .chain(std::iter::once(0))
                                 .collect();
@@ -2399,7 +2399,7 @@ pub fn handle_settings_click(
                 if crate::identity::is_unattended_enabled() {
                     crate::identity::disable_unattended();
                 } else {
-                    crate::identity::set_unattended_password("Desky@2026");
+                    crate::identity::set_unattended_password("Resky@2026");
                 }
                 unsafe {
                     let _ = InvalidateRect(Some(hwnd), None, false);

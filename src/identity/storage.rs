@@ -49,7 +49,7 @@ pub fn save_assigned_desky_id(desky_id: &str) {
     ident.desky_id = Some(desky_id.to_string());
     if let Ok(bytes) = serde_json::to_string_pretty(&ident) {
         let _ = fs::write(&path, bytes);
-        info!("Saved assigned permanent Desky ID '{}' to {:?}", desky_id, path);
+        info!("Saved assigned permanent Resky ID '{}' to {:?}", desky_id, path);
     }
 }
 

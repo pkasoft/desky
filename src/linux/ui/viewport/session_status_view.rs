@@ -159,7 +159,7 @@ pub fn draw_session_status_view(
             SessionStatus::Connected(_) => {
                 "Authorization granted! Establishing encrypted stream and waiting for the initial video frame...".to_string()
             }
-            _ => "This session is currently inactive or closed. Click Retry to reconnect to this Desky ID.".to_string(),
+            _ => "This session is currently inactive or closed. Click Retry to reconnect to this Resky ID.".to_string(),
         };
         canvas.draw_text_wrapped(
             msg_x + 14,

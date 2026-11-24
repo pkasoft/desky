@@ -1,6 +1,6 @@
 //! Windows Session 0 Service, UAC Input-Desktop Switching & SAS (Ctrl+Alt+Del)
 //!
-//! Enables Desky to run as a Windows System Service (`--service`):
+//! Enables Resky to run as a Windows System Service (`--service`):
 //! - Registers with the Windows Service Control Manager (SCM)
 //! - Switches capture/input threads to the active input desktop (`Winlogon` / UAC / `Default`)
 //! - Dispatches Secure Attention Sequence (`Ctrl+Alt+Del`) via `sas.dll!SendSAS`
@@ -59,19 +59,19 @@ pub fn send_sas_ctrl_alt_del() -> bool {
     }
 }
 
-/// Installs Desky as an automatic Windows System Service (`DeskyService`).
+/// Installs Resky as an automatic Windows System Service (`ReskyService`).
 pub fn install_windows_service() -> anyhow::Result<()> {
     let exe = std::env::current_exe()?;
     let bin_path = format!("\"{}\" --service", exe.to_string_lossy());
     let out = std::process::Command::new("sc.exe")
         .args([
             "create",
-            "DeskyService",
+            "ReskyService",
             &format!("binPath= {}", bin_path),
             "start=",
             "auto",
             "DisplayName=",
-            "Desky Remote Desktop Service",
+            "Resky Remote Desktop Service",
         ])
         .output()?;
     if !out.status.success() {
@@ -81,19 +81,19 @@ pub fn install_windows_service() -> anyhow::Result<()> {
         );
     }
     let _ = std::process::Command::new("sc.exe")
-        .args(["start", "DeskyService"])
+        .args(["start", "ReskyService"])
         .output();
-    info!("Installed and started Windows Service 'DeskyService'");
+    info!("Installed and started Windows Service 'ReskyService'");
     Ok(())
 }
 
-/// Stops and removes `DeskyService`.
+/// Stops and removes `ReskyService`.
 pub fn uninstall_windows_service() -> anyhow::Result<()> {
     let _ = std::process::Command::new("sc.exe")
-        .args(["stop", "DeskyService"])
+        .args(["stop", "ReskyService"])
         .output();
     let out = std::process::Command::new("sc.exe")
-        .args(["delete", "DeskyService"])
+        .args(["delete", "ReskyService"])
         .output()?;
     if !out.status.success() {
         anyhow::bail!(
@@ -101,7 +101,7 @@ pub fn uninstall_windows_service() -> anyhow::Result<()> {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    info!("Uninstalled Windows Service 'DeskyService'");
+    info!("Uninstalled Windows Service 'ReskyService'");
     Ok(())
 }
 
@@ -129,7 +129,7 @@ unsafe extern "system" fn service_ctrl_handler(
 }
 
 unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows::core::PWSTR) {
-    let svc_name = w!("DeskyService");
+    let svc_name = w!("ReskyService");
     let Ok(handle) = RegisterServiceCtrlHandlerExW(svc_name, Some(service_ctrl_handler), None) else {
         return;
     };
@@ -164,7 +164,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut windows::core::PW
 }
 
 pub fn run_windows_service() -> anyhow::Result<()> {
-    let mut name: Vec<u16> = "DeskyService\0".encode_utf16().collect();
+    let mut name: Vec<u16> = "ReskyService\0".encode_utf16().collect();
     let table = [
         SERVICE_TABLE_ENTRYW {
             lpServiceName: windows::core::PWSTR(name.as_mut_ptr()),

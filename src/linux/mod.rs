@@ -52,7 +52,7 @@ pub fn run() -> anyhow::Result<()> {
         );
     }
 
-    ui::append_status_log("Desky Linux X11 Engine initialized.");
+    ui::append_status_log("Resky Linux X11 Engine initialized.");
     let app = ui::LinuxApp::new()?;
     app.run();
     Ok(())

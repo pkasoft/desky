@@ -28,7 +28,7 @@ const ES_AUTOHSCROLL: u32 = 0x0080;
 
 static PREV_EDIT_WNDPROC: AtomicIsize = AtomicIsize::new(0);
 
-/// Creates the Win32 Edit control for entering Remote Desky IDs
+/// Creates the Win32 Edit control for entering Remote Resky IDs
 pub unsafe fn create_remote_desk_edit(
     parent: HWND,
     l: ResponsiveLayout,

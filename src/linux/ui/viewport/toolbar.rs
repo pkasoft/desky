@@ -356,7 +356,7 @@ pub fn draw_tab_bar(
 
     // Left Brand Cell
     canvas.fill_rect(layout.brand_w, 0, 1, tab_bar_h, PK_CARD_BORDER);
-    canvas.draw_text_centered(0, 0, layout.brand_w, tab_bar_h, "DESKY", 13.5, true, PK_GREEN_DARK);
+    canvas.draw_text_centered(0, 0, layout.brand_w, tab_bar_h, "RESKY", 13.5, true, PK_GREEN_DARK);
 
     let tab_h = 30;
     let tab_y = 5;

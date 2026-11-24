@@ -59,7 +59,7 @@ fn get_autostart_desktop_path() -> Option<PathBuf> {
     } else {
         return None;
     };
-    Some(config_dir.join("autostart").join("desky.desktop"))
+    Some(config_dir.join("autostart").join("resky.desktop"))
 }
 
 pub fn is_autostart_enabled() -> bool {
@@ -79,7 +79,7 @@ pub fn set_autostart_enabled(enabled: bool) -> anyhow::Result<()> {
         }
         let exe = std::env::current_exe()?;
         let desktop_entry = format!(
-            "[Desktop Entry]\nType=Application\nName=Desky\nComment=Desky Remote Desktop (Background Tray)\nExec=\"{}\" --tray\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
+            "[Desktop Entry]\nType=Application\nName=Resky\nComment=Resky Remote Desktop (Background Tray)\nExec=\"{}\" --tray\nTerminal=false\nX-GNOME-Autostart-enabled=true\n",
             exe.to_string_lossy()
         );
         fs::write(&path, desktop_entry)?;
