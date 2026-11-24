@@ -58,8 +58,8 @@ pub fn set_assigned_desky_id(id: &str) {
     info!("✅ [LINUX HOST] Permanent Resky ID Approved: {}", id);
     append_status_log(&format!("Online | ID: {}", id));
     println!("\n\x1b[1;32m==================================================\x1b[0m");
-    println!("\x1b[1;32m  DESKY LINUX ONLINE | pkasoft.com\x1b[0m");
-    println!("\x1b[1;37m  YOUR PERMANENT DESKY ID: \x1b[1;32m{}\x1b[0m", id);
+    println!("\x1b[1;32m  RESKY LINUX ONLINE | pkasoft.com\x1b[0m");
+    println!("\x1b[1;37m  YOUR PERMANENT RESKY ID: \x1b[1;32m{}\x1b[0m", id);
     println!("\x1b[1;37m  STATUS: \x1b[1;36m[Online] Ready for incoming connections\x1b[0m");
     println!("\x1b[1;32m==================================================\x1b[0m\n");
     request_main_redraw();
@@ -513,7 +513,7 @@ pub fn draw_homepage_view(canvas: &mut PixelCanvas, win_w: u16, win_h: u16) {
     canvas.draw_text(
         l.input_box_x + 14,
         l.input_box_y + 7,
-        "ENTER 9-DIGIT REMOTE DESKY ID",
+        "ENTER 9-DIGIT REMOTE RESKY ID",
         11.0 * l.font_scale,
         true,
         PK_MUTED,
@@ -1184,7 +1184,7 @@ pub fn spawn_linux_approval_popup(client_id: String) {
     }
     std::thread::spawn(move || {
         println!("\n\x1b[1;33m==================================================\x1b[0m");
-        println!("\x1b[1;33m  🔔 INCOMING DESKY CONNECTION REQUEST!\x1b[0m");
+        println!("\x1b[1;33m  🔔 INCOMING RESKY CONNECTION REQUEST!\x1b[0m");
         println!("\x1b[1;37m  Remote Client ID: \x1b[1;32m{}\x1b[0m", client_id);
         println!("\x1b[1;37m  Click [ACCEPT] or [DECLINE] in the popup window!\x1b[0m");
         println!("\x1b[1;33m==================================================\x1b[0m\n");
@@ -1263,7 +1263,7 @@ pub fn spawn_linux_approval_popup(client_id: String) {
                                 24,
                                 (win_w - 40) as i32,
                                 24,
-                                "INCOMING DESKY SESSION REQUEST",
+                                "INCOMING RESKY SESSION REQUEST",
                                 14.0,
                                 true,
                                 PK_GREEN_DARK,
@@ -1377,7 +1377,7 @@ impl LinuxApp {
         };
 
         println!("\x1b[1;32m==================================================\x1b[0m");
-        println!("\x1b[1;32m  DESKY REMOTE DESKTOP (Linux / X11)\x1b[0m");
+        println!("\x1b[1;32m  RESKY REMOTE DESKTOP (Linux / X11)\x1b[0m");
         println!(
             "\x1b[1;37m  Permanent Resky ID: \x1b[1;32m{}\x1b[0m",
             current_id

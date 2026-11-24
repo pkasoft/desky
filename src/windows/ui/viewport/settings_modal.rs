@@ -135,10 +135,10 @@ pub unsafe fn draw_fullscreen_settings_view(
     // ==========================================
     draw_rounded_box(hdc, sidebar_x, sidebar_y, sidebar_w, sidebar_h, PK_CARD, PK_CARD_BORDER, 8);
 
-    // Sidebar Section Header: "DESKY SETTINGS"
+    // Sidebar Section Header: "RESKY SETTINGS"
     let _ = SelectObject(hdc, HGDIOBJ(font_badge.0));
     SetTextColor(hdc, PK_MUTED);
-    let mut sb_head_txt: Vec<u16> = "DESKY SETTINGS".encode_utf16().collect();
+    let mut sb_head_txt: Vec<u16> = "RESKY SETTINGS".encode_utf16().collect();
     let mut sb_head_rc = RECT {
         left: sidebar_x + 16,
         top: sidebar_y + 16,

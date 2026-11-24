@@ -92,7 +92,7 @@ pub fn draw_fullscreen_settings_view(
     canvas.draw_text(
         sidebar_x + 16,
         sidebar_y + 16,
-        "DESKY SETTINGS",
+        "RESKY SETTINGS",
         11.5,
         true,
         PK_MUTED,

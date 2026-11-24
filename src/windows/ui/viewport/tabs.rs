@@ -108,6 +108,7 @@ pub fn close_session_tab(hwnd: HWND, tab_idx: usize) {
         0
     };
 
+    REMOTE_PRIVACY_MODE.store(false, Ordering::Relaxed);
     crate::p2p::stop_client_session();
     ACTIVE_TAB_INDEX.store(new_active, Ordering::Relaxed);
     switch_session_tab(new_active);

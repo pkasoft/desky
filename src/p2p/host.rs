@@ -285,6 +285,8 @@ pub fn start_host_registration(&self) {
                                     if let Ok(mut g) = session_cipher_cap.lock() {
                                         *g = None;
                                     }
+                                    #[cfg(target_os = "windows")]
+                                    crate::windows::admin::set_privacy_curtain(false);
                                 }
                                 std::thread::sleep(Duration::from_millis(50));
                                 continue;
@@ -1227,6 +1229,16 @@ pub fn start_host_registration(&self) {
                                     }
                                     for k in disconnected_keys {
                                         crate::p2p::state::revoke_recently_approved_peer(&k);
+                                    }
+                                    #[cfg(target_os = "windows")]
+                                    {
+                                        let still_has_approved = clients_recv
+                                            .lock()
+                                            .map(|m| m.values().any(|s| s.auth_state == AuthState::Approved))
+                                            .unwrap_or(false);
+                                        if !still_has_approved {
+                                            crate::windows::admin::set_privacy_curtain(false);
+                                        }
                                     }
                                     if let Ok(mut pg) = pending_approval_store().lock() {
                                         *pg = None;

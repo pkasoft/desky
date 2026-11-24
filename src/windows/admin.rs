@@ -440,7 +440,7 @@ pub fn set_privacy_curtain(enabled: bool) {
 
         // Dedicated thread running a message pump to keep the curtain responsive and prevent desktop ghosting
         std::thread::Builder::new()
-            .name("desky_privacy_curtain".to_string())
+            .name("resky_privacy_curtain".to_string())
             .spawn(move || unsafe {
                 let h_module = GetModuleHandleW(None).unwrap_or_default();
                 let h_instance: HINSTANCE = h_module.into();
@@ -534,7 +534,7 @@ unsafe extern "system" fn privacy_curtain_wndproc(
             let font_title = super::ui::theme::create_segoe_font(28, FW_BOLD);
             let old_f = SelectObject(hdc, HGDIOBJ(font_title.0));
             SetTextColor(hdc, super::ui::theme::PK_GREEN);
-            let mut t_title: Vec<u16> = "DESKY PRIVACY CURTAIN ACTIVE".encode_utf16().collect();
+            let mut t_title: Vec<u16> = "RESKY PRIVACY CURTAIN ACTIVE".encode_utf16().collect();
             let mut rc_title = RECT {
                 left: 0,
                 top: (rect.bottom / 2) - 60,
